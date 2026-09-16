@@ -56,3 +56,16 @@ testRestfulProject/requirements.lock
 
 # 临时审计/扫描产物
 _dcscan_tmp/
+
+# ---------------- 离线部署包（不入库！）----------------
+# offline_package/ 是用优盘搬去实验室的**成品**，里面是 1.3 GB 的二进制
+# （86 个 wheel + 45,304 个 node_modules 文件），github 单文件 100MB 上限顶不住，
+# 也不该让仓库变成几百 MB。它属于"交付物"，不属于"源码"。
+#
+# 想重建这个包，照《离线部署手册》第 1 节的命令重新生成即可 —— 命令都在文档里，
+# 所以这里排除它不会造成信息丢失。
+offline_package/
+
+# 打包/核对过程中的中间产物
+docs/_dl/
+*.tmp.whl
