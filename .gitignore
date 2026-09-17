@@ -69,3 +69,6 @@ offline_package/
 # 打包/核对过程中的中间产物
 docs/_dl/
 *.tmp.whl
+
+# 代码更新包（make-update-package.ps1 的产物，优盘用的，不进仓库）
+code-update-*/
