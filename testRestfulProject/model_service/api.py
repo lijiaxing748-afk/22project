@@ -12,6 +12,8 @@
     模型    GET  /models、/models/<name>、/models/<name>/overview、/models/<name>/references
             POST /models（登记）、POST /models/upload（上传）
             DELETE /models/<name>?scope=artifact|record
+    发布    GET  /models/<name>/exports（发布历史）、POST 同路径（打包发布）
+            GET  /models/<name>/exports/<包名>（下载）、DELETE 同路径（删除包）
     训练    POST /train、GET /trainings
     推理    POST /predict、GET /inference-tasks、GET /inference-tasks/<id>
     数据集  GET  /datasets/db、POST /datasets/db（登记）、POST /datasets/upload（上传）
@@ -33,11 +35,13 @@ from pathlib import Path
 from flask import request, send_from_directory
 from flask_restful import Resource
 from . import datasets as ds
+from . import exporter
 from . import tabular
 from .config import config
 from .db import DBError, database
 from .figures import FIG_DIR, clear_figures, list_figures
 from .inference import InvalidInput, predict
+from .exporter import list_packages, resolve_package
 from .registry import abort_artifact, begin_artifact, commit_artifact, delete_artifact, list_artifacts, load_artifact
 from .training import MODEL_META, ALIASES, normalize_model, train
 _ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")          # 训练日志里 Keras 进度条的转义序列
@@ -1201,6 +1205,359 @@ class ModelReferences(Resource):
             # ⚠️ db 层遇到"这个名字不在 Models 表里"是抛 DBError 的，这里统一映射成 404：
             # 对调用方来说"模型不存在"属于资源不存在，不是服务故障
             return {"error": str(exc)}, 404
+
+
+# ============================ 模型发布（导出下载） ============================
+# 需求：把训练好的模型导出成文件供别人下载使用。
+#
+# ⚠️ 为什么不是"直接下载 data/models 里那个权重文件"：实测三种产物单独拿出去**全都用不了**
+#    （1dcnn 缺 scaler.npz 就预测错、cwt_cnn 是 state_dict 缺结构就加载不出来、
+#      adtk 的阈值是针对已标准化特征标定的）。所以发布物是**打包件**，
+#    额外带上 README.md / requirements.txt / example_infer.py 三件套，
+#    让"下载的人"真的能跑起来。打包细节见 exporter.py。
+class ModelExportList(Resource):
+    """GET /exports —— 全平台已发布的模型包清单（供「模型发布」独立页面）。
+
+    与 `GET /models/<名>/exports` 的区别：那个是**单个模型**的发布历史，
+    这个是**跨模型**的汇总页，一次把三样东西给全，前端一个请求就能渲染整页：
+
+      1. 库里的发布记录（deployments）—— 权威档案：版本、来源训练、发布人、状态
+      2. 磁盘上的包（packages）—— 事实：包还在不在、多大、什么时候生成
+      3. 把两者**按模型分组**后的结果（groups）—— 前端直接按组渲染卡片
+
+    ⚠️ 第 3 项是有意在后端算的：磁盘与库是两套数据源，"哪些包还在磁盘上"要拿
+    DeployedPath 的文件名去对，这个匹配逻辑放在前端做会两边各写一份、还容易写错
+    （Windows 反斜杠 vs POSIX 斜杠的坑）。所以后端算好再给。
+    """
+    def get(self):
+        """全平台发布包汇总：按模型分组，标注每个包是否还在磁盘上。"""
+        # ① 库记录。库挂了不该让整页 500 —— 磁盘上的包仍然可以列出来下载
+        try:
+            records = database.recent_deployments(limit=500)
+            db_error = None
+        except DBError as exc:
+            records = []
+            db_error = str(exc)
+
+        # ② 磁盘包：逐个模型目录扫一遍，做成 {模型名: [包信息]}
+        on_disk: dict[str, list[dict]] = {}
+        for artifact in list_artifacts():
+            on_disk[artifact.name] = list_packages(artifact.name)
+
+        # ③ 按模型分组。分组以**库记录为主**，再补上"只在磁盘上、库里没有"的包
+        groups: dict[str, dict] = {}
+
+        def group_for(name: str) -> dict:
+            """取（或建）一个模型的分组。**键用库表正式名**做规范化的显示名。"""
+            if name not in groups:
+                groups[name] = {"model": name, "deployments": [], "packages": [], "count": 0}
+            return groups[name]
+
+        for rec in records:
+            name = rec.get("ModelName") or "（已删除的模型）"
+            group_for(name)["deployments"].append(rec)
+
+        # 把磁盘包归到分组里，并标出"库里有没有对应记录"
+        recorded_names = {
+            exporter_pkg_name(r) for r in records if r.get("DeployedPath")
+        }
+        for key, pkgs in on_disk.items():
+            # 磁盘目录名是小写内部键（1dcnn），要换成库表正式名（1DCNN）才能与库记录并到一起。
+            # 用 groups 里已有记录的模型名做匹配，匹配不上就用磁盘名（上传的模型可能没登记）
+            display = next((g for g in groups if g.lower() == key.lower()), key)
+            for pkg in pkgs:
+                pkg = dict(pkg)
+                pkg["recorded"] = pkg["package"] in recorded_names
+                group_for(display)["packages"].append(pkg)
+
+        for group in groups.values():
+            # 库里标记为「已导出」且磁盘上确实存在的包，才算"可下载"
+            group["downloadable"] = sum(
+                1 for p in group["packages"] if p["recorded"])
+            group["count"] = len(group["deployments"])
+            group["packages"].sort(key=lambda p: p["created_at"], reverse=True)
+            group["deployments"].sort(key=lambda r: r.get("DeploymentID") or 0, reverse=True)
+            group["has_artifact"] = group["model"] in on_disk or any(
+                g.lower() == group["model"].lower() for g in on_disk)
+
+        total_pkgs = sum(len(p) for p in on_disk.values())
+        payload = {
+            "groups": sorted(groups.values(), key=lambda g: g["model"].lower()),
+            "total": {
+                "models": len(groups),
+                "records": len(records),
+                "packages_on_disk": total_pkgs,
+                "size_kb": round(sum(
+                    p["size_kb"] for pkgs in on_disk.values() for p in pkgs), 1),
+            },
+            "export_dir": "data/exports",
+        }
+        if db_error:
+            payload["db_error"] = db_error
+        return payload, 200
+
+
+def exporter_pkg_name(record: dict) -> str:
+    """从发布记录的 DeployedPath 里取出包文件名（只取最后一段）。
+
+    ⚠️ 必须只取文件名：库里存的是**已脱敏的相对路径**，而磁盘上拿到的是绝对路径，
+    两边前缀写法不一定一致；文件名为 `1dcnn-v1-20260917-184935.zip`，用它对齐最稳。
+    """
+    raw = str(record.get("DeployedPath") or "")
+    return raw.replace("\\", "/").rstrip("/").split("/")[-1]
+
+
+class ModelExport(Resource):
+    """GET /models/<model_name>/exports —— 该模型的发布历史；POST —— 打包发布。"""
+    def get(self, model_name):
+        """列出该模型已发布的包：磁盘上的 zip（真实文件）+ 库里的发布记录。
+
+        ⚠️ 两个来源都要给：磁盘是"包还在不在"的事实，库是"当初谁发布、来源哪次训练"的档案。
+        只给一边都不完整——用户删过包而库记录还在，或反过来。
+        """
+        name = _db_model_name(model_name)
+        try:
+            key = _artifact_key(model_name)
+        except ValueError as exc:
+            return {"error": str(exc)}, 400
+        try:
+            records = database.recent_deployments(model_name=name, limit=200)
+        except DBError as exc:
+            records = []
+            db_hint = str(exc)
+        else:
+            db_hint = None
+        payload = {
+            "model": name,
+            "artifact_key": key,
+            # 磁盘上的真实包（按文件名倒序）
+            "packages": list_packages(key),
+            # 库里的发布流水
+            "deployments": records,
+            "download_base": f"/models/{name}/exports",
+        }
+        if db_hint:
+            # 库连不上不该让整个页面 500：磁盘上的包仍然可以列出来下载
+            payload["db_error"] = db_hint
+        return payload, 200
+
+    def post(self, model_name):
+        """打包发布：生成 zip → 写 ModelDeployments → 返回下载地址。
+
+        请求体（都可选）：
+            training_id  来源训练；不传则取该模型最近一次**成功**的训练
+            version      版本号；不传则按已发布数量自动递增（v1/v2/…）
+            description  备注，写进 Remark
+            deployed_by  发布人
+        """
+        body = _body()
+        name = _db_model_name(model_name)
+        try:
+            key = _artifact_key(model_name)
+        except ValueError as exc:
+            return {"error": str(exc)}, 400
+
+        # ① 拿产物。没有产物就没有可发布的东西 → 404，并明确指出下一步做什么
+        try:
+            artifact = load_artifact(key)
+        except FileNotFoundError as exc:
+            return {"error": str(exc), "hint": "先在「模型管理」里训练或上传该模型，再来发布"}, 404
+        except ValueError as exc:
+            return {"error": str(exc)}, 400
+
+        # ② 定位 ModelID：发布记录要挂到 Models 行上（外键非空）
+        try:
+            registration = next((r for r in database.models_in_db()
+                                 if str(r["ModelName"]).lower() == name.lower()), None)
+        except DBError as exc:
+            return {"error": str(exc), "dialect": database.dialect}, 503
+        if registration is None:
+            return {"error": f"模型 {name} 还没有在 Models 表登记，无法记录发布信息"}, 409
+        model_id = int(registration["ModelID"])
+
+        # ③ 来源训练。ModelDeployments.TrainingID 在 schema 里是 **NOT NULL 外键**，
+        #    所以这里必须给出一个 TrainingID，不能留空。三步兜底：
+        #      ① 请求显式给的 training_id（存在性校验，查不到就 400）；
+        #      ② 该模型最近一次**成功**的训练（推理侧也是这个口径）；
+        #      ③ 连成功记录都没有（产物来自上传、或历次训练全失败但磁盘上有产物）——
+        #         退到该模型**最近一次任意状态**的训练，并在响应里如实提示"来源训练是失败的"。
+        #    ⚠️ 为什么不对 ③ 直接报错：实测 adtk 这个模型 14 条训练记录**全部是失败**，
+        #       但它磁盘上有可用的 detector.pkl（早期人工放进去的）。此时"不让发布"是错的——
+        #       用户手里明明有一个能用的产物，我们却因为"查不到成功训练"而拒绝导出。
+        #       所以兜底放行，但把真相写进 warnings，不假装它是成功训练来的。
+        training = None
+        training_warning = None
+        try:
+            requested_id = _int(body.get("training_id"), None, "training_id")
+            if requested_id is not None:
+                training = database.training_by_id(requested_id)
+                if training is None:
+                    return {"error": f"训练记录 TrainingID={requested_id} 不存在"}, 404
+            else:
+                training = database.latest_training(name, only_success=True)
+                if training is None:
+                    # 没有成功的训练：退到最近一次任意状态的，并明确告诉用户这是降级
+                    training = database.latest_training(name, only_success=False)
+                    if training is not None:
+                        training_warning = (
+                            f"{name} 没有成功的训练记录，发布记录挂到了最近一次"
+                            f"「{training.get('Status')}」的训练（TrainingID={training['TrainingID']}）；"
+                            f"请确认磁盘上的产物确实是你想发布的那个")
+        except InvalidInput as exc:
+            return {"error": str(exc)}, 400
+        except DBError:
+            training = None
+        source_training_id = int(training["TrainingID"]) if training else None
+        # TrainingID 非空是 schema 的硬约束：走到这里还是 None，说明连一条训练记录都没有
+        # （模型是上传进来的、从未训练过）。这种情况**不能**在 ModelDeployments 里记发布——
+        # 与其让它撞外键报 1452 那个难懂的错，不如在这里说清楚
+        if source_training_id is None:
+            return {
+                "error": f"{name} 没有任何训练记录，无法写发布记录"
+                         f"（ModelDeployments.TrainingID 是非空外键）",
+                "hint": "先在「模型管理」里训练一次该模型，让 Trainings 表里有记录，再来发布",
+            }, 409
+
+        # ④ 版本号：显式给的优先，否则按已成功发布的数量递增
+        try:
+            version = str(body.get("version") or "").strip()
+            if not version:
+                version = exporter.next_version(key, database.count_deployments(model_id))
+        except DBError as exc:
+            return {"error": str(exc), "dialect": database.dialect}, 503
+
+        # ⑤ 打包。失败也要留一条 DeployStatus='失败' 的记录（与 Trainings"失败也写一行"同口径），
+        #    否则"发布失败了"这件事在库里没有任何痕迹
+        device_id = None
+        try:
+            device_id = database.local_device_id()
+        except DBError as exc:
+            return {"error": str(exc)}, 409
+        try:
+            result = exporter.export_artifact(
+                key, artifact, version, training=training, source_training_id=source_training_id,
+                description=str(body.get("description") or "").strip() or None)
+        except exporter.ExportError as exc:
+            _record_failed_export(model_id, source_training_id, device_id, version, str(exc), body)
+            return {"error": str(exc)}, 400
+        except Exception as exc:                                   # noqa: BLE001
+            _record_failed_export(model_id, source_training_id, device_id, version, repr(exc), body)
+            return {"error": f"打包失败：{type(exc).__name__}: {exc}"}, 500
+
+        # ⑥ 写发布记录。库写不进去就**先删掉刚打好的包**——否则磁盘上会留下一个
+        #    "有文件、无记录"的孤儿包，用户以为发布成功了，实际库里查不到
+        download_url = f"/models/{name}/exports/{result.package.name}"
+        try:
+            deployment_id = database.insert_deployment(
+                model_id, source_training_id, device_id,
+                version=version, version_alias="latest", environment="test",
+                deployed_path=str(result.package), deploy_url=download_url,
+                runtime_params={
+                    "format": "native", "contents": [c["filename"] for c in result.contents],
+                    "input_len": artifact.meta.get("input_len"),
+                    "framework": artifact.framework,
+                    "artifact_key": key,
+                },
+                deploy_status="已导出",
+                deployed_by=str(body.get("deployed_by") or "model_service"),
+                remark=str(body.get("description") or "").strip() or None)
+        except DBError as exc:
+            exporter.delete_package(key, result.package.name)
+            return {"error": f"发布记录写入失败，已撤销本次导出：{exc}",
+                    "dialect": database.dialect}, 503
+
+        payload = result.to_dict()
+        # ⚠️ download_url 必须用**库表正式名**（1DCNN），不能直接回包名拼接的那份：
+        #    路由参数 next 请求要能原样传回来，用正式名最稳
+        payload["download_url"] = download_url
+        payload["deployment"] = {"DeploymentID": deployment_id, "Version": version,
+                                 "VersionAlias": "latest", "DeployStatus": "已导出"}
+        payload["source_training"] = {"TrainingID": source_training_id,
+                                      "TrainName": training.get("TrainName") if training else None,
+                                      "Status": training.get("Status") if training else None}
+        if training_warning:
+            payload["warnings"].append(training_warning)
+        payload["hint"] = "下载后解压，先看 README.md；example_infer.py 可直接运行验证"
+        return payload, 201
+
+
+def _record_failed_export(model_id, training_id, device_id, version, error, body) -> None:
+    """打包失败时补一条失败记录。**绝不能反过来把主流程带崩**，所以整个吞掉异常。
+
+    ⚠️ training_id 可能为 None（走到"打包"这步之前训练已解析成功，所以正常不会），
+    但这里是纯记录用途，宁可少写一条也不要再抛异常把 500 的成因盖掉。
+    """
+    if training_id is None:
+        return
+    try:
+        database.insert_deployment(
+            model_id, training_id, device_id, version=version, version_alias=None,
+            environment="test", deploy_status="失败", error_message=error,
+            deployed_by=str(body.get("deployed_by") or "model_service"))
+    except Exception:                                              # noqa: BLE001
+        pass
+
+
+class ModelExportPackage(Resource):
+    """GET /models/<model_name>/exports/<package> —— 下载发布包；DELETE —— 删除包。
+
+    ⚠️ 路由注册顺序：本类必须排在 `/models/<model_name>` 之前。否则
+    `/models/1DCNN/exports` 会被 ArtifactDetail 当成 model_name 吃掉（同一个坑见 _ROUTES 顶部注释）。
+    """
+    def get(self, model_name, package):
+        """下载发布包。文件以附件形式返回，浏览器直接触发下载而不是打开。"""
+        try:
+            key = _artifact_key(model_name)
+            path = exporter.resolve_package(key, package)
+        except exporter.ExportError as exc:
+            return {"error": str(exc)}, 400
+        except FileNotFoundError as exc:
+            return {"error": str(exc)}, 404
+        # send_from_directory 自带 Content-Length / ETag / Range，还能白拿 conditional 协商；
+        # as_attachment=True 触发下载，download_name 显式给中文安全的名字
+        return send_from_directory(
+            str(path.parent), path.name, as_attachment=True, download_name=path.name,
+            conditional=True)
+
+    def delete(self, model_name, package):
+        """删除一个发布包（只删磁盘文件 + 把记录标成「已删除」，**不删库记录**）。
+
+        保留记录是有意的：包没了，但"曾经发布过 v1"是历史事实，删记录会断掉审计链。
+        """
+        try:
+            key = _artifact_key(model_name)
+            result = exporter.delete_package(key, package)
+        except exporter.ExportError as exc:
+            return {"error": str(exc)}, 400
+        except FileNotFoundError as exc:
+            return {"error": str(exc)}, 404
+        try:
+            result["records_marked"] = database.mark_deployment_deleted(package)
+        except DBError as exc:
+            # 文件已经删了，这一步只是标记失败——如实回报，但不改状态码
+            result["records_marked"] = 0
+            result["db_error"] = str(exc)
+        return result, 200
+
+
+class ModelExportInspect(Resource):
+    """GET /models/<model_name>/exports/<package>/inspect —— 看包里的目录结构。
+
+    单独一个路径而不是给 ModelExportPackage.get 加查询参数（如 ?inspect=1）：
+    查询参数看不见、也容易被忘，而"下载"和"看内容"是两件不同的事，各自一个 URL
+    更直白；再说下载那条走的是 send_from_directory，混进分支反而别扭。
+    """
+    def get(self, model_name, package):
+        """列出一个发布包 zip 里的文件（只读中央目录，不解压）。"""
+        try:
+            key = _artifact_key(model_name)
+            return exporter.inspect_package(key, package), 200
+        except exporter.ExportError as exc:
+            return {"error": str(exc)}, 400
+        except FileNotFoundError as exc:
+            return {"error": str(exc)}, 404
+
+
 class FigureList(Resource):
     """GET /figures —— 列出已生成的图（训练曲线/混淆矩阵/预测分布等）。"""
     def get(self):
@@ -1480,6 +1837,16 @@ _ROUTES = (
     (ModelUpload, ("/models/upload",)),
     (ModelReferences, ("/models/<model_name>/references",)),
     (ModelOverview, ("/models/<model_name>/overview",)),
+    # ⚠️ 两条 exports 路由都必须排在 (ArtifactDetail, "/models/<model_name>") **之前**：
+    #    否则 `/models/1DCNN/exports` 会被 ArtifactDetail 当成 model_name 吃掉（同一坑见上方注释）。
+    #    `/models/<model_name>/exports` 比 `/models/<model_name>` 更具体，flask-restful 按
+    #    注册顺序匹配，先注册的先命中。
+    (ModelExport, ("/models/<model_name>/exports",)),
+    (ModelExportPackage, ("/models/<model_name>/exports/<package>",)),
+    # ⚠️ inspect 必须排在 `/exports/<package>` 之后但在 ArtifactDetail 之前：它更长、
+    #    更具体，flask-restful 按注册顺序匹配，先注册的先命中。
+    (ModelExportInspect, ("/models/<model_name>/exports/<package>/inspect",)),
+    (ModelExportList, ("/exports",)),
     (FigureList, ("/figures",)),
     (FigureFile, ("/figures/<path:relpath>",)),
     (DatasetDb, ("/datasets/db",)),
@@ -1497,7 +1864,8 @@ _ROUTES = (
 #     updateDataset/deleteDataset 却没有任何页面调用；登记的写入仍在 POST /datasets/db）
 # GET /（及 /api）的索引里，各条路由的路径形态：把 Flask 的转换器写法换成更易读的占位符。
 # 只影响「接口索引」页的显示，不参与路由匹配。
-_PATH_DISPLAY = {"<int:task_id>": "<id>", "<path:relpath>": "<路径>", "<model_name>": "<model>", "<name>": "<名>"}
+_PATH_DISPLAY = {"<int:task_id>": "<id>", "<path:relpath>": "<路径>", "<model_name>": "<model>",
+                 "<name>": "<名>", "<package>": "<包名>"}
 def _route_index() -> dict[str, str]:
     """路径 → 用途说明，直接取各 Resource 的 docstring 首行（不再手抄一份）。
 

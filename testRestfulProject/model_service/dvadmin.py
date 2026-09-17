@@ -39,6 +39,7 @@ def _menu_payload() -> list[dict]:
     路由守卫登录成功后 next('/home')、dynamicRoutes[0].redirect 也是 /home，与它一致。
     """
     modules = [
+        (106, "模型发布", "ele-Upload", "/platform/publish", "platformPublish", "platform/publish/index", False),
         (102, "模型管理", "ele-Cpu", "/platform/model", "platformModel", "platform/model/index", False),
         (103, "数据集管理", "ele-Coin", "/platform/dataset", "platformDataset", "platform/dataset/index", False),
         (104, "数据展示", "ele-DataLine", "/platform/visual", "platformVisual", "platform/visual/index", False),
@@ -66,7 +67,7 @@ def _user_payload() -> dict:
     return {
         "id": 1, "username": "admin", "name": "管理员", "avatar": "",
         "email": "admin@localhost", "mobile": "", "gender": "1",
-        "dept_info": {"dept_id": 1, "dept_name": "东风设备轴承故障诊断平台"},
+        "dept_info": {"dept_id": 1, "dept_name": "模型管理平台"},
         "role_info": [{"id": 1, "name": "超级管理员", "key": "admin"}],
         "roles": ["admin"], "is_superuser": True, "pwd_change_count": 1,
         "description": "本地演示账号（由 model_service 兼容层提供）",
@@ -168,8 +169,12 @@ def build_blueprint() -> Blueprint:
         ⚠️ 返回的是**平铺的 key-value**，不是列表：前端拿它当 map 下标取值，
         给成数组会让 `systemConfig['base.captcha_state']` 恒为 undefined（登录页验证码又冒出来）。
         """
-        return _ok({"base.captcha_state": False, "base.site_name": "东风设备轴承故障诊断平台",
-                    "base.login_title": "东风设备轴承故障诊断平台"})
+        return _ok({"base.captcha_state": False, "base.site_name": "模型管理平台",
+                    "base.login_title": "模型管理平台",
+                    # 登录页大标题/副标题：前端优先读这两个 key（见 views/system/login/index.vue），
+                    # 缺省才会回落到 themeConfig.globalViceTitle。
+                    "login.site_title": "模型管理平台",
+                    "login.site_name": "轴承故障诊断模型管理平台"})
     @bp.get("/api/system/menu_button/menu_button_all_permission/")
     def menu_button_all_permission():
         """按钮级权限清单：本地演示不做权限，回空数组。
@@ -193,7 +198,7 @@ def build_blueprint() -> Blueprint:
     @bp.get("/api/system/system_config/get_table_data/")
     def system_config():
         """系统配置表（另一条取配置的路径，与 /api/init/settings/ 给同样的值）。"""
-        return _ok({"base.captcha_state": False, "base.site_name": "东风设备轴承故障诊断平台"})
+        return _ok({"base.captcha_state": False, "base.site_name": "模型管理平台"})
     @bp.get("/api/system/dept/all_dept/")
     @bp.get("/api/system/dept/dept_all/")
     def all_dept():
@@ -204,8 +209,8 @@ def build_blueprint() -> Blueprint:
         分页对象，报错是 "Cannot create property 'id' on number '0'" —— 报错点在建树，
         根因却在返回结构，别被带偏。
         """
-        return _ok([{"id": 1, "parent": None, "name": "东风设备轴承故障诊断平台",
-                     "dept_name": "东风设备轴承故障诊断平台", "key": 1, "owner": [], "status": True}])
+        return _ok([{"id": 1, "parent": None, "name": "模型管理平台",
+                     "dept_name": "模型管理平台", "key": 1, "owner": [], "status": True}])
     @bp.get("/api/dvadmin3_social_oauth2/backend/get_login_backend/")
     def login_backend():
         """第三方登录后端列表：空数组 = 登录页不显示第三方登录入口。"""

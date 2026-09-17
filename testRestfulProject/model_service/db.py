@@ -466,6 +466,137 @@ class Database:
         with self.cursor(commit=True) as cur:
             task_id = self._insert_task_cur(cur, **task_kwargs)
             return task_id, self._insert_results_cur(cur, task_id, rows)
+    # -------------------------------------------------- 发布（ModelDeployments）
+    def local_device_id(self, cur=None) -> int:
+        """取『本地导出』占位设备的 DeviceID（发布记录的外键目标）。
+
+        ⚠️ 为什么必须有这么个设备：ModelDeployments.DeviceID 是 **NOT NULL 外键**，
+        而本项目还没有真实边缘设备。占位行由 sql/schema_mysql.sql 的种子数据插入
+        （DeviceType='local'）。查不到就直接抛——发布功能没它写不进库，
+        与其让调用方在 INSERT 时撞外键报一个难懂的 1452，不如在这里给出明确原因。
+        """
+        sql = "SELECT DeviceID FROM EdgeDevices WHERE DeviceType = %s ORDER BY DeviceID"
+        if cur is not None:
+            cur.execute(sql, ("local",))
+            row = cur.fetchone()
+        else:
+            self.ensure_schema()
+            with self.cursor() as own:
+                own.execute(sql, ("local",))
+                row = own.fetchone()
+        if not row:
+            raise DBError("找不到『本地导出』占位设备（EdgeDevices.DeviceType='local'）；"
+                          "请重跑 sql/schema_mysql.sql 补上种子数据")
+        return int(row[0])
+
+    def count_deployments(self, model_id: int) -> int:
+        """某模型已成功发布过几个包——发布时用它推算下一个版本号（v1/v2/…）。
+
+        ⚠️ 只数**成功**的记录：失败的那次没有产出包，不该占掉一个版本号，
+        否则"发布失败一次、下次直接从 v2 开始"，而 v1 从来没存在过。
+        """
+        self.ensure_schema()
+        with self.cursor() as cur:
+            return self._count(
+                cur, f"SELECT COUNT(*) FROM ModelDeployments WHERE ModelID = {self.placeholder} "
+                     f"AND DeployStatus = {self.placeholder}", (model_id, "已导出"))
+
+    def insert_deployment(self, model_id: int, training_id: int, device_id: int, *,
+                          version: str | None = None, version_alias: str | None = "latest",
+                          environment: str | None = "test", deployed_path: str | None = None,
+                          deploy_url: str | None = None, runtime_params=None,
+                          deploy_status: str = "已导出", deployed_by: str | None = None,
+                          error_message: str | None = None, remark: str | None = None) -> int:
+        """写一条 ModelDeployments 发布记录，返回 DeploymentID。
+
+        本项目把这张表当"模型发布/导出"的流水账用（原设计是"发布到边缘设备"，但还没有
+        真设备），各列的落地口径见 docs/模型发布-设计方案.md §2.1。几处必要的偏离：
+
+          · ServicePort 一律 **NULL**：该列有 CHECK (BETWEEN 1 AND 65535)，写 0 会被拒；
+            本功能不涉及服务部署，端口没有含义。
+          · DeployedPath / DeployUrl 改存**导出包**的磁盘路径与下载地址。
+          · IsCurrent：新发布的这条是当前版（1），同一模型的旧记录在下面被降级。
+          · ⚠️ 同一模型只允许一条 IsCurrent=1 —— 下面同一个事务里把旧的清掉，
+            保证"最新一条"唯一，否则前端按 IsCurrent 取最新版会拿到多行。
+
+        ⚠️ training_id **不能为 None**：TrainingID 是 NOT NULL 外键。调用方必须先确保有
+        一条训练记录（api 层为此做了"成功 → 任意状态 → 报 409"的三级兜底），
+        别把 None 传进来撞 1452。
+        """
+        self.ensure_schema()
+        with self.cursor(commit=True) as cur:
+            if version_alias == "latest":
+                # 同模型旧记录降级：别名撤掉、当前版标记清掉。放在 INSERT 之前，
+                # 这样即便后面 INSERT 失败回滚，也不会留下"两条都是当前版"的中间态
+                cur.execute(
+                    f"UPDATE ModelDeployments SET VersionAlias = NULL, IsCurrent = 0 "
+                    f"WHERE ModelID = {self.placeholder} AND IsCurrent = 1", (model_id,))
+            return self._insert_cur(
+                cur, "ModelDeployments",
+                ("ModelID", "TrainingID", "DeviceID", "Version", "VersionAlias", "Environment",
+                 "DeployUrl", "DeployedPath", "ServicePort", "RuntimeParams", "IsActive", "IsCurrent",
+                 "DeployStatus", "DeployedDate", "DeployedBy", "ErrorMessage", "Remark"),
+                (model_id, training_id, device_id, _clip(version, 50), _clip(version_alias, 20),
+                 _clip(environment, 20), _clip(deploy_url, 255), _clip(deployed_path, 500),
+                 None,                                       # ServicePort：见上面 ⚠️，必须 NULL
+                 _dump_json(runtime_params), 1, 1,
+                 _clip(deploy_status, 20), _now(), _clip(deployed_by, 100),
+                 error_message, _clip(remark, 500)),
+            )
+
+    def recent_deployments(self, model_name: str | None = None, limit: int = 50) -> list[dict]:
+        """发布记录列表（带模型名、训练名），供「发布历史」用。
+
+        ⚠️ 两个 JOIN 都必须是 LEFT：
+          · TrainingID 可空（发布时可以不带来源训练）；
+          · 模型可能只有发布记录而 Models 行被改过名。
+        INNER JOIN 会让这些记录整条从列表里消失。
+        排序按 DeploymentID DESC（自增主键即时间序，比按日期列排更稳）。
+        """
+        cols = ("d.DeploymentID, d.ModelID, d.TrainingID, d.DeviceID, d.Version, d.VersionAlias, "
+                "d.Environment, d.DeployUrl, d.DeployedPath, d.DeployStatus, d.DeployedDate, "
+                "d.DeployedBy, d.ErrorMessage, d.Remark, d.IsCurrent, "
+                "m.ModelName, t.TrainName")
+        tail = ("FROM ModelDeployments d "
+                "LEFT JOIN Models m ON m.ModelID = d.ModelID "
+                "LEFT JOIN Trainings t ON t.TrainingID = d.TrainingID")
+        if model_name:
+            # _select_limited 只收 (cols, tail, limit)，带参的 WHERE 得自己走一遍 cursor
+            self.ensure_schema()
+            sql = f"SELECT {cols} {tail} WHERE m.ModelName = {self.placeholder} " \
+                  f"ORDER BY d.DeploymentID DESC LIMIT {int(limit)}"
+            with self.cursor() as cur:
+                cur.execute(sql, (model_name,))
+                return self._rows_to_dicts(cur)
+        return self._select_limited(cols, tail + " ORDER BY d.DeploymentID DESC", limit)
+
+    def deployment_by_id(self, deployment_id: int) -> dict | None:
+        """按主键取一条发布记录（删除包时要用它回填 DeployStatus）。找不到返回 None。"""
+        self.ensure_schema()
+        with self.cursor() as cur:
+            cur.execute(f"SELECT * FROM ModelDeployments WHERE DeploymentID = {self.placeholder}",
+                        (deployment_id,))
+            rows = self._rows_to_dicts(cur)
+        return rows[0] if rows else None
+
+    def mark_deployment_deleted(self, deployed_path: str | None) -> int:
+        """把一个发布包的记录标成「已删除」（按 DeployedPath 匹配），返回受影响行数。
+
+        只改状态、**不删记录**：发布流水要留痕——包被删了，但"曾经发布过 v1"是历史事实，
+        删记录会让审计链断掉。
+        ⚠️ 库里的 DeployedPath 存的是**相对路径**（响应脱敏后的口径），而调用方手里是绝对路径，
+        所以只用**文件名**匹配，避免因盘符/前缀写法不同而匹配不上。
+        """
+        if not deployed_path:
+            return 0
+        self.ensure_schema()
+        tail = str(deployed_path).replace("\\", "/").split("/")[-1]   # 只用文件名匹配
+        with self.cursor(commit=True) as cur:
+            cur.execute(
+                f"UPDATE ModelDeployments SET DeployStatus = {self.placeholder}, IsCurrent = 0 "
+                f"WHERE DeployedPath LIKE {self.placeholder}", ("已删除", f"%{tail}"))
+            return max(cur.rowcount, 0)
+
     # ------------------------------------------------------------------ 读取
     def _rows_to_dicts(self, cur) -> list[dict]:
         """把游标里剩下的行读成 [{列名: 值}]，每个值都过一遍 _jsonable。

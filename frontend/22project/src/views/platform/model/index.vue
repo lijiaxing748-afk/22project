@@ -50,6 +50,7 @@
 					<el-table-column label="操作" min-width="160" align="center">
 						<template #default="{ row }">
 							<el-button link type="primary" @click.stop="openEdit(row)">编辑</el-button>
+							<el-button link type="success" :disabled="!row.art" @click.stop="openExport(row)">发布</el-button>
 							<el-button link type="danger" @click.stop="removeModel(row)">删除</el-button>
 						</template>
 					</el-table-column>
@@ -450,6 +451,86 @@
 		</template>
 	</el-dialog>
 
+	<!-- 发布（导出下载）弹窗：打包 → 给下载地址 → 列历史 -->
+	<el-dialog v-model="dialog.exportVisible" :title="`发布模型：${exportForm.model}`" width="720px">
+		<div class="hint">
+			发布 = 把训练产物连同<strong>它活下去所必需的一切</strong>打成 zip：权重 + <code>scaler.npz</code>
+			+ 网络结构（PyTorch 需要）+ 自动生成的 <code>README.md</code> / <code>requirements.txt</code>
+			/ <code>example_infer.py</code>。
+			之所以不是"直接下载权重文件"：单独一个权重<strong>外人用不了</strong>（分类模型缺 scaler 会算错、
+			PyTorch 缺结构加载不出来）。
+		</div>
+		<el-form label-width="110px" size="small" class="mt">
+			<el-form-item label="版本号">
+				<el-input v-model="exportForm.version" :placeholder="`留空自动递增（下一个 ${exportForm.nextVersion}）`" />
+			</el-form-item>
+			<el-form-item label="来源训练">
+				<el-select v-model="exportForm.training_id" clearable placeholder="留空 = 该模型最近一次成功的训练" style="width: 100%">
+					<el-option v-for="t in exportForm.trainings" :key="t.TrainingID"
+						:label="`#${t.TrainingID} ${t.TrainName || ''} · ${t.Status}${t.Accuracy != null ? ' · acc=' + Number(t.Accuracy).toFixed(4) : ''}`"
+						:value="t.TrainingID" />
+				</el-select>
+			</el-form-item>
+			<el-form-item label="发布说明">
+				<el-input v-model="exportForm.description" type="textarea" :rows="2" placeholder="可选，写进发布记录的备注" />
+			</el-form-item>
+		</el-form>
+
+		<!-- 打包结果 -->
+		<template v-if="exportResult">
+			<el-alert type="success" :closable="false" show-icon
+				:title="`发布成功：${exportResult.version} · ${exportResult.package}（${exportResult.size_kb} KB）`" />
+			<div class="mt" style="display: flex; gap: 8px; align-items: center">
+				<el-button type="primary" size="small" @click="downloadExport(exportResult.package)">下载这个包</el-button>
+				<span class="hint">解压后先看 <code>README.md</code>；<code>example_infer.py</code> 可直接运行验证</span>
+			</div>
+			<el-table :data="exportResult.contents" size="small" class="mt" max-height="180">
+				<el-table-column prop="filename" label="包内文件" min-width="180" />
+				<el-table-column prop="size_kb" label="KB" width="90" align="right" />
+			</el-table>
+			<el-alert v-for="(w, i) in exportResult.warnings || []" :key="i" type="warning" :closable="false"
+				show-icon class="mt" :title="w" />
+		</template>
+
+		<!-- 发布历史 -->
+		<div class="mt">
+			<div style="display: flex; align-items: center; gap: 8px">
+				<b>发布历史</b>
+				<el-button size="small" text @click="loadExports(exportForm.model)">刷新</el-button>
+			</div>
+			<el-table :data="exportList" size="small" class="mt" empty-text="还没有发布过" max-height="240">
+				<el-table-column prop="Version" label="版本" width="70" />
+				<el-table-column label="是否最新" width="90" align="center">
+					<template #default="{ row }">
+						<el-tag v-if="row.IsCurrent" type="success" size="small">最新版</el-tag>
+						<span v-else class="hint">历史版</span>
+					</template>
+				</el-table-column>
+				<el-table-column label="来源训练" min-width="150">
+					<template #default="{ row }">
+						<span v-if="row.TrainingID">#{{ row.TrainingID }} {{ row.TrainName || '' }}</span>
+						<span v-else class="hint">—</span>
+					</template>
+				</el-table-column>
+				<el-table-column prop="DeployStatus" label="状态" width="90" />
+				<el-table-column prop="DeployedDate" label="发布时间" min-width="150" />
+				<el-table-column label="操作" width="130" align="center">
+					<template #default="{ row }">
+						<el-button link type="primary" :disabled="row.DeployStatus !== '已导出'"
+							@click="downloadExport(fileName(row.DeployedPath))">下载</el-button>
+						<el-button link type="danger" :disabled="row.DeployStatus !== '已导出'"
+							@click="removeExport(fileName(row.DeployedPath), row.DeploymentID)">删除</el-button>
+					</template>
+				</el-table-column>
+			</el-table>
+		</div>
+
+		<template #footer>
+			<el-button @click="dialog.exportVisible = false">关闭</el-button>
+			<el-button type="primary" :loading="exporting" @click="doExport">打包发布</el-button>
+		</template>
+	</el-dialog>
+
 	<!-- meta.json 全文：底部给一个固定的「关闭」按钮，JSON 区域自己内部滚动，
 	     否则几百行的长文本会把按钮顶到屏幕外面去 -->
 	<el-dialog v-model="dialog.meta" :title="`${dialog.model} 的 meta.json`" width="70%">
@@ -515,9 +596,21 @@ const datasets = ref<Record<string, any>>({});
 const overview = ref<any>(null);
 const form = reactive<any>({ ModelName: '', Description: '', ModelType: 'Classification', ApiEndpoint: '/predict', Status: '' });
 const dialog = reactive<any>({ meta: false, model: '', metaText: '', task: false, taskId: 0, taskData: null,
-	formVisible: false, originName: '', uploadVisible: false });
+	formVisible: false, originName: '', uploadVisible: false, exportVisible: false });
 /** 上传弹窗自己的字段，跟「新增/编辑」登记弹窗解耦，互不影响 */
 const uploadForm = reactive<any>({ name: '', description: '' });
+
+// ---------- 模型发布（导出下载）----------
+// exporting / exportResult 是本弹窗的"当前操作状态"，exportList 是该模型的发布历史。
+// nextVersion 只是为了在占位符里提示"下一个会是几"，真正的版本号由后端算（避免前端猜错）。
+const exporting = ref(false);
+const exportResult = ref<any>(null);
+const exportList = ref<any[]>([]);
+const exportForm = reactive<any>({ model: '', version: '', description: '', training_id: undefined,
+	trainings: [], nextVersion: 'v1' });
+
+/** 从路径里取文件名：后端返回的 DeployedPath 可能是 Windows 反斜杠或 POSIX 斜杠 */
+const fileName = (p: string) => String(p || '').split(/[\\/]/).pop() || '';
 
 const datasetOptions = computed(() =>
 	Object.entries(datasets.value).map(([k, d]: any) => ({
@@ -755,6 +848,99 @@ const doUploadModel = async () => {
 		ElMessage.error('上传失败：' + (data?.error || e?.message || e));
 	} finally {
 		uploading.value = false;
+	}
+};
+
+// ---------- 模型发布（导出下载）----------
+/** 点「发布」：打开弹窗并预载该模型的发布历史与可选训练列表。 */
+const openExport = async (row: any) => {
+	exportResult.value = null;
+	exportList.value = [];
+	exportForm.model = row.name;
+	exportForm.version = '';
+	exportForm.description = '';
+	exportForm.training_id = undefined;
+	exportForm.trainings = [];
+	exportForm.nextVersion = 'v1';
+	dialog.exportVisible = true;
+	await Promise.all([loadExports(row.name), loadExportTrainings(row.name)]);
+};
+
+/** 取该模型的发布历史（磁盘包 + 库记录），并推算"下一个版本号"用于占位提示。 */
+const loadExports = async (name: string) => {
+	if (!name) return;
+	try {
+		const res: any = await platformApi.exports(name);
+		exportList.value = res.deployments || [];
+		// 版本号只按**已导出**的条数推，与后端 count_deployments 口径一致：
+		// 失败/已删除的记录不占版本号，否则提示会和后端算出来的对不上
+		const done = exportList.value.filter((d: any) => d.DeployStatus === '已导出').length;
+		exportForm.nextVersion = `v${done + 1}`;
+	} catch (e: any) {
+		exportList.value = [];
+		ElMessage.warning('发布历史读取失败：' + (e?.response?.data?.error || e?.message || e));
+	}
+};
+
+/** 该模型的训练记录（供"来源训练"下拉选择）。 */
+const loadExportTrainings = async (name: string) => {
+	try {
+		const res: any = await platformApi.trainings(100);
+		const all = res.trainings || [];
+		// 后端 latest_training 按**库表正式名**匹配，大小写敏感度交给它，这里宽松过滤即可
+		exportForm.trainings = all.filter((t: any) => String(t.ModelName || '').toLowerCase() === String(name).toLowerCase());
+	} catch {
+		exportForm.trainings = [];
+	}
+};
+
+/** 打包发布。 */
+const doExport = async () => {
+	exporting.value = true;
+	try {
+		const body: any = {};
+		if (exportForm.version) body.version = exportForm.version;
+		if (exportForm.description) body.description = exportForm.description;
+		if (exportForm.training_id) body.training_id = exportForm.training_id;
+		const res: any = await platformApi.exportModel(exportForm.model, body);
+		exportResult.value = res;
+		ElMessage.success(`已发布 ${res.version}：${res.package}`);
+		await loadExports(exportForm.model);
+		await loadModels();
+	} catch (e: any) {
+		const d = e?.response?.data;
+		ElMessage.error('发布失败：' + (d?.error || e?.message || e) + (d?.hint ? `（${d.hint}）` : ''));
+	} finally {
+		exporting.value = false;
+	}
+};
+
+/** 下载一个发布包：走 fileUrl() 拼绝对地址，用 <a download> 触发浏览器下载。 */
+const downloadExport = (pkg: string) => {
+	if (!pkg) return;
+	// ⚠️ 路由参数要能原样被后端解析，所以按名字拼 URL；fileUrl() 会补上 VITE_API_URL 前缀
+	const url = fileUrl(`/models/${encodeURIComponent(exportForm.model)}/exports/${encodeURIComponent(pkg)}`);
+	const a = document.createElement('a');
+	a.href = url;
+	a.download = pkg;
+	document.body.appendChild(a);
+	a.click();
+	document.body.removeChild(a);
+};
+
+/** 删除一个发布包（只删磁盘文件，库记录标成「已删除」留痕）。 */
+const removeExport = async (pkg: string, id: number) => {
+	try {
+		await ElMessageBox.confirm(`删除发布包 ${pkg}？磁盘文件会被删除，库里仍保留一条「已删除」记录。`,
+			'确认删除', { type: 'warning' });
+	} catch { return; }
+	try {
+		const res: any = await platformApi.deleteExport(exportForm.model, pkg);
+		ElMessage.success(`已删除，释放 ${res.freed_kb} KB`);
+		await loadExports(exportForm.model);
+		await loadModels();
+	} catch (e: any) {
+		ElMessage.error('删除失败：' + (e?.response?.data?.error || e?.message || e));
 	}
 };
 

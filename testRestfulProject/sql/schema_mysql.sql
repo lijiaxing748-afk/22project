@@ -249,3 +249,19 @@ VALUES
 -- ⚠️ adtk 这行的 ApiEndpoint 原先是 '/todos'（flask_restful 官方示例路由，早已随示例一起删除）。
 --    这个值会显示在「模型管理」页的「接口」一栏，留着等于给用户指一个 404 的地址；
 --    三个模型实际都由 POST /predict 提供服务，所以改指 /predict。
+
+/* 「模型发布/导出」用的占位设备。
+   ⚠️ 为什么必须有这一行：ModelDeployments.DeviceID 是 **NOT NULL 外键 → EdgeDevices.DeviceID**，
+   而本项目还没有真实边缘设备（代码里没有任何地方写 EdgeDevices），所以发布记录插不进去。
+   备选方案是把 DeviceID 改成可空，但**行不通**：db.ensure_schema() 是幂等的，表已存在时
+   一条语句都不执行，改了列定义对实验室已部署的库不会生效，得手工迁移。
+   加一行种子数据没有这个问题，而且语义也成立——"导出到本地"本来就是一种投放目标。
+
+   DeviceType='local' 是这里唯一的判别依据：界面/接口看到它就知道这不是真设备，
+   而是"发布包落在了服务器磁盘上"。 */
+INSERT IGNORE INTO `EdgeDevices` (`DeviceName`, `DeviceType`, `Location`, `EdgeStatus`, `Status`,
+                                  `IsActive`, `Remark`, `CreatedDate`)
+VALUES ('本地导出', 'local', '本机文件系统', '可用', '可用', 1,
+        '不是真实边缘设备：仅为「模型发布」记录 ModelDeployments.DeviceID（该列是 NOT NULL 外键）。'
+        '发布包落在 data/exports/<模型>/ 下供下载。',
+        CURRENT_TIMESTAMP(6));

@@ -42,6 +42,23 @@ export const platformApi = {
 	// 删除该模型的产物文件（权重/scaler/meta，不动库表登记）；没有版本号，删的就是唯一那个产物
 	deleteArtifact: (name: string) =>
 		request({ url: `/models/${encodeURIComponent(name)}?scope=artifact`, method: 'delete' }),
+
+	// ---------- 模型发布（导出下载）----------
+	// 全平台发布汇总（「模型发布」独立页面用）：按模型分组的发布流水 + 磁盘包
+	exportOverview: () => request({ url: '/exports', method: 'get' }),
+	// 发布历史：磁盘上的 zip（packages）+ 库里的发布流水（deployments）
+	exports: (name: string) => request({ url: `/models/${encodeURIComponent(name)}/exports`, method: 'get' }),
+	// 打包发布：生成 zip 并登记 ModelDeployments，返回 download_url
+	// body 可选：{ training_id, version, description, deployed_by }
+	exportModel: (name: string, data: any = {}) =>
+		request({ url: `/models/${encodeURIComponent(name)}/exports`, method: 'post', data }),
+	// 看某个包里有什么（列 zip 条目，不解压）
+	inspectExport: (name: string, pkg: string) =>
+		request({ url: `/models/${encodeURIComponent(name)}/exports/${encodeURIComponent(pkg)}/inspect`, method: 'get' }),
+	// 删除某个发布包（只删磁盘文件，库记录标成「已删除」留痕）
+	deleteExport: (name: string, pkg: string) =>
+		request({ url: `/models/${encodeURIComponent(name)}/exports/${encodeURIComponent(pkg)}`, method: 'delete' }),
+
 	train: (data: any) => request({ url: '/train', method: 'post', data }),
 	trainings: (limit = 20) => request({ url: `/trainings?limit=${limit}`, method: 'get' }),
 
