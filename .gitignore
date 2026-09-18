@@ -108,3 +108,6 @@ testRestfulProject/docs/
 
 # 代码更新包（make-update-package.ps1 的产物，优盘用的，不进仓库）
 code-update-*/
+
+# 提交信息临时文件（git commit 的 -F 参数用完后应删除，防误提交）
+.git-commit-msg.tmp
