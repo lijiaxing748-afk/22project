@@ -30,7 +30,15 @@ DATA_DIR = PROJECT_DIR / "data"
 MODEL_DIR = DATA_DIR / "models"             # 模型产物（对应图里的「Pxl模型」）
 LOG_DIR = DATA_DIR / "logs"                 # 训练日志
 UPLOAD_DIR = DATA_DIR / "datasets"          # 上传/存放的表格数据集（一个子目录 = 一个数据集）
+EXPORT_DIR = DATA_DIR / "exports"           # 模型发布包（一个训练产物一个 zip，按模型分子目录）
 SQL_DIR = PROJECT_DIR / "sql"
+# 前端产物目录（两个候选位置，web.py 里按顺序探测，先命中哪个用哪个）：
+#   1. frontend/22project/dist —— 开发机上 `npm run build` 的默认输出
+#      ⚠️ 注意层级：PROJECT_DIR 是 testRestfulProject，WORKSPACE_DIR 才是仓库根 22project
+#   2. data/web                —— 部署时把产物拷到这里，让"代码"和"构建产物"分开，
+#                                 更新代码不用连前端产物一起覆盖
+DIST_DIR = WORKSPACE_DIR / "frontend" / "22project" / "dist"
+WEB_DIR = DATA_DIR / "web"
 # ⚠️ 原来的 SQLITE_PATH（sqlite 兜底库路径）已删除：它零引用，且 sqlite 兜底本身
 #    也早在 __init__ 里被"只支持 MySQL"的校验挡掉了。
 # 内置的 CWRU .mat 数据集：键是前端/接口里用的数据集名，值是磁盘目录
@@ -42,8 +50,8 @@ DATASET_DIRS = {
 #    adtk 分支的基线文件现在完全由训练请求的 dataset_dir 决定，找不到就明确报错
 #    （见 training._train_adtk）——那个"静默退回 adtk/dataset/cpu.csv"的兜底早就删掉了，
 #    这个常量是它留下的最后一截尾巴。
-# 这三个目录是运行期必需品，import 时就建好，免得别处还要各自判存在性
-for _d in (DATA_DIR, MODEL_DIR, LOG_DIR, UPLOAD_DIR):
+# 这几个目录是运行期必需品，import 时就建好，免得别处还要各自判存在性
+for _d in (DATA_DIR, MODEL_DIR, LOG_DIR, UPLOAD_DIR, EXPORT_DIR):
     _d.mkdir(parents=True, exist_ok=True)
 def load_env_file() -> str | None:
     """可选的本地配置：testRestfulProject/db.env。
@@ -116,6 +124,7 @@ class Config:
         self.model_dir = MODEL_DIR
         self.log_dir = LOG_DIR
         self.upload_dir = UPLOAD_DIR
+        self.export_dir = EXPORT_DIR
         self.sql_dir = SQL_DIR
         self.dataset_dirs = dict(DATASET_DIRS)
         # 本项目**只支持 MySQL**：早期为了"没装库也能跑"写过 SQLite 兜底与 SQL Server 分支，
@@ -135,6 +144,26 @@ class Config:
         self.db_password = _env("MODEL_DB_PASSWORD", "")
         self.db_name = _env("MODEL_DB_NAME", "model_management")
         self.db_port = int(_env("MODEL_DB_PORT", "3306") or "3306")
+        # ---- 鉴权 ----
+        # 令牌签名用的密钥。**必须在部署时换成随机值**（见 db.env 里的 MODEL_SECRET_KEY），
+        # 否则拿到源码的人可以自己签一个 admin 令牌出来，鉴权等于没有。
+        # ⚠️ 这里给了一个默认值只为"开发机上开箱能跑"；config.describe() 会回报
+        #    auth_key_is_default，前端与部署脚本据此提示"该换密钥了"。
+        self.secret_key = _env("MODEL_SECRET_KEY", "")
+        self.auth_key_is_default = not self.secret_key
+        if not self.secret_key:
+            # 没配就每次启动随机生成：安全性不降（反而更高，重启即失效旧令牌），
+            # 代价只是"重启后需要重新登录"。对本项目完全可接受。
+            import secrets as _secrets
+            self.secret_key = _secrets.token_hex(32)
+        # 令牌有效期（小时）。工厂场景一天一个班次，8 小时太短、30 天太长，默认 12 小时。
+        self.token_ttl_hours = int(_env("MODEL_TOKEN_TTL_HOURS", "12") or "12")
+        # 鉴权总开关。默认 True；测试脚本或本地纯调试可以 MODEL_AUTH_DISABLED=1 关掉。
+        # ⚠️ 关掉时 /health 会显式回报 auth_disabled，避免"以为在鉴权其实没鉴"。
+        self.auth_disabled = (_env("MODEL_AUTH_DISABLED", "") or "").lower() in ("1", "true", "yes")
+        # 缺省管理员口令：**首次启动**用来生成种子账号，生成完就写进库、此后不再读它。
+        # 空值 = 不生成种子账号（部署方自己 inser 用户，或已经有账号了）。
+        self.bootstrap_admin_password = _env("MODEL_BOOTSTRAP_ADMIN_PASSWORD", "")
         # ⚠️ 这里原来还有一个 self.defaults 字典（三套模型的默认超参速查表），已删除：
         #    它全项目零引用（只有本行赋值），运行时真正生效的默认值写在 training.py 里，
         #    形式是 `opts.get("epochs", 10)` 这类内联字面量。**改默认超参请改 training.py。**
@@ -162,5 +191,14 @@ class Config:
             },
             "datasets": {k: str(v) for k, v in self.dataset_dirs.items()},
             "upload_dir": str(self.upload_dir),
+            "export_dir": str(self.export_dir),
+            # 鉴权状态摘要。**不含密钥本身**，只表明"用的是默认/随机密钥"，
+            # 让部署方一眼看出该不该换。auth_disabled 要显式露出：
+            # 这是个"关掉就完全没有防护"的开关，藏在后台最危险。
+            "auth": {
+                "enabled": not self.auth_disabled,
+                "key_is_default": self.auth_key_is_default,
+                "token_ttl_hours": self.token_ttl_hours,
+            },
         }
 config = Config()

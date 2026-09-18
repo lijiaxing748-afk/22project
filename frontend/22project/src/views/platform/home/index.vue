@@ -37,6 +37,7 @@
 					<div class="quick">
 						<el-button type="primary" @click="go('/platform/model', 'train')">开始训练</el-button>
 						<el-button @click="go('/platform/model', 'predict')">开始推理</el-button>
+						<el-button @click="go('/platform/publish')">模型发布</el-button>
 						<el-button @click="go('/platform/dataset', 'tabular')">表格数据集</el-button>
 						<el-button @click="go('/platform/visual', 'signal')">看原始信号</el-button>
 						<el-button @click="go('/platform/visual', 'gallery')">看图库</el-button>

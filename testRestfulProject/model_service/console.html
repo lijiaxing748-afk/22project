@@ -1,0 +1,1180 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>轴承故障诊断平台</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<!-- 字体只是锦上添花：离线自动回落系统字体，本平台零构建、零前端依赖 -->
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600&family=Lora:wght@500;600&display=swap">
+<style>
+:root{
+  --color-bg-base:#ECE9E0; --color-surface:#F7F5EF; --color-surface-2:#E4E0D5;
+  --color-accent-orange:#D97757; --color-on-accent:#FFF8F4;
+  --color-text-primary:#141413; --color-text-secondary:#6B6860;
+  --color-error:#C0453A; --color-ok:#4F7A4A; --color-warn-bg:rgba(217,119,87,.12); --color-warn-border:rgba(217,119,87,.35);
+  --font-display:'Lora',Georgia,'Songti SC',serif;
+  --font-heading:'Poppins','Segoe UI','Microsoft YaHei',sans-serif;
+  --space-1:4px; --space-2:8px; --space-3:12px; --space-4:16px; --space-6:24px; --space-8:32px;
+  --radius:10px; --line:#D6D1C4; --sidebar-w:212px;
+}
+*{box-sizing:border-box}
+html,body{margin:0;padding:0;height:100%}
+body{background:var(--color-bg-base); color:var(--color-text-primary); font-family:var(--font-heading); font-size:14px; line-height:1.55;-webkit-font-smoothing:antialiased}
+h1,h2,h3,h4{font-family:var(--font-display); font-weight:600; margin:0}
+a{color:var(--color-accent-orange)}
+.mono,code,pre{font-family:Consolas,'SFMono-Regular',Menlo,monospace; font-size:12px}
+
+/* ===== 骨架 ===== */
+.app{display:flex; min-height:100vh}
+.sidebar{width:var(--sidebar-w); flex:0 0 var(--sidebar-w); background:var(--color-surface);
+  border-right:1px solid var(--line); display:flex; flex-direction:column; position:sticky; top:0; height:100vh}
+.brand{padding:var(--space-4); border-bottom:1px solid var(--line)}
+.brand h1{font-size:16px; line-height:1.3}
+.brand .sub{font-size:11px; color:var(--color-text-secondary); margin-top:2px}
+.nav{padding:var(--space-3); display:flex; flex-direction:column; gap:2px; flex:1; overflow:auto}
+.nav button{display:flex; align-items:center; gap:10px; appearance:none; border:none; background:none; cursor:pointer;
+  font-family:var(--font-heading); font-size:14px; color:var(--color-text-secondary); text-align:left;
+  padding:9px 12px; border-radius:8px; width:100%}
+.nav button:hover{background:var(--color-surface-2); color:var(--color-text-primary)}
+.nav button.active{background:var(--color-bg-base); color:var(--color-text-primary); font-weight:600; box-shadow:inset 3px 0 0 var(--color-accent-orange)}
+.nav .ico{width:16px; text-align:center; opacity:.85}
+.side-foot{padding:var(--space-3) var(--space-4); border-top:1px solid var(--line); font-size:11px; color:var(--color-text-secondary)}
+.main{flex:1; min-width:0; display:flex; flex-direction:column}
+.topbar{position:sticky; top:0; z-index:20; background:var(--color-bg-base); border-bottom:1px solid var(--line);
+  padding:var(--space-3) var(--space-6); display:flex; align-items:center; gap:var(--space-3); flex-wrap:wrap}
+.topbar h2{font-size:17px}
+.topbar .crumb{color:var(--color-text-secondary); font-size:12px}
+.spacer{flex:1}
+.content{padding:var(--space-6); max-width:1320px; width:100%}
+.pill{display:inline-flex; align-items:center; gap:6px; background:var(--color-surface); border:1px solid var(--line);
+  border-radius:999px; padding:4px 11px; font-size:12px; color:var(--color-text-secondary); white-space:nowrap}
+.pill b{color:var(--color-text-primary); font-weight:600}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--color-ok);display:inline-block}
+.dot.bad{background:var(--color-error)}
+
+/* ===== 模块与子页签 ===== */
+.module{display:none}
+.module.active{display:block}
+.subtabs{display:flex; gap:var(--space-1); border-bottom:1px solid var(--line); margin-bottom:var(--space-6); flex-wrap:wrap}
+.subtab{appearance:none; background:none; border:none; border-bottom:2px solid transparent; padding:9px 13px;
+  font-family:var(--font-heading); font-size:13px; color:var(--color-text-secondary); cursor:pointer}
+.subtab:hover{color:var(--color-text-primary)}
+.subtab.active{color:var(--color-text-primary); border-bottom-color:var(--color-accent-orange); font-weight:600}
+.subpanel{display:none}
+.subpanel.active{display:block}
+
+/* ===== 卡片/网格 ===== */
+.grid{display:grid; gap:var(--space-4)}
+.cols-2{grid-template-columns:repeat(auto-fit,minmax(340px,1fr))}
+.cols-3{grid-template-columns:repeat(auto-fit,minmax(230px,1fr))}
+.cols-4{grid-template-columns:repeat(auto-fit,minmax(180px,1fr))}
+.card{background:var(--color-surface); border:1px solid var(--line); border-radius:var(--radius); padding:var(--space-4)}
+.card h3{font-size:15px; margin-bottom:var(--space-3)}
+.card h4{font-size:13px; margin-bottom:var(--space-2); color:var(--color-text-secondary); font-family:var(--font-heading)}
+.hint{color:var(--color-text-secondary); font-size:12px}
+.card+.card{margin-top:var(--space-4)}
+.kpi{font-family:var(--font-display); font-size:30px; line-height:1.1; margin:2px 0}
+.actions{display:flex; gap:var(--space-2); flex-wrap:wrap; margin-top:var(--space-3)}
+.empty{color:var(--color-text-secondary); text-align:center; padding:var(--space-6) 0; font-size:13px}
+.warn{background:var(--color-warn-bg); border:1px solid var(--color-warn-border); color:#8A4A31;
+  padding:8px 12px; border-radius:8px; font-size:12px; margin-bottom:var(--space-3)}
+
+/* ===== 表单/按钮 ===== */
+.field{display:flex; flex-direction:column; gap:4px; margin-bottom:var(--space-3)}
+.field label{font-size:12px; color:var(--color-text-secondary)}
+input,select,textarea{font-family:var(--font-heading); font-size:13px; color:var(--color-text-primary);
+  background:#FFFDF8; border:1px solid var(--line); border-radius:8px; padding:7px 10px; width:100%}
+input:focus,select:focus,textarea:focus{outline:2px solid rgba(217,119,87,.35); outline-offset:1px; border-color:var(--color-accent-orange)}
+.row{display:flex; gap:var(--space-3); flex-wrap:wrap}
+.row>.field{flex:1; min-width:130px}
+button.btn{font-family:var(--font-heading); font-size:13px; font-weight:500; cursor:pointer; border-radius:8px;
+  padding:8px 16px; border:1px solid var(--line); background:var(--color-surface); color:var(--color-text-primary)}
+button.btn:hover{filter:brightness(.97)}
+button.btn:active{transform:translateY(1px)}
+button.btn[disabled]{opacity:.55; cursor:not-allowed}
+button.btn.primary{background:var(--color-accent-orange); border-color:var(--color-accent-orange); color:var(--color-on-accent)}
+button.btn.danger{background:var(--color-error); border-color:var(--color-error); color:var(--color-on-accent)}
+button.btn.ghost{background:transparent}
+button.btn.small{padding:4px 10px; font-size:12px}
+
+/* ===== 表格 ===== */
+table{width:100%; border-collapse:collapse; font-size:13px}
+th,td{text-align:left; padding:7px 10px; border-bottom:1px solid var(--line); vertical-align:top}
+th{font-size:12px; color:var(--color-text-secondary); font-weight:500; white-space:nowrap}
+tbody tr:hover{background:var(--color-surface-2)}
+td.num,th.num{text-align:right; font-variant-numeric:tabular-nums}
+.hit{color:var(--color-ok); font-weight:600}
+.miss{color:var(--color-error); font-weight:600}
+.tag{display:inline-block; padding:1px 8px; border-radius:999px; font-size:11px; background:var(--color-surface-2); color:var(--color-text-secondary); white-space:nowrap}
+.tag.ok{background:rgba(79,122,74,.14); color:var(--color-ok)}
+.tag.bad{background:rgba(192,69,58,.14); color:var(--color-error)}
+.kv{display:grid; grid-template-columns:auto 1fr; gap:5px 16px; font-size:13px}
+.kv dt{color:var(--color-text-secondary); white-space:nowrap}
+.kv dd{margin:0; font-variant-numeric:tabular-nums; word-break:break-all}
+pre.json{background:var(--color-text-primary); color:var(--color-bg-base); padding:var(--space-3); border-radius:8px;
+  overflow:auto; max-height:320px; font-size:12px; line-height:1.5}
+pre.log{background:var(--color-text-primary); color:var(--color-bg-base); padding:var(--space-3); border-radius:8px;
+  overflow:auto; max-height:520px; font-size:12px; line-height:1.55; white-space:pre-wrap; word-break:break-all}
+details{border-top:1px solid var(--line); padding-top:var(--space-3); margin-top:var(--space-3)}
+summary{cursor:pointer; font-size:12px; color:var(--color-text-secondary)}
+.status{margin-top:var(--space-3); font-size:12px; color:var(--color-text-secondary); min-height:18px}
+.status.err{color:var(--color-error)}
+.status.busy{color:var(--color-accent-orange)}
+
+/* ===== 图与波形 ===== */
+.figs{display:grid; gap:var(--space-3); grid-template-columns:repeat(auto-fill,minmax(250px,1fr))}
+.fig{background:var(--color-surface); border:1px solid var(--line); border-radius:var(--radius); overflow:hidden; cursor:zoom-in}
+.fig img{display:block; width:100%; height:165px; object-fit:contain; background:var(--color-surface-2)}
+.fig .cap{padding:6px 10px; font-size:11px; color:var(--color-text-secondary); display:flex; justify-content:space-between; gap:8px}
+.fig .cap span:first-child{overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+canvas.wave{width:100%; height:300px; background:#FFFDF8; border:1px solid var(--line); border-radius:8px; display:block}
+.lightbox{position:fixed; inset:0; background:rgba(20,20,19,.82); display:none; z-index:50; padding:var(--space-6); cursor:zoom-out}
+.lightbox.on{display:flex; align-items:center; justify-content:center; flex-direction:column; gap:var(--space-3)}
+.lightbox img{max-width:96vw; max-height:88vh; background:#fff; border-radius:8px}
+.toast{position:fixed; right:var(--space-6); bottom:var(--space-6); z-index:60; background:var(--color-text-primary);
+  color:var(--color-on-accent); padding:10px 16px; border-radius:8px; font-size:13px; opacity:0; transform:translateY(8px);
+  transition:all .2s ease; max-width:520px}
+.toast.on{opacity:1; transform:none}
+.toast.err{background:var(--color-error)}
+@media (max-width:820px){ .app{flex-direction:column} .sidebar{width:100%; flex:none; height:auto; position:static}
+  .nav{flex-direction:row; flex-wrap:wrap} .content{padding:var(--space-4)} }
+</style>
+</head>
+<body>
+<div class="app">
+  <!-- ================= 侧边栏 ================= -->
+  <aside class="sidebar">
+    <div class="brand">
+      <h1>轴承故障诊断平台</h1>
+      <div class="sub">1DCNN · cwt_cnn · adtk ｜ 训练 / 推理 / 数据 / 系统</div>
+    </div>
+    <nav class="nav" id="nav">
+      <button data-module="home" class="active"><span class="ico">◈</span>首页</button>
+      <button data-module="model"><span class="ico">▤</span>模型管理</button>
+      <button data-module="dataset"><span class="ico">▦</span>数据集管理</button>
+      <button data-module="visual"><span class="ico">◔</span>数据展示</button>
+      <button data-module="system"><span class="ico">⚙</span>系统管理</button>
+    </nav>
+    <div class="side-foot">
+      <span class="dot" id="dotSvc"></span> <span id="footSvc">检测中…</span><br>
+      <span id="footDb">—</span>
+    </div>
+  </aside>
+
+  <!-- ================= 主区 ================= -->
+  <div class="main">
+    <header class="topbar">
+      <h2 id="pageTitle">首页</h2>
+      <span class="crumb" id="pageCrumb"></span>
+      <div class="spacer"></div>
+      <span class="pill">库 <b id="svcDb">—</b></span>
+      <span class="pill">产物 <b id="svcArtifacts">—</b></span>
+      <span class="pill">图 <b id="svcFigures">—</b></span>
+      <button class="btn small ghost" onclick="refreshAll()">刷新</button>
+    </header>
+
+    <div class="content">
+      <!-- ========== 首页 ========== -->
+      <section class="module active" id="mod-home">
+        <div class="grid cols-4" id="homeKpi"></div>
+        <div class="grid cols-2" style="margin-top:var(--space-4)">
+          <div class="card"><h3>服务与数据库</h3><dl class="kv" id="homeHealth"><dt>—</dt><dd>读取中…</dd></dl></div>
+          <div class="card"><h3>快捷入口</h3>
+            <div class="hint">常用动作直接跳转</div>
+            <div class="actions">
+              <button class="btn primary" onclick="go('model','train')">开始训练</button>
+              <button class="btn" onclick="go('model','predict')">开始推理</button>
+              <button class="btn" onclick="go('visual','signal')">看原始信号</button>
+              <button class="btn" onclick="go('visual','gallery')">看图库</button>
+              <button class="btn" onclick="go('system','logs')">看训练日志</button>
+            </div>
+            <div style="margin-top:var(--space-4)"><h4>已落盘产物</h4><div id="homeArtifacts" class="hint">加载中…</div></div>
+          </div>
+        </div>
+        <div class="card" style="margin-top:var(--space-4)"><h3>最近训练</h3><div id="homeTrainings" class="empty">加载中…</div></div>
+        <div class="card" style="margin-top:var(--space-4)"><h3>最近推理任务</h3><div id="homeTasks" class="empty">加载中…</div></div>
+      </section>
+
+      <!-- ========== 模型管理 ========== -->
+      <section class="module" id="mod-model">
+        <div class="subtabs" data-group="model">
+          <button class="subtab active" data-sub="list">模型清单</button>
+          <button class="subtab" data-sub="train">训练</button>
+          <button class="subtab" data-sub="predict">推理</button>
+          <button class="subtab" data-sub="trainings">训练记录</button>
+          <button class="subtab" data-sub="tasks">推理任务</button>
+        </div>
+
+        <div class="subpanel active" id="model-list">
+          <div class="card"><h3>落盘产物 <span class="hint">data/models/&lt;模型&gt;/&lt;版本&gt;/</span></h3><div id="artifactList" class="empty">加载中…</div></div>
+          <div class="card"><h3>库表 Models 登记</h3><div id="dbModelList" class="empty">加载中…</div></div>
+        </div>
+
+        <div class="subpanel" id="model-train">
+          <div class="warn">/train 是<b>同步阻塞</b>的：1DCNN 10 轮约 15 秒，cwt_cnn 50 轮约 25 秒；页面会实时计时。</div>
+          <div class="grid cols-2">
+            <div class="card">
+              <h3>训练参数</h3>
+              <div class="field"><label>数据源</label>
+                <select id="tSource" onchange="onSourceChange()">
+                  <option value="matlab">CWRU .mat（取 DE 通道）</option>
+                  <option value="tabular">表格数据集（Excel/CSV，一文件一类别）</option>
+                  <option value="auto">自动（按目录内容判断）</option>
+                </select>
+              </div>
+              <div class="field"><label>数据集目录</label><select id="tDir"></select>
+                <div class="hint" id="tDirHint">选择数据集目录；表格数据集需要指定信号列（留空自动识别）。</div>
+              </div>
+              <div class="field"><label>信号列（表格数据用；留空=自动识别）</label>
+                <input id="tColumn" placeholder="自动识别（如 振动幅值）"></div>
+              <div class="field"><label>模型</label>
+                <select id="tModel" onchange="applyTrainDefaults()">
+                  <option value="1dcnn">算法模型1 · 1dcnn（TensorFlow/Keras）</option>
+                  <option value="cwt_cnn">算法模型2 · cwt_cnn（PyTorch）</option>
+                  <option value="adtk">算法模型3 · adtk（无监督，已搁置）</option>
+                </select>
+              </div>
+              <div class="row">
+                <div class="field"><label>epochs 轮次</label><input id="tEpochs" type="number" min="1" max="200" value="10"></div>
+                <div class="field"><label>seed 随机种子</label><input id="tSeed" type="number" value="42"></div>
+              </div>
+              <div class="row">
+                <div class="field"><label>length 窗口长度</label><input id="tLength" type="number" value="784"></div>
+                <div class="field"><label>number 每类窗口数</label><input id="tNumber" type="number" value="600"></div>
+                <div class="field"><label>stride 滑窗步长</label><input id="tStride" type="number" value="150"></div>
+              </div>
+              <div class="row">
+                <div class="field"><label>batch_size（仅 1dcnn）</label><input id="tBatch" type="number" value="128"></div>
+                <div class="field"><label>lr（仅 cwt_cnn）</label><input id="tLr" type="number" step="0.0001" value="0.001"></div>
+              </div>
+              <div class="row">
+                <div class="field"><label>数据集登记名</label><input id="tDataset" value="CWRU-0HP"></div>
+                <div class="field"><label>strict（跳过越界窗口）</label>
+                  <select id="tStrict"><option value="true" selected>true（推荐，不补 NaN）</option><option value="false">false（复刻旧脚本，会补 NaN）</option></select>
+                </div>
+              </div>
+              <button class="btn primary" id="btnTrain" onclick="doTrain()">开始训练</button>
+              <div class="status" id="trainStatus"></div>
+            </div>
+            <div class="card"><h3>训练结果</h3><div id="trainResult" class="empty">还没有训练结果</div></div>
+          </div>
+          <div class="grid cols-2" style="margin-top:var(--space-4)">
+            <div class="card"><h3>训练图（自动生成）</h3><div id="trainFigs" class="empty">训练后自动出图</div></div>
+            <div class="card"><h3>返回的 JSON</h3><div id="trainJson" class="empty">—</div></div>
+          </div>
+        </div>
+
+        <div class="subpanel" id="model-predict">
+          <div class="grid cols-2">
+            <div class="card">
+              <h3>推理参数</h3>
+              <div class="field"><label>模型</label>
+                <select id="pModel"><option value="1dcnn">算法模型1 · 1dcnn</option>
+                  <option value="cwt_cnn">算法模型2 · cwt_cnn</option>
+                  <option value="adtk">算法模型3 · adtk</option></select>
+              </div>
+              <div class="field"><label>输入文件（工作区内 .mat，按窗口切片）</label><select id="pFile"></select></div>
+              <div class="row">
+                <div class="field"><label>index 起始窗口</label><input id="pIndex" type="number" value="0" min="0"></div>
+                <div class="field"><label>limit 窗口数（≤500）</label><input id="pLimit" type="number" value="4" min="1" max="500"></div>
+                <div class="field"><label>top_k</label><input id="pTopk" type="number" value="3" min="1" max="10"></div>
+              </div>
+              <div class="field"><label>信号列（表格文件用；留空=自动识别）</label><input id="pColumn" placeholder="自动识别"></div>
+              <div class="hint" id="pFileHint">选中文件后显示可用窗口范围</div>
+              <div style="height:12px"></div>
+              <button class="btn primary" id="btnPredict" onclick="doPredict()">开始推理</button>
+              <div class="status" id="predictStatus"></div>
+            </div>
+            <div class="card"><h3>推理结果</h3><div id="predictResult" class="empty">还没有推理结果</div></div>
+          </div>
+          <div class="card" style="margin-top:var(--space-4)"><h3>推理图（自动生成）</h3><div id="predictFigs" class="empty">推理后自动出图</div></div>
+        </div>
+
+        <div class="subpanel" id="model-trainings">
+          <div class="card"><h3>训练记录 <span class="hint" id="recTrainCount"></span></h3><div id="recTrainings" class="empty">加载中…</div></div>
+        </div>
+
+        <div class="subpanel" id="model-tasks">
+          <div class="card"><h3>推理任务 <span class="hint" id="recTaskCount"></span></h3><div id="recTasks" class="empty">加载中…</div></div>
+          <div class="card"><h3>任务明细 <span class="hint">点上面任务的「明细」</span></h3><div id="recDetail" class="empty">未选择任务</div></div>
+        </div>
+      </section>
+
+      <!-- ========== 数据集管理 ========== -->
+      <section class="module" id="mod-dataset">
+        <div class="subtabs" data-group="dataset">
+          <button class="subtab active" data-sub="inspect">数据集体检</button>
+          <button class="subtab" data-sub="tabular">表格数据集</button>
+          <button class="subtab" data-sub="register">库表登记</button>
+        </div>
+        <div class="subpanel active" id="dataset-inspect">
+          <div class="card">
+            <h3>数据集体检</h3>
+            <div class="field" style="max-width:420px"><label>数据集（内置 .mat + 上传的表格数据集）</label><select id="dsPick" onchange="loadDatasets()"></select></div>
+            <div class="grid cols-4" id="dsKpi"></div>
+            <div style="margin-top:var(--space-4)" id="dsFiles" class="empty">加载中…</div>
+          </div>
+        </div>
+        <div class="subpanel" id="dataset-tabular">
+          <div class="grid cols-2">
+            <div class="card">
+              <h3>上传表格文件 <span class="hint">一个文件 = 一个类别，文件名即标签</span></h3>
+              <div class="field"><label>数据集名（会建成 data/datasets/&lt;名称&gt;/）</label>
+                <input id="upName" placeholder="例如 DEMO-轴承表格数据"></div>
+              <div class="field"><label>选择文件（可多选）</label>
+                <input id="upFiles" type="file" multiple accept=".csv,.txt,.xlsx,.xls,.xlsm"></div>
+              <button class="btn primary" onclick="uploadTables()">上传</button>
+              <div class="status" id="upStatus"></div>
+              <div class="hint" style="margin-top:8px">支持 .csv/.txt/.xlsx/.xls；CSV 自动试 utf-8 / GBK 编码，xlsx 走 openpyxl。</div>
+            </div>
+            <div class="card"><h3>已上传的表格数据集</h3><div id="tabularList" class="empty">加载中…</div></div>
+          </div>
+          <div class="card" style="margin-top:var(--space-4)">
+            <h3>表格预览 <span class="hint" id="tpTitle"></span></h3>
+            <div class="row" style="align-items:flex-end">
+              <div class="field" style="min-width:320px"><label>文件</label><select id="tpFile" onchange="previewTable()"></select></div>
+              <div class="field" style="min-width:170px"><label>信号列（留空=自动识别）</label>
+                <input id="tpColumn" placeholder="自动" onchange="previewTable()"></div>
+              <div class="field" style="min-width:110px"><label>预览行数</label>
+                <input id="tpRows" type="number" value="8" min="1" max="200" onchange="previewTable()"></div>
+            </div>
+            <div id="tpBody" class="empty">选一个文件看列统计与前几行</div>
+          </div>
+        </div>
+        <div class="subpanel" id="dataset-register">
+          <div class="grid cols-2">
+            <div class="card"><h3>Datasets 表登记记录 <span class="hint" id="dsDbCount"></span></h3><div id="dsDbList" class="empty">加载中…</div></div>
+            <div class="card">
+              <h3>登记新数据集</h3>
+              <div class="field"><label>名称（唯一键）*</label><input id="rName" placeholder="例如 CWRU-1HP"></div>
+              <div class="field"><label>来源</label><input id="rSource" placeholder="例如 Case Western Reserve University"></div>
+              <div class="row">
+                <div class="field"><label>类别数</label><input id="rClass" type="number" placeholder="10"></div>
+                <div class="field"><label>样本数</label><input id="rSamples" type="number" placeholder="可留空"></div>
+              </div>
+              <div class="field"><label>数据路径（工作区内）</label><input id="rPath" placeholder="testRestfulProject/1DCNN/0HP"></div>
+              <div class="field"><label>描述</label><textarea id="rDesc" rows="2"></textarea></div>
+              <button class="btn primary" onclick="registerDataset()">登记</button>
+              <div class="status" id="regStatus"></div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ========== 数据展示 ========== -->
+      <section class="module" id="mod-visual">
+        <div class="subtabs" data-group="visual">
+          <button class="subtab active" data-sub="signal">信号浏览</button>
+          <button class="subtab" data-sub="gallery">图库</button>
+        </div>
+        <div class="subpanel active" id="visual-signal">
+          <div class="card">
+            <h3>原始振动信号</h3>
+            <div class="row">
+              <div class="field" style="min-width:280px"><label>文件</label><select id="sigFile" onchange="loadSignal()"></select></div>
+              <div class="field" style="min-width:150px"><label>信号列（表格数据）</label><input id="sigColumn" placeholder="自动" onchange="loadSignal()"></div>
+              <div class="field" style="min-width:120px"><label>起始采样点</label><input id="sigStart" type="number" value="0" min="0" onchange="loadSignal()"></div>
+              <div class="field" style="min-width:140px"><label>显示点数</label>
+                <select id="sigPoints" onchange="loadSignal()">
+                  <option value="600">600</option><option value="1500" selected>1500</option>
+                  <option value="3000">3000</option><option value="4000">4000</option>
+                </select>
+              </div>
+              <div class="field" style="min-width:120px"><label>&nbsp;</label><button class="btn" onclick="loadSignal()">重新采样</button></div>
+            </div>
+            <canvas class="wave" id="waveCanvas" width="1200" height="300"></canvas>
+            <div class="grid cols-4" style="margin-top:var(--space-4)" id="sigStats"></div>
+            <div class="hint" style="margin-top:var(--space-2)">降采样显示：stride = 文件点数 / 显示点数；每条曲线的真实点数见上方统计。</div>
+          </div>
+        </div>
+        <div class="subpanel" id="visual-gallery">
+          <div class="card"><h3>已生成的图 <span class="hint">点击放大；文件在 data/figures/</span></h3>
+            <div class="row" style="align-items:flex-end">
+              <div class="field" style="max-width:320px"><label>按路径过滤（如 1dcnn/v1）</label><input id="figFilter" oninput="renderGallery()" placeholder="留空显示全部"></div>
+            </div>
+            <div id="gallery" class="figs"><div class="empty">加载中…</div></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ========== 系统管理 ========== -->
+      <section class="module" id="mod-system">
+        <div class="subtabs" data-group="system">
+          <button class="subtab active" data-sub="runtime">运行信息</button>
+          <button class="subtab" data-sub="database">数据库</button>
+          <button class="subtab" data-sub="logs">日志</button>
+          <button class="subtab" data-sub="api">接口索引</button>
+          <button class="subtab" data-sub="maintain">维护</button>
+        </div>
+
+        <div class="subpanel active" id="system-runtime">
+          <div class="grid cols-2">
+            <div class="card"><h3>运行环境</h3><dl class="kv" id="sysRuntime">加载中…</dl></div>
+            <div class="card"><h3>路径与占用</h3><dl class="kv" id="sysPaths">加载中…</dl></div>
+          </div>
+          <div class="card" style="margin-top:var(--space-4)"><h3>关键依赖版本 <span class="hint">用 importlib.metadata 读取，不加载重型框架</span></h3><div id="sysPackages" class="empty">加载中…</div></div>
+          <div class="card" style="margin-top:var(--space-4)"><h3>产物文件</h3><div id="sysArtifacts" class="empty">加载中…</div></div>
+        </div>
+
+        <div class="subpanel" id="system-database">
+          <div class="grid cols-2">
+            <div class="card"><h3>连接信息</h3><dl class="kv" id="dbConn">加载中…</dl></div>
+            <div class="card"><h3>各表行数</h3><div id="dbCounts" class="empty">加载中…</div></div>
+          </div>
+          <div class="card" style="margin-top:var(--space-4)"><h3>库表 Models</h3><div id="dbModels2" class="empty">加载中…</div></div>
+        </div>
+
+        <div class="subpanel" id="system-logs">
+          <div class="grid cols-2">
+            <div class="card"><h3>训练日志 <span class="hint" id="logCount"></span></h3><div id="logList" class="empty">加载中…</div></div>
+            <div class="card">
+              <h3>日志内容 <span class="hint" id="logTitle"></span></h3>
+              <div class="row" style="align-items:flex-end">
+                <div class="field" style="max-width:160px"><label>尾部行数</label>
+                  <select id="logTail" onchange="reloadLogFile()">
+                    <option value="100">100</option><option value="300" selected>300</option><option value="1000">1000</option>
+                  </select>
+                </div>
+              </div>
+              <div id="logBody" class="empty">点左侧日志查看内容</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="subpanel" id="system-api">
+          <div class="card"><h3>接口索引 <span class="hint">来自 GET /api</span></h3><div id="apiList" class="empty">加载中…</div></div>
+        </div>
+
+        <div class="subpanel" id="system-maintain">
+          <div class="warn">下面是<b>破坏性操作</b>，都会二次确认，请谨慎点击。</div>
+          <div class="grid cols-2">
+            <div class="card">
+              <h3>清空图库</h3>
+              <div class="hint">删除 data/figures 下所有 PNG（<span id="figCountHint">—</span>）。训练/推理下次会重新生成。</div>
+              <div class="actions"><button class="btn danger" onclick="cleanupFigures()">清空图库</button></div>
+              <div class="status" id="maintStatus"></div>
+            </div>
+            <div class="card">
+              <h3>删除模型版本</h3>
+              <div class="hint">按「模型 + 版本」删除产物目录（权重、scaler、meta 一并删除）。</div>
+              <div class="row">
+                <div class="field"><label>模型</label>
+                  <select id="delModel"><option value="1dcnn">1dcnn</option><option value="cwt_cnn">cwt_cnn</option><option value="adtk">adtk</option></select>
+                </div>
+                <div class="field"><label>版本</label><input id="delVersion" placeholder="v1"></div>
+              </div>
+              <div class="actions"><button class="btn danger" onclick="deleteVersion()">删除该版本</button></div>
+              <div class="status" id="delStatus"></div>
+            </div>
+          </div>
+        </div>
+      </section>
+    </div>
+  </div>
+</div>
+
+<div class="lightbox" id="lightbox" onclick="this.classList.remove('on')"><img id="lightboxImg" alt=""></div>
+<div class="toast" id="toast"></div>
+
+<script>
+/* ============================== 基础 ============================== */
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const num = (v, d = 4) => (v === null || v === undefined || v === '') ? '—' : Number(v).toFixed(d);
+const kb = v => (v === null || v === undefined) ? '—' : (v >= 1024 ? (v / 1024).toFixed(2) + ' MB' : v + ' KB');
+
+let toastTimer = null;
+function toast(msg, isErr) {
+  const el = $('toast'); el.textContent = msg; el.className = 'toast on' + (isErr ? ' err' : '');
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => el.classList.remove('on'), isErr ? 6000 : 3200);
+}
+function setStatus(id, text, kind) { const el = $(id); el.textContent = text || ''; el.className = 'status' + (kind ? ' ' + kind : ''); }
+function confirmDanger(text) { return window.confirm(text); }
+
+async function api(path, options) {
+  const res = await fetch(path, options);
+  const text = await res.text();
+  let data = null;
+  try { data = text ? JSON.parse(text) : null; } catch (e) { data = { raw: text }; }
+  if (!res.ok) {
+    const err = new Error((data && (data.error || data.message)) || ('HTTP ' + res.status));
+    err.payload = data; err.status = res.status; throw err;
+  }
+  return data;
+}
+const post = (p, b) => api(p, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(b || {}) });
+const del = (p) => api(p, { method: 'DELETE' });
+function zoom(url) { $('lightboxImg').src = url; $('lightbox').classList.add('on'); }
+const figCard = f => `<div class="fig" onclick="zoom('${f.url}')">
+    <img src="${f.url}" alt="${esc(f.name)}" loading="lazy">
+    <div class="cap"><span title="${esc(f.file || f.name)}">${esc(f.name)}</span><span>${f.size_kb ?? ''} KB</span></div></div>`;
+const table = (cols, rows) => `<table><thead><tr>${cols.map(c => `<th class="${c.num ? 'num' : ''}">${c.t}</th>`).join('')}</tr></thead>
+  <tbody>${rows.map(r => `<tr>${r.map((cell, i) => `<td class="${cols[i].num ? 'num' : ''}">${cell}</td>`).join('')}</tr>`).join('')}</tbody></table>`;
+
+/* ============================ 导航 ============================ */
+const TITLES = { home: '首页', model: '模型管理', dataset: '数据集管理', visual: '数据展示', system: '系统管理' };
+const SUBS = {
+  model: { list: '模型清单', train: '训练', predict: '推理', trainings: '训练记录', tasks: '推理任务' },
+  dataset: { inspect: '数据集体检', tabular: '表格数据集', register: '库表登记' },
+  visual: { signal: '信号浏览', gallery: '图库' },
+  system: { runtime: '运行信息', database: '数据库', logs: '日志', api: '接口索引', maintain: '维护' },
+};
+const FIRST_SUB = { model: 'list', dataset: 'inspect', visual: 'signal', system: 'runtime' };
+const state = { module: 'home', sub: {} };
+
+function go(module, sub) {
+  state.module = module;
+  if (sub) state.sub[module] = sub;
+  document.querySelectorAll('#nav button').forEach(b => b.classList.toggle('active', b.dataset.module === module));
+  document.querySelectorAll('.module').forEach(m => m.classList.toggle('active', m.id === 'mod-' + module));
+  document.querySelectorAll('.subtabs').forEach(g => {
+    if (g.dataset.group !== module) return;
+    const active = state.sub[module] || FIRST_SUB[module];
+    g.querySelectorAll('.subtab').forEach(b => b.classList.toggle('active', b.dataset.sub === active));
+    document.querySelectorAll(`#mod-${module} .subpanel`).forEach(p =>
+      p.classList.toggle('active', p.id === `${module}-${active}`));
+  });
+  $('pageTitle').textContent = TITLES[module];
+  $('pageCrumb').textContent = SUBS[module] ? ('/ ' + (SUBS[module][state.sub[module] || FIRST_SUB[module]] || '')) : '';
+  loadFor(module, state.sub[module] || FIRST_SUB[module]);
+}
+document.querySelectorAll('#nav button').forEach(b => b.addEventListener('click', () => go(b.dataset.module)));
+document.querySelectorAll('.subtab').forEach(b => b.addEventListener('click',
+  () => go(b.closest('.subtabs').dataset.group, b.dataset.sub)));
+
+function loadFor(module, sub) {
+  if (module === 'home') { loadHome(); return; }
+  if (module === 'model') {
+    if (sub === 'list') { loadModels(); }
+    if (sub === 'predict') { loadDatasets(); }
+    if (sub === 'trainings') loadTrainings();
+    if (sub === 'tasks') loadTasks();
+  }
+  if (module === 'dataset') {
+    if (sub === 'inspect') loadDatasets();
+    if (sub === 'tabular') { loadDatasets(); loadTabularList(); }
+    if (sub === 'register') loadDatasetDb();
+  }
+  if (module === 'visual') {
+    if (sub === 'signal') loadDatasets();
+    if (sub === 'gallery') loadFigures();
+  }
+  if (module === 'system') {
+    if (sub === 'runtime') loadSystem();
+    if (sub === 'database') { loadSystem(); loadModels(); }
+    if (sub === 'logs') loadLogs();
+    if (sub === 'api') loadApiIndex();
+    if (sub === 'maintain') loadSystem();
+  }
+}
+
+/* ============================ 首页 ============================ */
+async function loadHome() {
+  try {
+    const h = await api('/health');
+    const db = h.database || {}, counts = db.counts || {};
+    $('homeKpi').innerHTML = [
+      ['模型产物', h.artifacts?.count ?? 0, 'data/models 下已落盘的版本数'],
+      ['训练次数', counts.Trainings ?? '—', 'Trainings 表行数'],
+      ['推理任务', counts.InferenceTasks ?? '—', 'InferenceTasks 表行数'],
+      ['结果明细', counts.InferenceResults ?? '—', 'InferenceResults 表行数'],
+    ].map(([t, v, s]) => `<div class="card"><h4>${t}</h4><div class="kpi">${v}</div><div class="hint">${s}</div></div>`).join('');
+    $('homeHealth').innerHTML = [
+      ['服务', '正常'], ['数据库方言', esc(db.dialect)], ['连接目标', esc(db.target)],
+      ['连接状态', db.ok ? '<span class="tag ok">正常</span>' : '<span class="tag bad">失败</span>'],
+      ['调用日志', counts.ModelInvocations ?? '—'], ['图数量', h.figures?.count ?? 0],
+      ['出图目录', `<span class="mono">${esc(h.figures?.dir || '')}</span>`],
+      ['配置文件', `<span class="mono">${esc(h.config?.env_file || '（未使用 db.env）')}</span>`],
+    ].map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join('');
+    $('homeArtifacts').innerHTML = (h.artifacts?.by_model && Object.keys(h.artifacts.by_model).length)
+      ? Object.entries(h.artifacts.by_model).map(([m, vs]) => `<span class="tag">${esc(m)} ${esc(vs.join('/'))}</span>`).join(' ')
+      : '还没有产物';
+  } catch (e) { $('homeHealth').innerHTML = `<dt>错误</dt><dd class="miss">${esc(e.message)}</dd>`; }
+
+  try {
+    const t = (await api('/trainings?limit=5')).trainings || [];
+    $('homeTrainings').innerHTML = t.length ? table(
+      [{ t: 'ID', num: 1 }, { t: '模型' }, { t: '训练名' }, { t: '轮次', num: 1 }, { t: '准确率', num: 1 }, { t: '状态' }, { t: '开始' }],
+      t.map(x => [x.TrainingID, esc(x.ModelName), `<span class="mono">${esc(x.TrainName)}</span>`,
+        x.Epochs ?? '—', x.Accuracy != null ? num(x.Accuracy) : '—',
+        x.Status === '成功' ? '<span class="tag ok">成功</span>' : `<span class="tag bad">${esc(x.Status)}</span>`,
+        `<span class="mono">${esc(x.StartedDate || '')}</span>`])) : '<div class="empty">还没有训练记录</div>';
+  } catch (e) { $('homeTrainings').innerHTML = `<div class="empty miss">${esc(e.message)}</div>`; }
+
+  try {
+    const k = (await api('/inference-tasks?limit=5')).tasks || [];
+    $('homeTasks').innerHTML = k.length ? table(
+      [{ t: 'ID', num: 1 }, { t: '模型' }, { t: '类型' }, { t: '锚点训练', num: 1 }, { t: '进度', num: 1 }, { t: '状态' }, { t: '完成' }],
+      k.map(x => [x.InferenceTaskID, esc(x.ModelName), `<span class="tag">${esc(x.TaskType)}</span>`,
+        x.TrainingID, (x.Progress ?? '—') + '%',
+        x.Status === '成功' ? '<span class="tag ok">成功</span>' : `<span class="tag bad">${esc(x.Status)}</span>`,
+        `<span class="mono">${esc(x.CompletedDate || '')}</span>`])) : '<div class="empty">还没有推理任务</div>';
+  } catch (e) { $('homeTasks').innerHTML = `<div class="empty miss">${esc(e.message)}</div>`; }
+}
+
+/* ========================= 模型管理 ========================= */
+async function loadModels() {
+  try {
+    const m = await api('/models');
+    const arts = m.artifacts || [];
+    $('artifactList').innerHTML = arts.length ? table(
+      [{ t: '模型' }, { t: '版本' }, { t: '框架' }, { t: '输入长度', num: 1 }, { t: '类别数', num: 1 },
+       { t: '测试准确率', num: 1 }, { t: '权重' }, { t: '操作' }],
+      arts.map(a => [`<b>${esc(a.model)}</b>`, esc(a.version), `<span class="tag">${esc(a.framework)}</span>`,
+        a.input_len ?? '—', a.num_classes ?? '—',
+        a.metrics?.test_accuracy != null ? num(a.metrics.test_accuracy) : '—',
+        `<span class="mono">${esc((a.weights || '').split('\\').pop())}</span>`,
+        `<button class="btn small ghost" onclick="viewArtifact('${esc(a.model)}')">meta</button>`])) +
+      '<div class="hint" style="margin-top:8px">删除版本请到「系统管理 → 维护」。</div>'
+      : '<div class="empty">还没有产物，去「训练」页跑一次</div>';
+    $('dbModelList').innerHTML = (m.db_models || []).length ? table(
+      [{ t: 'ModelID', num: 1 }, { t: '模型' }, { t: '类型' }, { t: '接口' }, { t: '状态' }],
+      m.db_models.map(d => [d.ModelID, esc(d.ModelName), `<span class="tag">${esc(d.ModelType)}</span>`,
+        `<span class="mono">${esc(d.ApiEndpoint || '—')}</span>`, esc(d.Status)])) : '<div class="empty">无登记</div>';
+    if ($('dbModels2')) $('dbModels2').innerHTML = $('dbModelList').innerHTML;
+  } catch (e) { $('artifactList').innerHTML = `<div class="empty miss">${esc(e.message)}</div>`; }
+}
+async function viewArtifact(name) {
+  try {
+    const a = await api('/models/' + encodeURIComponent(name));
+    $('artifactList').innerHTML = `<div class="hint">${esc(name)} 的 meta.json</div>
+      <pre class="json">${esc(JSON.stringify(a, null, 1))}</pre>
+      <button class="btn small ghost" onclick="loadModels()">返回清单</button>`;
+  } catch (e) { toast(e.message, true); }
+}
+function applyTrainDefaults() {
+  const m = $('tModel').value;
+  if (m === '1dcnn') { $('tEpochs').value = 10; $('tNumber').value = 600; }
+  else if (m === 'cwt_cnn') { $('tEpochs').value = 50; $('tNumber').value = 300; }
+  else { $('tEpochs').value = 1; }
+}
+let trainTimer = null;
+async function doTrain() {
+  const m = $('tModel').value, body = { model: m };
+  const push = (k, id, isNum) => { const v = $(id).value; if (v !== '') body[k] = isNum ? Number(v) : v; };
+  ['epochs:tEpochs:1', 'seed:tSeed:1', 'length:tLength:1', 'number:tNumber:1', 'stride:tStride:1', 'batch_size:tBatch:1']
+    .forEach(s => { const [k, id, n] = s.split(':'); push(k, id, n === '1'); });
+  push('dataset', 'tDataset', false);
+  if (m === 'cwt_cnn') push('lr', 'tLr', true);
+  body.strict = $('tStrict').value === 'true';
+  // 数据源：类型 + 目录 + 信号列（表格数据用）
+  const dirOpt = $('tDir')?.selectedOptions[0];
+  if (dirOpt && dirOpt.value) {
+    body.dataset_dir = dirOpt.value;
+    if ($('tSource').value !== 'auto') body.dataset_type = $('tSource').value;
+    else body.dataset_type = dirOpt.dataset.type || 'matlab';
+  }
+  if ($('tColumn').value.trim()) body.signal_column = $('tColumn').value.trim();
+
+  $('btnTrain').disabled = true;
+  const t0 = Date.now();
+  trainTimer = setInterval(() => setStatus('trainStatus',
+    `训练中… 已用时 ${((Date.now() - t0) / 1000).toFixed(1)} 秒（同步阻塞，请勿关闭页面）`, 'busy'), 200);
+  setStatus('trainStatus', '已提交，正在训练…', 'busy');
+  try {
+    const r = await post('/train', body);
+    clearInterval(trainTimer);
+    const mm = r.metrics || {}, st = r.dataset_stats || {}, db = r.db || {};
+    $('trainResult').innerHTML = `<dl class="kv">
+        <dt>状态</dt><dd>${r.status === '成功' ? '<span class="tag ok">成功</span>' : '<span class="tag bad">失败</span>'}　耗时 ${r.duration_sec ?? '—'} 秒</dd>
+        <dt>产物</dt><dd class="mono">${esc(r.artifact?.weights || '—')}（${esc(r.artifact?.version || '')}）</dd>
+        <dt>测试准确率</dt><dd><b>${mm.test_accuracy != null ? num(mm.test_accuracy) : '—'}</b>　loss ${mm.test_loss != null ? num(mm.test_loss) : '—'}</dd>
+        <dt>验证准确率</dt><dd>${mm.val_accuracy != null ? num(mm.val_accuracy) : '（该模型无验证环节）'}</dd>
+        <dt>训练/验证/测试</dt><dd>${st.train_total ?? '—'} / ${st.valid_total ?? '—'} / ${st.test_total ?? '—'}</dd>
+        <dt>跳过越界 / NaN</dt><dd>${st.skipped_out_of_range_total ?? '—'} / ${st.nan_windows_total ?? '—'}</dd>
+        <dt>写库</dt><dd>${db.written ? `TrainingID=<b>${db.TrainingID}</b>（${esc(db.dialect)}）` : `<span class="miss">${esc(db.error || '未写入')}</span>`}</dd>
+        <dt>日志</dt><dd class="mono">${esc(r.log_file || '—')}</dd></dl>
+      ${r.figures_error ? `<div class="warn" style="margin-top:12px">出图失败：${esc(r.figures_error)}</div>` : ''}`;
+    $('trainFigs').innerHTML = (r.figures || []).length
+      ? '<div class="figs">' + r.figures.map(figCard).join('') + '</div>' : '<div class="empty">本次没有生成图</div>';
+    $('trainJson').innerHTML = `<pre class="json">${esc(JSON.stringify({ ...r, metrics: { ...mm, history: '（省略）', classification_report: '（见下）' } }, null, 1))}</pre>` +
+      (mm.classification_report ? `<details><summary>classification_report</summary><pre class="json">${esc(mm.classification_report)}</pre></details>` : '');
+    setStatus('trainStatus', r.status === '成功' ? `训练完成，用时 ${r.duration_sec} 秒` : '训练失败：' + (r.error || ''), r.status === '成功' ? '' : 'err');
+    toast(r.status === '成功' ? '训练完成，已落盘并写库' : '训练失败', r.status !== '成功');
+    refreshHealth(); loadModels();
+  } catch (e) {
+    clearInterval(trainTimer);
+    setStatus('trainStatus', '请求失败：' + e.message, 'err');
+    $('trainJson').innerHTML = `<pre class="json">${esc(JSON.stringify(e.payload || { error: e.message }, null, 1))}</pre>`;
+    toast(e.message, true);
+  } finally { $('btnTrain').disabled = false; }
+}
+async function doPredict() {
+  const body = { model: $('pModel').value, path: $('pFile').value,
+    index: Number($('pIndex').value) || 0, limit: Number($('pLimit').value) || 1, top_k: Number($('pTopk').value) || 3 };
+  if ($('pColumn').value.trim()) body.column = $('pColumn').value.trim();
+  $('btnPredict').disabled = true; setStatus('predictStatus', '推理中…', 'busy');
+  try {
+    const r = await post('/predict', body);
+    let rows;
+    if (r.task === 'anomaly_detection') {
+      rows = `<table><thead><tr><th>窗口</th><th>判定</th><th class="num">异常点占比</th><th class="num">异常/总点数</th></tr></thead><tbody>` +
+        r.predictions.map(p => `<tr><td>${p.index}</td>
+          <td><span class="tag ${p.is_anomaly ? 'bad' : 'ok'}">${esc(p.predicted_label)}</span></td>
+          <td class="num">${num(p.anomaly_score, 4)}</td><td class="num">${p.anomaly_points}/${p.points}</td></tr>`).join('') + '</tbody></table>';
+    } else {
+      rows = `<table><thead><tr><th>窗口</th><th>预测</th><th class="num">置信度</th><th>top-2</th>
+        <th class="num">真实</th><th>命中</th></tr></thead><tbody>` +
+        r.predictions.map(p => {
+          const t2 = (p.top_k || [])[1];
+          const hit = p.actual_class == null ? '' :
+            (p.predicted_class === p.actual_class ? '<span class="hit">命中</span>' : '<span class="miss">未命中</span>');
+          return `<tr><td>${p.index}</td><td>${esc(p.predicted_label)}</td>
+            <td class="num">${num(p.confidence, 4)}</td>
+            <td class="hint">${t2 ? esc(t2.label) + ' (' + num(t2.probability, 3) + ')' : '—'}</td>
+            <td class="num">${p.actual_class ?? '—'}</td><td>${hit}</td></tr>`; }).join('') + '</tbody></table>';
+    }
+    $('predictResult').innerHTML = `<dl class="kv">
+        <dt>模型 / 版本</dt><dd>${esc(r.model)} · ${esc(r.version)} · ${esc(r.framework)}</dd>
+        <dt>样本数</dt><dd>${r.count}（窗口长度 ${r.input_len}）</dd>
+        <dt>摘要</dt><dd>${esc(JSON.stringify(r.summary))}</dd>
+        <dt>写库</dt><dd>${r.db?.written ? `InferenceTaskID=<b>${r.db.InferenceTaskID}</b>，结果 ${r.db.results_written} 行，锚点 TrainingID=${r.db.TrainingID}` : `<span class="miss">${esc(r.db?.error || '未写入')}</span>`}</dd>
+      </dl><div style="height:10px"></div>${rows}`;
+    $('predictFigs').innerHTML = (r.figures || []).length
+      ? '<div class="figs">' + r.figures.map(figCard).join('') + '</div>' : '<div class="empty">本次没有生成图</div>';
+    setStatus('predictStatus', '推理完成'); toast('推理完成，结果已写库'); refreshHealth();
+  } catch (e) {
+    setStatus('predictStatus', '失败：' + e.message, 'err');
+    $('predictResult').innerHTML = `<div class="miss">${esc(e.message)}</div><pre class="json">${esc(JSON.stringify(e.payload || {}, null, 1))}</pre>`;
+    toast(e.message, true);
+  } finally { $('btnPredict').disabled = false; }
+}
+async function loadTrainings() {
+  try {
+    const d = await api('/trainings?limit=20'), rows = d.trainings || [];
+    $('recTrainCount').textContent = `（${rows.length} 条，方言 ${d.dialect}）`;
+    $('recTrainings').innerHTML = rows.length ? table(
+      [{ t: 'ID', num: 1 }, { t: '模型' }, { t: '训练名' }, { t: '数据集' }, { t: '轮次', num: 1 },
+       { t: '准确率', num: 1 }, { t: 'loss', num: 1 }, { t: '状态' }, { t: '开始' }],
+      rows.map(t => [t.TrainingID, esc(t.ModelName), `<span class="mono">${esc(t.TrainName)}</span>`, esc(t.DatasetName || '—'),
+        t.Epochs ?? '—', t.Accuracy != null ? num(t.Accuracy) : '—', t.Loss != null ? num(t.Loss) : '—',
+        t.Status === '成功' ? '<span class="tag ok">成功</span>' : `<span class="tag bad">${esc(t.Status)}</span>`,
+        `<span class="mono">${esc(t.StartedDate || '')}</span>`])) : '<div class="empty">还没有训练记录</div>';
+  } catch (e) { $('recTrainings').innerHTML = `<div class="empty miss">${esc(e.message)}</div>`; }
+}
+async function loadTasks() {
+  try {
+    const d = await api('/inference-tasks?limit=20'), rows = d.tasks || [];
+    $('recTaskCount').textContent = `（${rows.length} 条）`;
+    $('recTasks').innerHTML = rows.length ? table(
+      [{ t: 'ID', num: 1 }, { t: '模型' }, { t: '类型' }, { t: '锚点训练', num: 1 }, { t: '目标数据集', num: 1 },
+       { t: '进度', num: 1 }, { t: '状态' }, { t: '完成' }, { t: '操作' }],
+      rows.map(k => [k.InferenceTaskID, esc(k.ModelName), `<span class="tag">${esc(k.TaskType)}</span>`,
+        k.TrainingID, k.TargetDatasetID, (k.Progress ?? '—') + '%',
+        k.Status === '成功' ? '<span class="tag ok">成功</span>' : `<span class="tag bad">${esc(k.Status)}</span>`,
+        `<span class="mono">${esc(k.CompletedDate || '')}</span>`,
+        `<button class="btn small" onclick="loadTaskDetail(${k.InferenceTaskID})">明细</button>`])) : '<div class="empty">还没有推理任务</div>';
+  } catch (e) { $('recTasks').innerHTML = `<div class="empty miss">${esc(e.message)}</div>`; }
+}
+async function loadTaskDetail(id) {
+  try {
+    const t = await api('/inference-tasks/' + id), rows = t.results || [];
+    $('recDetail').innerHTML = `<dl class="kv">
+        <dt>任务</dt><dd>${esc(t.TaskName)}（#${t.InferenceTaskID}）</dd>
+        <dt>锚点 / 目标</dt><dd>TrainingID=${t.TrainingID}　DatasetID=${t.TargetDatasetID}　ModelID=${t.ModelID ?? '—'}</dd>
+        <dt>输入 → 输出</dt><dd class="mono">${esc(t.InputPath || '内联')} → ${esc(t.OutputPath || '—')}</dd>
+        <dt>结果摘要</dt><dd>${esc(t.ResultSummary || '—')}</dd></dl><div style="height:10px"></div>` +
+      (rows.length ? table([{ t: '结果ID', num: 1 }, { t: '样本' }, { t: '窗口', num: 1 }, { t: '预测' },
+        { t: '置信度', num: 1 }, { t: '异常分', num: 1 }, { t: '真实', num: 1 }],
+        rows.map(r => [r.ResultID, `<span class="mono">${esc(r.RowIdentifier)}</span>`, r.SampleIndex ?? '—',
+          esc(r.PredictedLabel ?? '—'), r.Confidence != null ? num(r.Confidence) : '—',
+          r.AnomalyScore != null ? num(r.AnomalyScore) : '—', r.ActualClass ?? '—'])) : '<div class="empty">无明细</div>');
+  } catch (e) { $('recDetail').innerHTML = `<div class="empty miss">${esc(e.message)}</div>`; }
+}
+
+/* ======================= 数据集管理 / 数据展示 ======================= */
+let DATASETS = {}, DATASET_KEYS = [], LAST_KEYS = '';
+async function loadDatasets() {
+  try {
+    DATASETS = await api('/datasets');
+    DATASET_KEYS = Object.keys(DATASETS);
+    // 体检页/训练页/信号页的选择器（数据集变多时重建）
+    const keysChanged = DATASET_KEYS.join('|') !== LAST_KEYS;
+    LAST_KEYS = DATASET_KEYS.join('|');
+    if ($('dsPick') && (keysChanged || !$('dsPick').options.length)) {
+      const keep = $('dsPick').value;
+      $('dsPick').innerHTML = DATASET_KEYS.map(k => `<option value="${esc(k)}">${esc(k)}</option>`).join('');
+      if (DATASET_KEYS.includes(keep)) $('dsPick').value = keep;
+    }
+    fillDirSelect();
+    const key = ($('dsPick') && $('dsPick').value) || DATASET_KEYS[0];
+    const ds = DATASETS[key] || {};
+    const files = (ds.files || []).filter(f => f.on_disk);
+    const isTabular = ds.dataset_type === 'tabular';
+    // 体检 KPI + 表格
+    if ($('dsKpi')) {
+      const shortByRows = isTabular
+        ? ['最短文件', ds.min_rows ?? '—', '行数最少的文件']
+        : ['最短文件', ds.min_samples_in_file ?? '—', '采样点数（IR014 只有 63788）'];
+      $('dsKpi').innerHTML = [
+        ['类型', isTabular ? '表格(Excel/CSV)' : 'MATLAB .mat', ds.dataset_dir || ''],
+        ['文件数 / 类别数', `${ds.file_count ?? files.length} / ${ds.classes ?? '—'}`, '一个文件=一个类别'],
+        shortByRows,
+        isTabular ? ['最长文件', ds.max_rows ?? '—', '行数最多的文件']
+                  : ['最长文件', ds.max_samples_in_file ?? '—', '采样点数'],
+      ].map(([t, v, s]) => `<div class="card"><h4>${t}</h4><div class="kpi" style="font-size:${String(v).length > 12 ? 16 : 30}px">${esc(v)}</div><div class="hint">${esc(s)}</div></div>`).join('');
+      $('dsFiles').innerHTML = table(
+        isTabular
+          ? [{ t: '文件' }, { t: '类别（文件名）' }, { t: '行数', num: 1 }, { t: '列数', num: 1 },
+             { t: '信号列' }, { t: '数值列' }, { t: '状态' }]
+          : [{ t: '文件' }, { t: '类别' }, { t: 'class_id', num: 1 }, { t: '采样点', num: 1 },
+             { t: '按 784 可切窗口', num: 1 }, { t: '状态' }],
+        files.map(f => isTabular
+          ? [`<span class="mono">${esc(f.filename)}</span>`, esc(f.label), f.rows ?? '—', f.cols ?? '—',
+             `<span class="tag ok">${esc(f.signal_column || '—')}</span>`,
+             `<span class="hint">${esc((f.numeric_columns || []).join(', '))}</span>`,
+             f.error ? `<span class="tag bad">读取失败</span>` : '<span class="tag ok">正常</span>']
+          : [`<span class="mono">${esc(f.filename)}</span>`, esc(f.label), f.class_id ?? '—',
+             f.samples_in_file ?? '—', Math.floor((f.samples_in_file || 0) / 784),
+             (f.samples_in_file || 0) < 100000 ? '<span class="tag bad">偏短</span>' : '<span class="tag ok">正常</span>']));
+    }
+    // 推理页文件下拉（两类数据集都进）
+    if ($('pFile')) {
+      $('pFile').innerHTML = files.map(f => `<option value="${esc((ds.dataset_dir || '') + '\\' + f.filename)}"
+        data-samples="${f.samples_in_file || f.rows || 0}" data-label="${esc(f.label)}" data-kind="${esc(ds.dataset_type || 'matlab')}">
+        ${esc(f.filename)}　（${esc(f.label)}，${f.samples_in_file || f.rows || 0} ${isTabular ? '行' : '点'}）</option>`).join('');
+      $('pFile').onchange = updateWindowHint; updateWindowHint();
+    }
+    // 信号页文件下拉
+    if ($('sigFile')) {
+      const same = $('sigFile').dataset.key === key;
+      $('sigFile').dataset.key = key;
+      if (!same || keysChanged || !$('sigFile').options.length) {
+        $('sigFile').innerHTML = files.map(f => `<option value="${esc((ds.dataset_dir || '') + '\\' + f.filename)}">
+          ${esc(f.filename)}　（${esc(f.label)}）</option>`).join('');
+        if (files.length) loadSignal();
+      }
+    }
+    // 训练页目录下拉的提示
+    if ($('tDirHint') && ds.dataset_type === 'tabular') {
+      const len = Number($('tLength')?.value) || 784, stride = Number($('tStride')?.value) || 150;
+      const perFile = Math.max(0, Math.floor(((ds.min_rows || 0) - len) / stride) + 1);
+      $('tDirHint').textContent = `表格数据集：最短文件 ${ds.min_rows ?? 0} 行；按当前 length=${len}/stride=${stride}，每个文件最多可切 ${perFile} 个窗口`
+        + (ds.duplicate_labels?.length ? `；⚠ 类别重名：${ds.duplicate_labels.join(', ')}` : '');
+    }
+  } catch (e) { if ($('dsFiles')) $('dsFiles').innerHTML = `<div class="empty miss">${esc(e.message)}</div>`; }
+}
+function fillDirSelect() {
+  if (!$('tDir')) return;
+  const keep = $('tDir').value;
+  const opts = DATASET_KEYS.map(k => {
+    const d = DATASETS[k] || {};
+    const tag = d.dataset_type === 'tabular' ? '表格' : 'mat';
+    return `<option value="${esc(d.dataset_dir || '')}" data-type="${esc(d.dataset_type || 'matlab')}">
+      ${esc(k)}　[${tag}，${d.file_count ?? 0} 个文件]</option>`;
+  });
+  $('tDir').innerHTML = opts.join('');
+  if (keep && [...$('tDir').options].some(o => o.value === keep)) $('tDir').value = keep;
+}
+function onSourceChange() {
+  const kind = $('tSource').value;
+  const opt = $('tDir')?.selectedOptions[0];
+  if (kind !== 'auto' && opt && opt.dataset.type && opt.dataset.type !== kind) {
+    const want = DATASET_KEYS.find(k => (DATASETS[k] || {}).dataset_type === kind);
+    if (want) $('tDir').value = DATASETS[want].dataset_dir;
+  }
+  const now = $('tDir')?.selectedOptions[0]?.dataset.type || '';
+  $('tDirHint').textContent = now === 'tabular'
+    ? '表格数据集：length/stride 决定每个文件能切多少窗口；越界窗口会被跳过并在结果里回报。'
+    : 'CWRU .mat：取 DE 通道，按 length/stride 滑窗。';
+}
+async function loadTabularList() {
+  try {
+    const keys = DATASET_KEYS.filter(k => (DATASETS[k] || {}).dataset_type === 'tabular');
+    if (!keys.length) {
+      $('tabularList').innerHTML = '<div class="empty">还没有上传表格数据集，左侧上传即可（一个文件=一个类别）</div>';
+      $('tpFile').innerHTML = ''; TP_FILES = []; return;
+    }
+    // 注意：Windows 路径里的反斜杠放进 onclick 的 JS 字符串会被当转义符，所以统一走数组下标
+    TP_FILES = [];
+    const blocks = keys.map(k => {
+      const d = DATASETS[k];
+      const files = (d.files || []).filter(f => f.on_disk);
+      const rows = files.map(f => {
+        const path = `${d.dataset_dir}\\${f.filename}`;
+        TP_FILES.push({ path, text: `${k} / ${f.filename}（${f.label}）` });
+        const idx = TP_FILES.length - 1;
+        return [`<span class="mono">${esc(f.filename)}</span>`, esc(f.label), f.rows ?? '—', f.cols ?? '—',
+          `<span class="tag ok">${esc(f.signal_column || '—')}</span>`,
+          `<button class="btn small" onclick="previewTableAt(${idx})">预览</button>`];
+      });
+      return `<h4 style="margin-top:8px">${esc(k)}<span class="hint"> ｜ ${esc(d.dataset_dir)} ｜ ${files.length} 个文件 / ${d.classes} 类</span></h4>` +
+        table([{ t: '文件' }, { t: '类别' }, { t: '行数', num: 1 }, { t: '列数', num: 1 }, { t: '信号列' }, { t: '操作' }], rows);
+    });
+    $('tabularList').innerHTML = blocks.join('<hr style="border:none;border-top:1px solid var(--line);margin:12px 0">');
+    $('tpFile').innerHTML = TP_FILES.map(x => `<option value="${esc(x.path)}">${esc(x.text)}</option>`).join('');
+    // 默认预览第一个文件（只在还没预览过时）
+    if (TP_FILES.length && $('tpBody').dataset.loaded !== '1') previewTable(TP_FILES[0].path);
+  } catch (e) { $('tabularList').innerHTML = `<div class="empty miss">${esc(e.message)}</div>`; }
+}
+let TP_FILES = [];
+function previewTableAt(index) {
+  const item = TP_FILES[index];
+  if (!item) return;
+  $('tpFile').value = item.path;
+  $('tpColumn').value = '';
+  previewTable(item.path);
+}
+async function uploadTables() {
+  const files = $('upFiles').files;
+  if (!files || !files.length) { setStatus('upStatus', '先选择文件', 'err'); return; }
+  const fd = new FormData();
+  fd.append('name', $('upName').value.trim());
+  [...files].forEach(f => fd.append('file', f, f.name));
+  setStatus('upStatus', `上传中…（${files.length} 个文件）`, 'busy');
+  try {
+    const r = await api('/datasets/upload', { method: 'POST', body: fd });
+    setStatus('upStatus', `已保存 ${r.saved.length} 个到 ${r.directory}` +
+      (r.skipped.length ? `；跳过 ${r.skipped.length} 个（${r.skipped.map(s => s.filename + ': ' + s.reason).join('; ')}）` : ''));
+    toast(`上传完成（${r.saved.length} 个文件）`);
+    LAST_KEYS = '';                       // 强制重建选择器
+    await loadDatasets(); await loadTabularList();
+  } catch (e) { setStatus('upStatus', '失败：' + e.message, 'err'); toast(e.message, true); }
+}
+async function previewTable(path, column) {
+  if (path) $('tpFile').value = path;
+  const target = $('tpFile').value;
+  if (!target) return;
+  const col = column !== undefined ? column : $('tpColumn').value.trim();
+  $('tpTitle').textContent = target;
+  try {
+    const d = await api(`/datasets/table?path=${encodeURIComponent(target)}&rows=${Number($('tpRows').value) || 8}`
+      + (col ? `&column=${encodeURIComponent(col)}` : ''));
+    const opts = (d.numeric_columns || []).map(c => `<option value="${esc(c)}"${c === d.signal_column ? ' selected' : ''}>${esc(c)}</option>`).join('');
+    $('tpBody').innerHTML = `
+      <dl class="kv">
+        <dt>格式 / 工作表</dt><dd>${esc(d.format)} ${d.sheets?.length ? '· ' + esc(d.sheets.join(', ')) : ''}</dd>
+        <dt>规模</dt><dd>${d.rows} 行 × ${d.cols} 列　（${kb(d.size_kb)}）</dd>
+        <dt>当前信号列</dt><dd>${d.signal_column ? `<span class="tag ok">${esc(d.signal_column)}</span>` : `<span class="miss">${esc(d.signal_error || '未识别')}</span>`}
+          <select style="max-width:220px;display:inline-block;margin-left:8px" onchange="previewTable(null, this.value)">
+            <option value="">自动识别</option>${opts}</select></dd>
+      </dl>
+      <div style="height:10px"></div>` +
+      table([{ t: '列名' }, { t: 'dtype' }, { t: '数值列' }, { t: '非空', num: 1 }, { t: '缺失', num: 1 },
+             { t: 'unique', num: 1 }, { t: 'min', num: 1 }, { t: 'max', num: 1 }, { t: 'mean', num: 1 }, { t: 'std', num: 1 }],
+        d.columns.map(c => [`<b>${esc(c.name)}</b>${c.is_signal ? ' <span class="tag ok">信号列</span>' : ''}`,
+          `<span class="hint">${esc(c.dtype)}</span>`, c.numeric ? '是' : '否', c.non_null, c.nulls, c.unique,
+          c.min ?? '—', c.max ?? '—', c.mean ?? '—', c.std ?? '—'])) +
+      `<h4 style="margin-top:12px">前 ${d.head_rows} 行</h4>` +
+      table(d.column_names.map(n => ({ t: n })), d.head.map(row => row.map(v => v === null ? '<span class="hint">null</span>' : esc(v))));
+    $('tpBody').dataset.loaded = '1';
+  } catch (e) { $('tpBody').innerHTML = `<div class="empty miss">${esc(e.message)}</div>`; }
+}
+function updateWindowHint() {
+  const opt = $('pFile') && $('pFile').selectedOptions[0];
+  if (!opt) { $('pFileHint').textContent = '没有可选文件'; return; }
+  const len = Number($('tLength')?.value) || 784;
+  const max = Math.floor((Number(opt.dataset.samples || 0)) / len) - 1;
+  $('pFileHint').innerHTML = `真实类别：<b>${esc(opt.dataset.label)}</b>　可用窗口 index：<b>0 ~ ${max < 0 ? '无' : max}</b>
+    （按训练窗口长度 ${len} 估算；以产物 input_len 为准，越界会被服务拒绝并说明原因）`;
+}
+async function loadDatasetDb() {
+  try {
+    const d = await api('/datasets/db'), rows = d.datasets || [];
+    $('dsDbCount').textContent = `（${rows.length} 条，方言 ${d.dialect}）`;
+    $('dsDbList').innerHTML = rows.length ? table(
+      [{ t: 'ID', num: 1 }, { t: '名称' }, { t: '来源' }, { t: '类别', num: 1 }, { t: '样本', num: 1 }, { t: '路径' }, { t: '登记时间' }],
+      rows.map(r => [r.DatasetID, `<b>${esc(r.DatasetName)}</b>`, esc(r.Source || '—'), r.ClassCount ?? '—',
+        r.SampleCount ?? '—', `<span class="mono">${esc(r.DataPath || '—')}</span>`, `<span class="mono">${esc(r.CreatedDate || '')}</span>`]))
+      : '<div class="empty">还没有登记记录</div>';
+  } catch (e) { $('dsDbList').innerHTML = `<div class="empty miss">${esc(e.message)}</div>`; }
+}
+async function registerDataset() {
+  const body = { name: $('rName').value.trim(), source: $('rSource').value.trim() || null,
+    data_path: $('rPath').value.trim() || null, description: $('rDesc').value.trim() || null };
+  if (!body.name) { setStatus('regStatus', '名称不能为空', 'err'); return; }
+  const c = $('rClass').value, s = $('rSamples').value;
+  if (c !== '') body.class_count = Number(c);
+  if (s !== '') body.sample_count = Number(s);
+  try {
+    const r = await post('/datasets/db', body);
+    setStatus('regStatus', r.already_existed ? `已存在，沿用 DatasetID=${r.DatasetID}` : `登记成功，DatasetID=${r.DatasetID}`);
+    toast(r.already_existed ? '该数据集已登记过' : '登记成功');
+    loadDatasetDb();
+  } catch (e) { setStatus('regStatus', '失败：' + e.message, 'err'); toast(e.message, true); }
+}
+async function loadSignal() {
+  const path = $('sigFile').value;
+  const dataset = $('dsPick')?.value || DATASET_KEYS[0];
+  if (!path) { return; }
+  const file = path.split('\\').pop();
+  const column = ($('sigColumn')?.value || '').trim();
+  try {
+    const d = await api(`/datasets/signal?dataset=${encodeURIComponent(dataset)}&file=${encodeURIComponent(file)}`
+      + `&points=${Number($('sigPoints').value) || 1500}&start=${Number($('sigStart').value) || 0}`
+      + (column ? `&column=${encodeURIComponent(column)}` : ''));
+    drawWave(d.values);
+    $('sigStats').innerHTML = [
+      ['文件', d.file, `${d.dataset_type === 'tabular' ? '表格' : 'MAT'}` + (d.column ? ` · 列 ${d.column}` : '')],
+      ['类别 / 标签', d.label, d.class_id != null ? `class_id=${d.class_id}` : '文件名即标签'],
+      ['文件总点数', d.samples_in_file, `起始采样点 ${d.start}`],
+      ['显示点数', d.points, `降采样 stride = ${d.stride}`],
+      ['统计', `min ${d.min} / max ${d.max}`, `mean ${d.mean} / std ${d.std}`],
+    ].map(([t, v, s]) => `<div class="card"><h4>${t}</h4><div style="font-size:15px;font-weight:600">${esc(v)}</div><div class="hint">${esc(s)}</div></div>`).join('');
+  } catch (e) { toast('取信号失败：' + e.message, true); }
+}
+function drawWave(values) {
+  const cv = $('waveCanvas'), ctx = cv.getContext('2d');
+  const W = cv.width, H = cv.height, pad = 34;
+  ctx.clearRect(0, 0, W, H);
+  if (!values || !values.length) { ctx.fillStyle = '#6B6860'; ctx.fillText('无数据', pad, H / 2); return; }
+  let min = Math.min(...values), max = Math.max(...values);
+  if (min === max) { min -= 0.5; max += 0.5; }
+  const x = i => pad + i * (W - pad * 2) / (values.length - 1);
+  const y = v => H - pad - (v - min) * (H - pad * 2) / (max - min);
+  // 网格
+  ctx.strokeStyle = 'rgba(107,104,96,.22)'; ctx.lineWidth = 1;
+  for (let g = 0; g <= 4; g++) {
+    const gy = pad + g * (H - pad * 2) / 4;
+    ctx.beginPath(); ctx.moveTo(pad, gy); ctx.lineTo(W - pad, gy); ctx.stroke();
+  }
+  // 零线
+  if (min < 0 && max > 0) { ctx.strokeStyle = 'rgba(107,104,96,.5)'; ctx.beginPath(); ctx.moveTo(pad, y(0)); ctx.lineTo(W - pad, y(0)); ctx.stroke(); }
+  // 波形
+  ctx.strokeStyle = '#141413'; ctx.lineWidth = 1; ctx.beginPath();
+  values.forEach((v, i) => i ? ctx.lineTo(x(i), y(v)) : ctx.moveTo(x(i), y(v)));
+  ctx.stroke();
+  // 刻度
+  ctx.fillStyle = '#6B6860'; ctx.font = '11px Consolas,monospace';
+  ctx.fillText(max.toFixed(3), 4, pad + 4); ctx.fillText(min.toFixed(3), 4, H - pad + 4);
+  ctx.fillText('0', pad - 4, H - 6); ctx.fillText(String(values.length - 1), W - pad - 22, H - 6);
+}
+async function loadFigures() {
+  try {
+    ALL_FIGS = (await api('/figures?limit=300')).figures || [];
+    renderGallery();
+  } catch (e) { $('gallery').innerHTML = `<div class="empty miss">${esc(e.message)}</div>`; }
+}
+let ALL_FIGS = [];
+function renderGallery() {
+  const q = ($('figFilter')?.value || '').trim().toLowerCase();
+  const list = ALL_FIGS.filter(f => !q || f.file.toLowerCase().includes(q));
+  $('gallery').innerHTML = list.length
+    ? list.map(f => figCard({ ...f, name: f.file.split('/').pop() })).join('')
+    : '<div class="empty">没有匹配的图</div>';
+}
+
+/* ========================= 系统管理 ========================= */
+async function loadSystem() {
+  try {
+    const s = await api('/system');
+    $('sysRuntime').innerHTML = [
+      ['Python', esc(s.runtime.python)], ['解释器', `<span class="mono">${esc(s.runtime.executable)}</span>`],
+      ['平台', esc(s.runtime.platform)], ['架构', esc(s.runtime.machine)],
+    ].map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join('');
+    $('sysPaths').innerHTML = [
+      ['项目根', `<span class="mono">${esc(s.paths.project_dir)}</span>`],
+      ['模型产物', `<span class="mono">${esc(s.paths.model_dir)}</span>`],
+      ['临时目录', `<span class="mono">${esc(s.paths.temp_dir)}</span>`],
+      ['出图目录', `<span class="mono">${esc(s.figures.dir)}</span>（${s.figures.count} 张 / ${kb(s.figures.total_kb)}）`],
+      ['日志目录', `<span class="mono">${esc(s.logs.dir)}</span>（${s.logs.count} 个 / ${kb(s.logs.total_kb)}）`],
+      ['数据库', `${esc(s.database.dialect)} · ${s.database.ok ? '<span class="tag ok">连接正常</span>' : '<span class="tag bad">连接失败</span>'}`],
+    ].map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join('');
+    $('sysPackages').innerHTML = table([{ t: '包' }, { t: '版本' }],
+      Object.entries(s.packages).map(([k, v]) => [`<span class="mono">${esc(k)}</span>`,
+        v ? esc(v) : '<span class="hint">未安装</span>']));
+    $('sysArtifacts').innerHTML = (s.artifacts.items || []).length ? table(
+      [{ t: '模型' }, { t: '版本' }, { t: '框架' }, { t: '大小', num: 1 }, { t: '文件' }],
+      s.artifacts.items.map(a => [esc(a.model), esc(a.version), `<span class="tag">${esc(a.framework)}</span>`,
+        kb(a.size_kb), `<span class="mono">${esc(a.weights)}</span>`])) : '<div class="empty">无产物</div>';
+    $('dbConn').innerHTML = [
+      ['方言', esc(s.database.dialect)], ['状态', s.database.ok ? '<span class="tag ok">正常</span>' : '<span class="tag bad">失败</span>'],
+      ['目标', `<span class="mono">${esc(s.paths.db.database)}</span>`],
+      ['主机', esc(s.paths.db.host || '本地文件')], ['端口', s.paths.db.port ?? '—'],
+      ['建表引导', esc(s.database.bootstrap || '无（表已存在）')],
+    ].map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join('');
+    const counts = s.database.counts || {};
+    $('dbCounts').innerHTML = typeof counts === 'object' && !counts.error ? table([{ t: '表' }, { t: '行数', num: 1 }],
+      Object.entries(counts).map(([k, v]) => [`<span class="mono">${esc(k)}</span>`, v])) : `<div class="empty miss">${esc(counts.error || '未知')}</div>`;
+    if ($('figCountHint')) $('figCountHint').textContent = `${s.figures.count} 张 / ${kb(s.figures.total_kb)}`;
+  } catch (e) { $('sysRuntime').innerHTML = `<dt>错误</dt><dd class="miss">${esc(e.message)}</dd>`; }
+}
+async function loadLogs() {
+  try {
+    const d = await api('/system/logs'), rows = d.logs || [];
+    $('logCount').textContent = `（${rows.length} 个，目录 ${d.dir}）`;
+    $('logList').innerHTML = rows.length ? table([{ t: '日志' }, { t: '大小', num: 1 }, { t: '时间' }, { t: '操作' }],
+      rows.map(r => [`<span class="mono">${esc(r.name)}</span>`, kb(r.size_kb), `<span class="mono">${esc(r.modified)}</span>`,
+        `<button class="btn small" onclick="loadLogFile('${esc(r.name)}')">查看</button>`])) : '<div class="empty">还没有日志</div>';
+  } catch (e) { $('logList').innerHTML = `<div class="empty miss">${esc(e.message)}</div>`; }
+}
+let CURRENT_LOG = null;
+async function loadLogFile(name) {
+  CURRENT_LOG = name;
+  $('logTitle').textContent = name;
+  try {
+    const d = await api(`/system/logs/${encodeURIComponent(name)}?tail=${Number($('logTail').value) || 300}`);
+    $('logBody').innerHTML = `<div class="hint">共 ${d.total_lines} 行，显示最后 ${d.returned} 行（${kb(d.size_kb)}）</div>
+      <pre class="log">${esc(d.lines.join('\n'))}</pre>`;
+  } catch (e) { $('logBody').innerHTML = `<div class="empty miss">${esc(e.message)}</div>`; }
+}
+function reloadLogFile() { if (CURRENT_LOG) loadLogFile(CURRENT_LOG); }
+async function loadApiIndex() {
+  try {
+    const d = await api('/api');
+    $('apiList').innerHTML = table([{ t: '接口' }, { t: '说明' }],
+      Object.entries(d.endpoints).map(([k, v]) => [`<span class="mono">${esc(k)}</span>`, esc(v)])) +
+      `<div class="hint" style="margin-top:8px">可用模型：${esc((d.models || []).join(' / '))}</div>`;
+  } catch (e) { $('apiList').innerHTML = `<div class="empty miss">${esc(e.message)}</div>`; }
+}
+async function cleanupFigures() {
+  if (!confirmDanger('确认清空 data/figures 下所有 PNG？此操作不可撤销（下次训练/推理会重新生成）。')) return;
+  try {
+    const r = await post('/system/maintenance', { target: 'figures' });
+    setStatus('maintStatus', `已删除 ${r.removed} 张，释放 ${kb(r.freed_kb)}`);
+    toast(`已清空图库（${r.removed} 张）`);
+    loadSystem(); if ($('gallery')) loadFigures();
+  } catch (e) { setStatus('maintStatus', '失败：' + e.message, 'err'); toast(e.message, true); }
+}
+async function deleteVersion() {
+  const m = $('delModel').value, v = $('delVersion').value.trim();
+  if (!v) { setStatus('delStatus', '必须填写版本号，例如 v1', 'err'); return; }
+  if (!confirmDanger(`确认删除模型 ${m} 的版本 ${v}？权重、scaler、meta 会一并删除。`)) return;
+  try {
+    const r = await del(`/models/${encodeURIComponent(m)}?version=${encodeURIComponent(v)}`);
+    setStatus('delStatus', `已删除 ${r.deleted}（${r.files} 个文件，释放 ${kb(r.freed_kb)}）`);
+    toast('版本已删除'); loadModels(); loadSystem();
+  } catch (e) { setStatus('delStatus', '失败：' + e.message, 'err'); toast(e.message, true); }
+}
+
+/* ============================ 顶栏状态 ============================ */
+async function refreshHealth() {
+  try {
+    const h = await api('/health'), db = h.database || {};
+    $('dotSvc').className = 'dot' + (db.ok ? '' : ' bad');
+    $('footSvc').textContent = db.ok ? '服务正常' : '数据库异常';
+    $('footDb').textContent = (db.dialect || '—') + (db.ok ? ' · 已连接' : '');
+    $('svcDb').textContent = db.dialect || '—';
+    $('svcArtifacts').textContent = h.artifacts?.count ?? 0;
+    $('svcFigures').textContent = h.figures?.count ?? 0;
+  } catch (e) {
+    $('dotSvc').className = 'dot bad'; $('footSvc').textContent = '服务不可用'; $('footDb').textContent = e.message;
+  }
+}
+function refreshAll() {
+  refreshHealth();
+  const m = state.module, s = state.sub[m] || FIRST_SUB[m];
+  if (m === 'home') loadHome();
+  if (m === 'model' && s === 'list') loadModels();
+  if (m === 'model' && s === 'train') loadDatasets();
+  if (m === 'model' && s === 'predict') loadDatasets();
+  if (m === 'model' && s === 'trainings') loadTrainings();
+  if (m === 'model' && s === 'tasks') loadTasks();
+  if (m === 'dataset' && s === 'inspect') loadDatasets();
+  if (m === 'dataset' && s === 'tabular') { LAST_KEYS = ''; loadDatasets(); loadTabularList(); }
+  if (m === 'dataset' && s === 'register') loadDatasetDb();
+  if (m === 'visual' && s === 'gallery') loadFigures();
+  if (m === 'visual' && s === 'signal') loadDatasets();
+  if (m === 'system') { if (s === 'logs') loadLogs(); else if (s === 'api') loadApiIndex(); else loadSystem(); }
+}
+
+/* ============================== 启动 ============================== */
+go('home');
+refreshHealth();
+loadDatasets();          // 首页也会用到数据集（为后续模块预取，失败不影响首页）
+setInterval(refreshHealth, 15000);
+</script>
+</body>
+</html>

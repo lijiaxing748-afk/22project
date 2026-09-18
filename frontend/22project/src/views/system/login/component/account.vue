@@ -71,7 +71,6 @@ import { useUserInfo } from '/@/stores/userInfo';
 import { DictionaryStore } from '/@/stores/dictionary';
 import { SystemConfigStore } from '/@/stores/systemConfig';
 import { BtnPermissionStore } from '/@/plugin/permission/store.permission';
-import { Md5 } from 'ts-md5';
 import { errorMessage } from '/@/utils/message';
 import {getBaseURL} from "/@/utils/baseUrl";
 
@@ -146,7 +145,17 @@ export default defineComponent({
 			if (!formRef.value) return
 			await formRef.value.validate((valid: any) => {
 				if (valid) {
-					loginApi.login({ ...state.ruleForm, password: Md5.hashStr(state.ruleForm.password) }).then((res: any) => {
+					// ⚠️ 密码**原样发**，不要在这里做 MD5（2026-09 改）。
+					// 这里原来是 `password: Md5.hashStr(state.ruleForm.password)`，
+					// 看着像"至少加了一层保护"，其实是**有害无益**：
+					//   1. 它不解决任何问题 —— MD5 是公开算法，抓到摘要照样能重放登录；
+					//      真正的传输保护靠 HTTPS（TLS），不是靠客户端哈希。
+					//   2. 它让"服务端存密码哈希"彻底失效 —— 后端拿到的是 MD5 摘要，
+					//      校验时就得拿摘要去比，等于把 MD5 当密码存。而 MD5 无盐、可撞库，
+					//      同一个口令所有人的摘要都一样，彩虹表秒出。
+					//   3. 它和后端的 pbkdf2 校验**必然对不上**，表现为"密码明明是对的却登不进去"。
+					// 所以现在改成发明文，由后端统一做 pbkdf2:sha256 加盐哈希存储。
+					loginApi.login({ ...state.ruleForm }).then((res: any) => {
 						if (res.code === 2000) {
               const {data} = res
               Cookies.set('username', res.data.username);

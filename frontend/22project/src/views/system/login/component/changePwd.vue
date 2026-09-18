@@ -69,7 +69,6 @@ import { useUserInfo } from '/@/stores/userInfo';
 import { DictionaryStore } from '/@/stores/dictionary';
 import { SystemConfigStore } from '/@/stores/systemConfig';
 import { BtnPermissionStore } from '/@/plugin/permission/store.permission';
-import { Md5 } from 'ts-md5';
 import { errorMessage } from '/@/utils/message';
 import { getBaseURL } from "/@/utils/baseUrl";
 import { loginChangePwd } from "/@/views/system/login/api";
@@ -159,7 +158,10 @@ export default defineComponent({
 			if (!formRef.value) return
 			await formRef.value.validate((valid: any) => {
 				if (valid) {
-					loginApi.loginChangePwd({ ...state.ruleForm, password: Md5.hashStr(state.ruleForm.password), password_regain: Md5.hashStr(state.ruleForm.password_regain) }).then((res: any) => {
+					// ⚠️ 两个密码都**原样发**，不要做 MD5 —— 理由同 account.vue 里的说明。
+					// 这里尤其要小心：password_regain 也要一起改，只去掉一个会导致
+					// 后端拿"MD5(新密码)"和"明文(重复新密码)"去比对，直接判定两次输入不一致。
+					loginApi.loginChangePwd({ ...state.ruleForm }).then((res: any) => {
 						if (res.code === 2000) {
 							if (!themeConfig.value.isRequestRoutes) {
 								// 前端控制路由，2、请注意执行顺序

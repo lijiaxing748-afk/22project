@@ -7,6 +7,7 @@
  *     utils/request.ts 的拦截器会直接放行）
  */
 import platformRequest from '/@/utils/platformRequest';
+import { Session } from '/@/utils/storage';
 const request = platformRequest as any;
 
 const q = (params: Record<string, any>) =>
@@ -42,6 +43,23 @@ export const platformApi = {
 	// 删除该模型的产物文件（权重/scaler/meta，不动库表登记）；没有版本号，删的就是唯一那个产物
 	deleteArtifact: (name: string) =>
 		request({ url: `/models/${encodeURIComponent(name)}?scope=artifact`, method: 'delete' }),
+
+	// ---------- 模型发布（导出下载）----------
+	// 全平台发布汇总（「模型发布」独立页面用）：按模型分组的发布流水 + 磁盘包
+	exportOverview: () => request({ url: '/exports', method: 'get' }),
+	// 发布历史：磁盘上的 zip（packages）+ 库里的发布流水（deployments）
+	exports: (name: string) => request({ url: `/models/${encodeURIComponent(name)}/exports`, method: 'get' }),
+	// 打包发布：生成 zip 并登记 ModelDeployments，返回 download_url
+	// body 可选：{ training_id, version, description, deployed_by }
+	exportModel: (name: string, data: any = {}) =>
+		request({ url: `/models/${encodeURIComponent(name)}/exports`, method: 'post', data }),
+	// 看某个包里有什么（列 zip 条目，不解压）
+	inspectExport: (name: string, pkg: string) =>
+		request({ url: `/models/${encodeURIComponent(name)}/exports/${encodeURIComponent(pkg)}/inspect`, method: 'get' }),
+	// 删除某个发布包（只删磁盘文件，库记录标成「已删除」留痕）
+	deleteExport: (name: string, pkg: string) =>
+		request({ url: `/models/${encodeURIComponent(name)}/exports/${encodeURIComponent(pkg)}`, method: 'delete' }),
+
 	train: (data: any) => request({ url: '/train', method: 'post', data }),
 	trainings: (limit = 20) => request({ url: `/trainings?limit=${limit}`, method: 'get' }),
 
@@ -74,10 +92,25 @@ export const platformApi = {
 	maintenance: (target: string) => request({ url: '/system/maintenance', method: 'post', data: { target } }),
 };
 
-/** 图/文件的完整地址（VITE_API_URL 可能是绝对地址，也可能是 /api 这样的前缀） */
+/**
+ * 图/文件的完整地址（VITE_API_URL 可能是绝对地址，也可能是 /api 这样的前缀）。
+ *
+ * ⚠️ 这里会**自动追加 ?token=**，原因：这些 URL 是给 <a href> / <img src> / 新窗口用的，
+ * 浏览器发这类请求时**带不上自定义请求头**，axios 拦截器里那行 Authorization 根本不会执行。
+ * 而鉴权改造后下载发布包（GET /models/<名>/exports/<包>）是要登录的，
+ * 不带令牌就是 401。所以令牌只能走 query 参数。
+ *
+ * ⚠️ 已经是绝对 http(s) 地址的（后端返回的 download_url 等）**保持原样不动**：
+ * 那种地址可能指向别的服务，塞本机令牌过去等于把凭据泄露给第三方。
+ * 后端返回的 download_url 是相对路径，走的是下面这条分支，所以也会自动带上令牌。
+ */
 export function fileUrl(path: string) {
 	if (!path) return '';
 	if (/^https?:\/\//.test(path)) return path;
 	const base = (import.meta.env.VITE_API_URL as string) || '';
-	return `${base.replace(/\/$/, '')}${path}`;
+	const url = `${base.replace(/\/$/, '')}${path}`;
+	const token = Session.get('token');
+	if (!token) return url;
+	// 用 ? 还是 & 取决于原地址有没有查询串；encodeURIComponent 兜住令牌里的特殊字符
+	return `${url}${url.includes('?') ? '&' : '?'}token=${encodeURIComponent(token)}`;
 }
