@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """Django-Vue3-Admin（dvadmin）兼容层 —— 让 frontend/22project 直接跑在本服务上。
 
 ⚠️ 这个模块存在的全部理由：
@@ -29,7 +29,9 @@ frontend/22project 启动时会打一组 Django 接口；这里用 Flask 把**�
 """
 from __future__ import annotations
 import uuid
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, g, jsonify, request
+from . import auth
+from .db import DBError, _bit, database
 # 五个模块（后端控制路由：前端的 dynamicRoutes[0].children 会被这份数据替换）
 def _menu_payload() -> list[dict]:
     """下发侧边栏菜单（真正的"后端控制路由"）。
@@ -63,55 +65,154 @@ def _ok(data=None, msg: str = "success"):
     """
     return jsonify({"code": 2000, "data": data, "msg": msg})
 def _user_payload() -> dict:
-    """本地演示账号。字段名要跟前端 user store 的期望对齐，缺字段会导致页头/权限判断报错。"""
-    return {
-        "id": 1, "username": "admin", "name": "管理员", "avatar": "",
-        "email": "admin@localhost", "mobile": "", "gender": "1",
-        "dept_info": {"dept_id": 1, "dept_name": "模型管理平台"},
-        "role_info": [{"id": 1, "name": "超级管理员", "key": "admin"}],
-        "roles": ["admin"], "is_superuser": True, "pwd_change_count": 1,
-        "description": "本地演示账号（由 model_service 兼容层提供）",
-    }
+    """**已废弃**：原先返回写死的演示账号（恒定超管）。
+
+    ⚠️ 保留这个函数只为说明历史：鉴权改造前，登录、user_info 都返回它，
+    于是"任何人输任意密码都是超级管理员"。现在所有出口都走
+    `auth.login_payload(数据库里的真实用户行)`。
+    如果后续有人想加个"匿名兜底用户"，别用它——那等于把刚补上的洞重新打开。
+    """
+    raise RuntimeError(
+        "_user_payload() 是改造前的写死演示账号，已废弃；"
+        "请改用 auth.login_payload(user_row)")
 def build_blueprint() -> Blueprint:
     """把 dvadmin 需要的最小接口集合装进一个 Blueprint。"""
     bp = Blueprint("dvadmin", __name__)
     @bp.post("/api/login/")
     def login():
-        """登录：只做形式校验（任意非空账号口令都通过），返回 user + 两个 token。"""
+        """登录：**真正查库校验密码**，成功后签发自签令牌。
+
+        ⚠️ 这里原先是"任意非空账号口令都通过，且恒定返回超级管理员"的演示实现。
+        在"交给工厂使用"的场景下那等于没有登录——任何人随手输个密码进来就是超管。
+        现在改成：查 Users 表 → 校验 pbkdf2 哈希 → 校验 IsActive → 签发令牌。
+
+        ⚠️ 失败时**不区分"用户不存在"和"密码错误"**，统一回同一句话：
+        区分开等于提供了一个用户名枚举接口（能试出哪些账号存在）。
+        """
         body = request.get_json(silent=True) or {}
         username = (body.get("username") or "").strip()
-        if not username:
-            return jsonify({"code": 4000, "data": None, "msg": "用户名不能为空"}), 200
+        password = body.get("password") or ""
+        if not username or not password:
+            return jsonify({"code": 4000, "data": None, "msg": "用户名和密码都不能为空"}), 200
+
+        try:
+            row = database.user_by_username(username)
+        except DBError as exc:
+            # 数据库连不上**不让登录**：这是鉴权路径，宁可登不进来也不要放行。
+            # 回一句能指导排查的话，而不是笼统的"登录失败"。
+            return jsonify({"code": 4000, "data": None,
+                            "msg": f"无法连接用户数据库：{exc}"}), 200
+
+        if not row or not auth.verify_password(row.get("PasswordHash"), password):
+            auth.log_operation("login", target=username, result="失败",
+                                message="用户名或密码错误")
+            return jsonify({"code": 4000, "data": None, "msg": "用户名或密码错误"}), 200
+
+        if not row.get("IsActive"):
+            auth.log_operation("login", target=username, result="失败", message="账号已停用")
+            return jsonify({"code": 4000, "data": None,
+                            "msg": "该账号已被停用，请联系管理员"}), 200
+
         # ⚠️ 登录响应必须带上 pwd_change_count，且要比 0 大。
         # 前端的登录成功分支是：
         #   if (data.pwd_change_count == 0) return router.push('/login');   // 强制改密码
         #   ... loginSuccess() 里 if (pwd_change_count > 0) 才会 router.push('/home')
         # 少了这个字段（undefined）两边都进不去，表现就是"登录后页面不跳转"。
-        data = _user_payload()
-        data.update({"access": uuid.uuid4().hex, "refresh": uuid.uuid4().hex,
-                     "username": username, "pwd_change_count": 1})
+        data = auth.login_payload(row)
+        data.update({"access": auth.issue_token(row),
+                     "refresh": auth.issue_token(row),      # 无状态令牌，续期就是重签一个
+                     "pwd_change_count": 1})
+        database.touch_login(row["UserID"])
+        # 记日志要在 g.current_user 设好之前——login 是匿名接口，
+        # 直接用刚查到的 row 把身份传进去，否则日志里会是空的操作人。
+        g.current_user = row
+        auth.log_operation("login", target=username)
         return _ok(data, "登录成功")
+
     @bp.post("/api/logout/")
     def logout():
-        """退出。没有会话要清，直接把前端领到"已退出"分支即可。"""
+        """退出。令牌是无状态的，服务端没有会话要清，前端删掉本地令牌即可。"""
+        user = auth.authenticate()
+        if user:
+            g.current_user = user
+            auth.log_operation("logout", target=user.get("Username"))
         return _ok(None, "已退出")
+
     @bp.get("/api/system/user/user_info/")
     def user_info():
-        """当前登录用户信息（前端每次刷新都会拉一次）。"""
-        return _ok(_user_payload())
+        """当前登录用户信息（前端每次刷新都会拉一次）。
+
+        ⚠️ 这里必须**按令牌解析出的真实身份**返回，不能再用写死的演示账号。
+        前端拿这份数据渲染页头与按钮权限，返回假身份会让权限显示与后端不一致。
+        未登录时回 4000，前端拦截器会把人领回登录页。
+        """
+        user = auth.authenticate()
+        if not user:
+            return jsonify({"code": 4000, "data": None, "msg": "登录已失效，请重新登录"}), 200
+        g.current_user = user
+        return _ok(auth.login_payload(user))
+
     @bp.post("/api/system/user/update_user_info/")
     @bp.put("/api/system/user/update_user_info/")
     def update_user_info():
-        """改个人资料：把请求体合并进默认账号后原样返回（本地演示不落库）。"""
-        data = dict(_user_payload())
-        data.update(request.get_json(silent=True) or {})
-        return _ok(data, "已更新（本地演示不会真的落库）")
+        """改个人资料（显示名/邮箱/手机）。**不改角色、不改密码**。
+
+        ⚠️ 角色字段从请求体里被**显式丢弃**：前端表单里没有角色项，但请求体是
+        客户端可控的，如果原样透传给 update_user()，任何登录用户都能把自己改成 admin。
+        """
+        user = auth.authenticate()
+        if not user:
+            return jsonify({"code": 4000, "data": None, "msg": "登录已失效，请重新登录"}), 200
+        g.current_user = user
+        body = request.get_json(silent=True) or {}
+        fields = {}
+        for src, dst in (("name", "DisplayName"), ("email", "Email"), ("mobile", "Mobile")):
+            if src in body:
+                fields[dst] = (body.get(src) or "").strip() or None
+        if fields:
+            try:
+                database.update_user(user["UserID"], fields)
+            except DBError as exc:
+                return _ok(None, f"保存失败：{exc}")
+        fresh = database.user_by_id(user["UserID"]) or user
+        return _ok(auth.login_payload(fresh), "已更新")
+
     @bp.post("/api/system/user/change_password/")
     @bp.put("/api/system/user/change_password/")
     @bp.post("/api/system/user/login_change_password/")
     def change_password():
-        """改密码：三个路由都指向这里，统一回复成功，避免前端弹错。"""
-        return _ok(None, "本地演示环境不需要改密码")
+        """改密码：三个路由都指向这里。
+
+        ⚠️ 原先这里直接回"本地演示环境不需要改密码"——等于改密码是假的。
+        现在真落库，并且 set_user_password 会把 TokenVersion +1，
+        **改完密码旧令牌立即失效**，需要重新登录（这是应有行为，
+        否则改密码就防不住已经泄露的令牌）。
+        """
+        user = auth.authenticate()
+        if not user:
+            return jsonify({"code": 4000, "data": None, "msg": "登录已失效，请重新登录"}), 200
+        g.current_user = user
+        body = request.get_json(silent=True) or {}
+        # 前端字段名不统一（不同模板版本用过 password / new_password），两个都认
+        new_pwd = (body.get("password") or body.get("new_password") or "").strip()
+        old_pwd = body.get("old_password") or ""
+        # 前端 changePwd 表单里的"再次输入"字段。⚠️ 前端自己会比对一次，
+        # 但那是**客户端**校验、可以绕过（直接构造请求就行），所以服务端也留一道。
+        regain = body.get("password_regain")
+        if not new_pwd:
+            return _ok(None, "未提交新密码")
+        if regain is not None and regain != new_pwd:
+            return _ok(None, "两次输入的新密码不一致")
+        full = database.user_by_id(user["UserID"]) or user
+        # 带了旧密码就必须对；没带（前端表单只有新密码那一栏）则要求已登录即可 ——
+        # 已登录本身已经验过令牌，这里做的是一次纵深校验，不强制前端改表单。
+        if old_pwd and not auth.verify_password(full.get("PasswordHash"), old_pwd):
+            return _ok(None, "原密码不正确")
+        if len(new_pwd) < 6:
+            return _ok(None, "新密码至少 6 位")
+        database.set_user_password(user["UserID"], auth.hash_password(new_pwd))
+        auth.log_operation("change_password", target=user.get("Username"))
+        return _ok(None, "密码已修改，请重新登录")
     @bp.post("/api/system/file/")
     def upload_file():
         """文件/头像上传（前端 `personal/api.ts` 的 uploadAvatar 打的就是这里）。
@@ -215,16 +316,185 @@ def build_blueprint() -> Blueprint:
     def login_backend():
         """第三方登录后端列表：空数组 = 登录页不显示第三方登录入口。"""
         return _ok([], "未启用第三方登录")
-    @bp.get("/api/system/role/")
     @bp.get("/api/system/user/")
+    def user_list():
+        """用户列表（fast-crud 约定的 `{results, total}` 形状）。
+
+        ⚠️ 需要 user:manage 权限。这里**不复用下面三个路由共用的空实现**：
+        用户清单是真数据（而且含账号名），让 operator 也能拉到不合适。
+        没权限时回 4000 + 明确文案，前端会弹提示而不是显示空表——
+        "空表"会让人以为没数据，而不是"你没权限看"。
+        """
+        user = auth.authenticate()
+        if not user:
+            return jsonify({"code": 4000, "data": None, "msg": "登录已失效，请重新登录"}), 200
+        if "user:manage" not in auth.perms_of(user.get("RoleKey")):
+            return jsonify({"code": 4000, "data": None, "msg": "没有查看用户列表的权限"}), 200
+        g.current_user = user
+        rows = database.list_users()
+        results = [{
+            "id": r["UserID"], "username": r["Username"],
+            "name": r.get("DisplayName") or r["Username"],
+            "dept_info": {"dept_id": 1, "dept_name": r.get("DeptName") or "模型管理平台"},
+            "role_info": {"id": r.get("RoleKey"), "key": r.get("RoleKey"),
+                          "name": auth.role_name_of(r.get("RoleKey"))},
+            "email": r.get("Email") or "", "mobile": r.get("Mobile") or "",
+            "is_active": bool(r.get("IsActive")),
+            "last_login": str(r.get("LastLogin") or ""),
+            "login_count": r.get("LoginCount") or 0,
+            "description": auth.role_name_of(r.get("RoleKey")),
+        } for r in rows]
+        return _ok({"results": results, "total": len(results)})
+
+    @bp.get("/api/system/role/")
+    def role_list():
+        """角色列表（用户管理页的下拉框数据源）。同样要 user:manage。"""
+        user = auth.authenticate()
+        if not user:
+            return jsonify({"code": 4000, "data": None, "msg": "登录已失效，请重新登录"}), 200
+        if "user:manage" not in auth.perms_of(user.get("RoleKey")):
+            return jsonify({"code": 4000, "data": None, "msg": "没有查看角色列表的权限"}), 200
+        g.current_user = user
+        from .auth import ROLE_NAMES, perms_of
+        rows = database.roles_in_db()
+        # ⚠️ 以数据库为准，但**权限点取自代码**（_ROLE_PERMS）。库里只存"有哪些角色"，
+        # 不存权限——权限写死在 auth.py 里，见那边的说明。这里把两边合起来给前端。
+        results = [{
+            "id": r["RoleKey"], "key": r["RoleKey"],
+            "name": r.get("RoleName") or ROLE_NAMES.get(r["RoleKey"], r["RoleKey"]),
+            "description": r.get("Description") or "",
+            "permissions": perms_of(r["RoleKey"]),
+            "is_active": bool(r.get("IsActive")),
+        } for r in rows]
+        if not results:      # 库里空表时用代码里的定义兜底，保证下拉框有东西可选
+            results = [{"id": k, "key": k, "name": v, "permissions": perms_of(k),
+                        "description": "", "is_active": True} for k, v in ROLE_NAMES.items()]
+        return _ok({"results": results, "total": len(results)})
+
     @bp.get("/api/system/area/")
-    def fast_crud_list():
-        """fast-crud 的通用分页列表（角色/用户/地区三个列表共用）。
+    def area_stub():
+        """地区（部门）树：本项目不用组织架构，回一个单节点让页面正常渲染。
 
         ⚠️ fast-crud 的约定是 `{results, total}`（外面再包一层信封 data）：
         直接回数组前端取不到 results 会直接报错，回空也必须是这个形状。
         """
-        return _ok({"results": [], "total": 0}, "本地演示环境暂无数据")
+        return _ok({"results": [{"id": 1, "parent": None, "name": "模型管理平台",
+                                 "dept_name": "模型管理平台", "key": 1,
+                                 "owner": [], "status": True}], "total": 1})
+
+    @bp.post("/api/system/user/create/")
+    def user_create():
+        """新建用户。需要 user:manage。"""
+        user = auth.authenticate()
+        if not user:
+            return jsonify({"code": 4000, "data": None, "msg": "登录已失效，请重新登录"}), 200
+        if "user:manage" not in auth.perms_of(user.get("RoleKey")):
+            return jsonify({"code": 4000, "data": None, "msg": "没有新建用户的权限"}), 200
+        g.current_user = user
+        body = request.get_json(silent=True) or {}
+        username = (body.get("username") or "").strip()
+        password = (body.get("password") or "").strip()
+        role_key = (body.get("role_key") or body.get("role") or "").strip()
+        if not username or not password:
+            return _ok(None, "用户名和密码都不能为空")
+        if len(password) < 6:
+            return _ok(None, "密码至少 6 位")
+        if role_key not in auth._ROLE_PERMS:
+            return _ok(None, f"角色不合法：{role_key or '（空）'}")
+        try:
+            uid = database.create_user(
+                username, auth.hash_password(password), role_key,
+                display_name=(body.get("name") or "").strip() or None,
+                dept_name=(body.get("dept_name") or "").strip() or None,
+                email=(body.get("email") or "").strip() or None,
+                mobile=(body.get("mobile") or "").strip() or None)
+        except DBError as exc:
+            return _ok(None, f"新建失败：{exc}")
+        auth.log_operation("create_user", target=username,
+                            detail={"role": role_key})
+        return _ok({"id": uid}, "已新建")
+
+    @bp.put("/api/system/user/<int:user_id>/")
+    @bp.post("/api/system/user/<int:user_id>/update/")
+    def user_update(user_id: int):
+        """改用户（角色/启停/显示名）。需要 user:manage。
+
+        ⚠️ 加了两条自我防护，都是"管理员把自己锁在门外"的经典场景：
+          1. 不许改自己的角色 —— 一键把自己从 admin 降成 operator 就再也改不回来了；
+          2. 不许停用自己 —— 同上。
+        真要转移管理员，让另一个人来操作。
+        """
+        user = auth.authenticate()
+        if not user:
+            return jsonify({"code": 4000, "data": None, "msg": "登录已失效，请重新登录"}), 200
+        if "user:manage" not in auth.perms_of(user.get("RoleKey")):
+            return jsonify({"code": 4000, "data": None, "msg": "没有修改用户的权限"}), 200
+        g.current_user = user
+        body = request.get_json(silent=True) or {}
+        fields = {}
+        if "role_key" in body or "role" in body:
+            role_key = (body.get("role_key") or body.get("role") or "").strip()
+            if role_key not in auth._ROLE_PERMS:
+                return _ok(None, f"角色不合法：{role_key or '（空）'}")
+            if user_id == user["UserID"] and role_key != user.get("RoleKey"):
+                return _ok(None, "不能修改自己的角色（避免把自己降权后无法恢复）")
+            fields["RoleKey"] = role_key
+        if "is_active" in body:
+            if user_id == user["UserID"] and not body.get("is_active"):
+                return _ok(None, "不能停用自己")
+            fields["IsActive"] = _bit(body.get("is_active"))
+        for src, dst in (("name", "DisplayName"), ("email", "Email"), ("mobile", "Mobile")):
+            if src in body:
+                fields[dst] = (body.get(src) or "").strip() or None
+        if not fields:
+            return _ok(None, "没有要修改的内容")
+        try:
+            n = database.update_user(user_id, fields)
+        except DBError as exc:
+            return _ok(None, f"保存失败：{exc}")
+        auth.log_operation("update_user", target=str(user_id), detail=fields)
+        return _ok({"updated": n}, "已保存")
+
+    @bp.post("/api/system/user/<int:user_id>/reset_password/")
+    def user_reset_password(user_id: int):
+        """管理员重置他人密码。需要 user:manage。
+
+        ⚠️ 重置同样会 TokenVersion+1，被重置的人**当前登录立即失效**——
+        这正是重置密码想要的效果（账号可能已泄露）。
+        """
+        user = auth.authenticate()
+        if not user:
+            return jsonify({"code": 4000, "data": None, "msg": "登录已失效，请重新登录"}), 200
+        if "user:manage" not in auth.perms_of(user.get("RoleKey")):
+            return jsonify({"code": 4000, "data": None, "msg": "没有重置密码的权限"}), 200
+        g.current_user = user
+        body = request.get_json(silent=True) or {}
+        new_pwd = (body.get("password") or "").strip()
+        if len(new_pwd) < 6:
+            return _ok(None, "新密码至少 6 位")
+        try:
+            target = database.user_by_id(user_id)
+            if not target:
+                return _ok(None, "用户不存在")
+            database.set_user_password(user_id, auth.hash_password(new_pwd))
+        except DBError as exc:
+            return _ok(None, f"重置失败：{exc}")
+        auth.log_operation("reset_password", target=target.get("Username"))
+        return _ok(None, "密码已重置，该用户的登录会立即失效")
+
+    @bp.get("/api/system/operation_log/")
+    def operation_log_list():
+        """操作日志（供「系统管理」页展示）。需要 log:read 权限。"""
+        user = auth.authenticate()
+        if not user:
+            return jsonify({"code": 4000, "data": None, "msg": "登录已失效，请重新登录"}), 200
+        if "log:read" not in auth.perms_of(user.get("RoleKey")):
+            return jsonify({"code": 4000, "data": None, "msg": "没有查看操作日志的权限"}), 200
+        g.current_user = user
+        limit = min(int(request.args.get("limit") or 100), 500)
+        rows = database.recent_logs(limit=limit)
+        return _ok({"results": rows, "total": len(rows)})
+
     return bp
 def register_dvadmin(app) -> None:
     """注册兼容接口，并给**整个应用**装上 CORS（前端 8080 → 本服务 5000 是跨域）。
@@ -303,6 +573,13 @@ def register_dvadmin(app) -> None:
         它会参与 URL 匹配，把未注册的 /api/xxx 请求截成 405 METHOD NOT ALLOWED
         （请求方法对不上），反而比 404 更难懂。CORS 预检已由上面的 `_preflight`
         （before_request，只拦 OPTIONS）统一放行，这里只需专心处理"找不到"。
+
+        ⚠️⚠️ **托管前端之后这个 handler 的作用变了**（2026-09 加静态托管时补的说明）：
+        web.py 注册的 SPA 兜底路由 `@app.get('/<path:path>')` 会接住 `/platform/model`
+        这类前端路由。所以这个 404 handler 现在**只在下面两种情况下触发**：
+          · 非 GET 方法的未知路径（SPA 兜底只注册了 GET）→ 回 JSON 404 正确
+          · 前端产物缺失、web.py 没注册任何路由 → 回 JSON 404 也正确
+        也就是说它不会再"抢走"前端路由，保持原样即可，不需要额外分支。
         """
         return jsonify({
             "code": 404,

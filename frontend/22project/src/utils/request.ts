@@ -51,13 +51,33 @@ service.interceptors.response.use(
 	},
 	(error) => {
 		// 对响应错误做点什么
-		if (error.message.indexOf('timeout') != -1) {
+		// ⚠️ 这一段是"鉴权改造"专门要处理的：受保护的业务接口（/train、/predict、
+		//    /models 的写操作…）在未登录/无权限时返回的是**裸 JSON + 真实 HTTP 状态码**
+		//    （401/403），而不是 dvadmin 那套 {code,data,msg} 信封。上面那个
+		//    `if (res.code …)` 分支对它们**永远不会触发**，所以必须在这里接。
+		//    不加这段的后果是：令牌过期后点"训练"，用户只看到一句 "Unauthorized"，
+		//    不知道自己该重新登录，也不会被领回登录页。
+		const status = error.response?.status;
+		const data = error.response?.data;
+		if (status === 401) {
+			// 未登录 / 令牌过期 → 清缓存回登录页（与 code=401 的处理保持一致）
+			Session.clear();
+			ElMessageBox.alert(data?.error || '登录已失效，请重新登录', '提示', {})
+				.then(() => { window.location.href = '/'; })
+				.catch(() => { window.location.href = '/'; });
+		} else if (status === 403) {
+			// 已登录但权限不够：**不要**把人踢回登录页——他是有效用户，
+			// 只是这个操作需要更高角色。只提示，页面留在原地。
+			ElMessage.error(data?.hint || data?.error || '当前账号没有该操作权限');
+		} else if (error.message.indexOf('timeout') != -1) {
 			ElMessage.error('网络超时');
 		} else if (error.message == 'Network Error') {
 			ElMessage.error('网络连接错误');
 		} else {
-			if (error.response.data) ElMessage.error(error.response.statusText);
-			else ElMessage.error('接口路径找不到');
+			// 优先显示后端给的具体原因（"xx 不存在""版本号重复"…），
+			// 拿不到再退回状态文本——原来只显示 statusText，信息量太少
+			const detail = data?.error || data?.msg || error.response?.statusText;
+			ElMessage.error(detail || '接口路径找不到');
 		}
 		return Promise.reject(error);
 	}

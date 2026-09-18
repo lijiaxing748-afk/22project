@@ -22,6 +22,8 @@ sys.path.append(str(Path(__file__).parent))
 from model_service.api import register_api                    # noqa: E402
 from model_service.dvadmin import register_dvadmin            # noqa: E402
 from model_service.config import LOG_DIR                      # noqa: E402
+from model_service.db import database                          # noqa: E402
+from model_service.web import register_frontend                # noqa: E402
 
 app = Flask(__name__)
 api = Api(app)
@@ -82,8 +84,49 @@ def _safe_body():
 
 register_dvadmin(app)          # 先注册兼容层（含 404 兜底与 CORS，必须在业务接口之前）
 register_api(api)              # 再注册业务接口
+# ⚠️ 前端托管必须放**最后**。它的兜底路由 `/<path:path>` 是无差别匹配，
+#    注册早了会把 /health、/models 这些接口一起吃掉，统一返回 index.html
+#    （表现为"接口全部返回一坨 HTML"，前端 axios 报 Unexpected token <）。
+#    Flask 按注册顺序匹配，所以"最后注册 = 最低优先级"正是我们要的。
+register_frontend(app)
+
+
+def _bootstrap_auth():
+    """首次启动时补建鉴权相关的东西。**任一环节失败都不阻止服务启动。**
+
+    为什么允许失败：这个函数只在"库还没建过表 / 还没账号"时有实际动作。
+    如果数据库连不上，服务本来就该带着"数据库不可用"的状态起来、
+    在 /health 里如实回报，而不是直接启动不了——后者会让排查变得很难
+    （连界面都打不开，看不到任何错误信息）。
+
+    ⚠️ 建表这一步在 ensure_schema() 里已经做了（Users/Roles/OperationLogs
+    随 schema_mysql.sql 一起建），这里只负责**造种子账号**：
+    账号密码要用配置里的值现算哈希，不能写死在 SQL 里（那样每台机器一个密码）。
+    """
+    from model_service import auth
+    from model_service.config import config
+    try:
+        n = database.bootstrap_users(
+            auth.hash_password(config.bootstrap_admin_password or "Admin@2026"),
+            # 没显式配 MODEL_BOOTSTRAP_ADMIN_PASSWORD 时，连带造两个演示账号，
+            # 方便"发给老师前先自己试"。真要交付工厂时，env 里配上自己的口令
+            # 并把 with_samples 关掉（见 README）就不会留下默认口令的账号。
+            with_samples=not config.bootstrap_admin_password,
+        )
+        if n:
+            print(f"[鉴权] 已创建 {n} 个初始账号（admin / engineer / operator）")
+        if config.auth_disabled:
+            print("[鉴权] ⚠️ 鉴权已被 MODEL_AUTH_DISABLED 关闭，任何人都能调用接口！")
+        elif config.auth_key_is_default:
+            print("[鉴权] ⚠️ 未配置 MODEL_SECRET_KEY，本次启动使用随机密钥"
+                  "（重启后需要重新登录）")
+    except Exception as exc:
+        print(f"[鉴权] 初始化跳过（{type(exc).__name__}: {exc}）；"
+              f"服务继续启动，若无法登录请检查数据库连接")
+
 
 if __name__ == '__main__':
+    _bootstrap_auth()
     # threaded=True：/train 是同步阻塞的，避免一条训练请求把整个服务卡住
     print(f"[启动] 未捕获异常会写入: {ERROR_LOG}")
     app.run(debug=True, threaded=True)

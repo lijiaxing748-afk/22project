@@ -11,7 +11,9 @@
 					<span>模型清单（登记信息 + 模型参数）</span>
 					<span class="hint" style="margin-left: 8px">点任意一行，下方展示该模型的完整参数</span>
 					<span style="float: right">
-						<el-button type="primary" size="small" @click="openUpload">上传模型</el-button>
+						<!-- 按权限显隐。上传模型会写盘 + 登记 Models 表，需要 model:write；
+						     操作员没有这个权限，藏掉按钮免得点出来一个 403 -->
+						<el-button v-if="canWrite" type="primary" size="small" @click="openUpload">上传模型</el-button>
 						<el-button size="small" @click="loadModels">刷新</el-button>
 					</span>
 				</template>
@@ -49,9 +51,13 @@
 					</el-table-column>
 					<el-table-column label="操作" min-width="160" align="center">
 						<template #default="{ row }">
-							<el-button link type="primary" @click.stop="openEdit(row)">编辑</el-button>
-							<el-button link type="success" :disabled="!row.art" @click.stop="openExport(row)">发布</el-button>
-							<el-button link type="danger" @click.stop="removeModel(row)">删除</el-button>
+							<!-- 三个动作对应三个不同权限点：
+							     编辑=model:write，发布=export:run，删除=model:delete。
+							     操作员一个都没有，所以这一列对他只剩空模板（分组仍显示，只是没按钮）。 -->
+							<el-button v-if="canWrite" link type="primary" @click.stop="openEdit(row)">编辑</el-button>
+							<el-button v-if="canExport" link type="success" :disabled="!row.art" @click.stop="openExport(row)">发布</el-button>
+							<el-button v-if="canDelete" link type="danger" @click.stop="removeModel(row)">删除</el-button>
+							<span v-if="!canWrite && !canExport && !canDelete" class="hint">只读</span>
 						</template>
 					</el-table-column>
 				</el-table>
@@ -183,9 +189,14 @@
 							<el-form-item v-if="!isAdtkTrain" label="越界窗口">
 								<el-switch v-model="train.strict" active-text="跳过（推荐，不补 NaN）" inactive-text="复刻旧脚本（补 NaN）" />
 							</el-form-item>
-							<el-button type="primary" :loading="training" @click="doTrain">
-								{{ training ? `训练中… ${elapsed}s` : '开始训练' }}
-							</el-button>
+							<!-- 训练面板整块对只读角色隐藏：连"填了参数才发现没权限"都不该发生 -->
+							<template v-if="canTrain">
+								<el-button type="primary" :loading="training" @click="doTrain">
+									{{ training ? `训练中… ${elapsed}s` : '开始训练' }}
+								</el-button>
+							</template>
+							<el-alert v-else type="info" :closable="false" show-icon
+								title="当前账号没有训练权限（需要「算法工程师」及以上）" />
 						</el-form>
 					</el-card>
 				</el-col>
@@ -518,7 +529,7 @@
 					<template #default="{ row }">
 						<el-button link type="primary" :disabled="row.DeployStatus !== '已导出'"
 							@click="downloadExport(fileName(row.DeployedPath))">下载</el-button>
-						<el-button link type="danger" :disabled="row.DeployStatus !== '已导出'"
+						<el-button v-if="canExportDelete" link type="danger" :disabled="row.DeployStatus !== '已导出'"
 							@click="removeExport(fileName(row.DeployedPath), row.DeploymentID)">删除</el-button>
 					</template>
 				</el-table-column>
@@ -527,7 +538,7 @@
 
 		<template #footer>
 			<el-button @click="dialog.exportVisible = false">关闭</el-button>
-			<el-button type="primary" :loading="exporting" @click="doExport">打包发布</el-button>
+			<el-button v-if="canExport" type="primary" :loading="exporting" @click="doExport">打包发布</el-button>
 		</template>
 	</el-dialog>
 
@@ -563,6 +574,16 @@ import { computed, defineComponent, h, onMounted, reactive, ref } from 'vue';
 import { useRoute } from 'vue-router';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { platformApi, fileUrl } from '/@/api/platform';
+import { hasPerm } from '/@/stores/userInfo';
+
+// ---------- 按钮权限（只控制显隐；真正的拦截在后端 @require_perm）----------
+// 用 computed 而不是直接调 hasPerm()：用户信息是异步 hydrate 的，
+// 写成普通常量会在拿到权限之前就定死成 false，按钮永远不出现。
+const canWrite = computed(() => hasPerm('model:write'));
+const canDelete = computed(() => hasPerm('model:delete'));
+const canExport = computed(() => hasPerm('export:run'));
+const canExportDelete = computed(() => hasPerm('export:delete'));
+const canTrain = computed(() => hasPerm('train:run'));
 
 /** 写库回执的小标签 */
 const Tag = defineComponent({

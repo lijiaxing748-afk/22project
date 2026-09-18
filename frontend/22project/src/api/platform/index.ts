@@ -7,6 +7,7 @@
  *     utils/request.ts 的拦截器会直接放行）
  */
 import platformRequest from '/@/utils/platformRequest';
+import { Session } from '/@/utils/storage';
 const request = platformRequest as any;
 
 const q = (params: Record<string, any>) =>
@@ -91,10 +92,25 @@ export const platformApi = {
 	maintenance: (target: string) => request({ url: '/system/maintenance', method: 'post', data: { target } }),
 };
 
-/** 图/文件的完整地址（VITE_API_URL 可能是绝对地址，也可能是 /api 这样的前缀） */
+/**
+ * 图/文件的完整地址（VITE_API_URL 可能是绝对地址，也可能是 /api 这样的前缀）。
+ *
+ * ⚠️ 这里会**自动追加 ?token=**，原因：这些 URL 是给 <a href> / <img src> / 新窗口用的，
+ * 浏览器发这类请求时**带不上自定义请求头**，axios 拦截器里那行 Authorization 根本不会执行。
+ * 而鉴权改造后下载发布包（GET /models/<名>/exports/<包>）是要登录的，
+ * 不带令牌就是 401。所以令牌只能走 query 参数。
+ *
+ * ⚠️ 已经是绝对 http(s) 地址的（后端返回的 download_url 等）**保持原样不动**：
+ * 那种地址可能指向别的服务，塞本机令牌过去等于把凭据泄露给第三方。
+ * 后端返回的 download_url 是相对路径，走的是下面这条分支，所以也会自动带上令牌。
+ */
 export function fileUrl(path: string) {
 	if (!path) return '';
 	if (/^https?:\/\//.test(path)) return path;
 	const base = (import.meta.env.VITE_API_URL as string) || '';
-	return `${base.replace(/\/$/, '')}${path}`;
+	const url = `${base.replace(/\/$/, '')}${path}`;
+	const token = Session.get('token');
+	if (!token) return url;
+	// 用 ? 还是 & 取决于原地址有没有查询串；encodeURIComponent 兜住令牌里的特殊字符
+	return `${url}${url.includes('?') ? '&' : '?'}token=${encodeURIComponent(token)}`;
 }

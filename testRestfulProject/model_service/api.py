@@ -37,6 +37,7 @@ from flask_restful import Resource
 from . import datasets as ds
 from . import exporter
 from . import tabular
+from .auth import log_operation, require_login, require_perm
 from .config import config
 from .db import DBError, database
 from .figures import FIG_DIR, clear_figures, list_figures
@@ -342,7 +343,15 @@ def _resolve_workspace_path(raw: str) -> Path:
             return resolved
     raise InvalidInput(f"文件不存在或不在工作区内：{raw}")
 class ApiIndex(Resource):
-    """GET / —— 接口索引，给人和「系统管理→接口索引」页看的自描述清单（/api 是同一个东西）。"""
+    """GET / 与 GET /api —— 接口索引，给人和「系统管理→接口索引」页看的自描述清单。
+
+    ⚠️ 两个 URL 的内容**完全一样**，但实际能不能从 `/` 访问到，取决于是否托管了前端：
+       · 没有前端产物（只部署后端）→ `/` 就是本接口，访问根路径看到接口清单，便于调试
+       · 有前端产物（单端口部署）→ `/` 被 web.py 让给了前端首页，
+         取接口清单请走 **`/api`**（就是这个类，内容一致）
+       原因见 model_service/web.py 里 register_frontend() 的说明：
+       交付时用户输 http://ip:8080/ 必须进系统，而不是看到一坨 JSON。
+    """
     def get(self):
         # endpoints 由 _route_index() 从**注册表**生成，不再手抄：手抄那份已经漂过两次
         # （索引里留着早已删除的 /todos，同时漏掉 4 条真实存在的路由）。
@@ -452,6 +461,7 @@ class DatasetList(Resource):
 class DatasetUpload(Resource):
     """上传表格文件到 data/datasets/<数据集名>/（一个文件 = 一个类别）。"""
     MAX_MB = 80
+    @require_perm("dataset:write")
     def post(self):
         """保存上传的表格文件，一个文件 = 一个类别（文件名即标签）。"""
         name = (request.form.get("name") or "").strip()
@@ -525,11 +535,12 @@ class TablePreview(Resource):
             return {"error": f"{type(exc).__name__}: {exc}"}, 500
         return data, 200
 class Train(Resource):
-    """POST /train —— 训练入口。
+    """POST /train —— 训练入口。**需要 train:run 权限**。
 
     这一层只做**参数校验与归一化**（模型名、epochs、rate、dataset_dir 的路径安全），
     真正的训练在 training.train() 里同步跑完，所以本接口耗时长、不能并发压。
     """
+    @require_perm("train:run")
     def post(self):
         body = _body()
         try:
@@ -657,11 +668,12 @@ def _log_failed_inference(name: str, exc: Exception, client_ip: str | None, body
     except Exception:                                        # 写日志失败绝不能盖掉原始异常
         pass
 class Predict(Resource):
-    """POST /predict —— 推理入口。
+    """POST /predict —— 推理入口。**需要 predict:run 权限**。
 
     入参既可以是 samples（内联数组），也可以是 path（工作区内的文件）；
     成功返回结构化的 predictions + summary + figures + db 回执。
     """
+    @require_perm("predict:run")
     def post(self):
         body = _body()
         try:
@@ -873,6 +885,7 @@ class ArtifactDetail(Resource):
         except ValueError as exc:
             return {"error": str(exc)}, 400
         return artifact.to_dict()
+    @require_perm("model:delete")
     def delete(self, model_name):
         """删除：?scope=artifact 删磁盘产物；?scope=record 删 Models 表登记行（带引用检查）。"""
         # 两种删除口径必须由调用方**显式选一个**：删的是磁盘产物，还是库表登记行？
@@ -881,10 +894,16 @@ class ArtifactDetail(Resource):
         try:
             scope = (request.args.get("scope") or "").strip()
             if scope == "artifact":
-                return delete_artifact(_artifact_key(model_name)), 200
+                result = delete_artifact(_artifact_key(model_name))
+                log_operation("delete_artifact", target=model_name, detail=result)
+                return result, 200
             if scope == "record":
                 force = request.args.get("force") in ("1", "true", "True")
-                return database.delete_model(_db_model_name(model_name), force=force), 200
+                result = database.delete_model(_db_model_name(model_name), force=force)
+                log_operation("delete_model", target=model_name,
+                              detail={"force": force, **{k: v for k, v in result.items()
+                                                         if k != "error"}})
+                return result, 200
             raise InvalidInput("删除必须指定 ?scope=artifact（删磁盘产物）或 ?scope=record（删库表登记行）")
         except FileNotFoundError as exc:
             return {"error": str(exc)}, 404
@@ -892,6 +911,7 @@ class ArtifactDetail(Resource):
             return {"error": str(exc)}, 409
         except ValueError as exc:                  # 含 InvalidInput（ValueError 子类）
             return {"error": str(exc)}, 400
+    @require_perm("model:write")
     def put(self, model_name):
         """改 Models 表的登记信息：Description / ModelType / ApiEndpoint / Status / IsActive。
 
@@ -998,6 +1018,7 @@ class ModelUpload(Resource):
     （推理侧按默认 784 处理，想固定就手动补 meta.json）。
     """
     MAX_MB = 500
+    @require_perm("model:write")
     def post(self):
         """接收文件夹或若干文件，探测→落盘→登记 Models 表。
 
@@ -1168,6 +1189,7 @@ def _upload_meta(form, safe, weights, probe, scaler, meta_blob):
     }, True
 class ModelCreate(Resource):
     """POST /models —— 新增一条 Models 表登记（不训练，只是登记/占位）。"""
+    @require_perm("model:write")
     def post(self):
         body = _body()
         # 两种键名都收：ModelName（库表风格，dvadmin 前端用）与 name（简化写法，脚本用）
@@ -1341,6 +1363,7 @@ class ModelExport(Resource):
             payload["db_error"] = db_hint
         return payload, 200
 
+    @require_perm("export:run")
     def post(self, model_name):
         """打包发布：生成 zip → 写 ModelDeployments → 返回下载地址。
 
@@ -1478,6 +1501,10 @@ class ModelExport(Resource):
         if training_warning:
             payload["warnings"].append(training_warning)
         payload["hint"] = "下载后解压，先看 README.md；example_infer.py 可直接运行验证"
+        log_operation("export", target=name,
+                      detail={"package": result.package.name, "version": version,
+                              "training_id": source_training_id,
+                              "size_kb": payload.get("size_kb")})
         return payload, 201
 
 
@@ -1504,8 +1531,14 @@ class ModelExportPackage(Resource):
     ⚠️ 路由注册顺序：本类必须排在 `/models/<model_name>` 之前。否则
     `/models/1DCNN/exports` 会被 ArtifactDetail 当成 model_name 吃掉（同一个坑见 _ROUTES 顶部注释）。
     """
+    @require_login
     def get(self, model_name, package):
-        """下载发布包。文件以附件形式返回，浏览器直接触发下载而不是打开。"""
+        """下载发布包。文件以附件形式返回，浏览器直接触发下载而不是打开。
+
+        ⚠️ 这里只需要 require_login（不要求 export:run）：浏览和取用别人做好的
+        模型包是**读**操作，现场操作员也该能下载。
+        令牌从 `?token=` 来——浏览器 <a href> 带不了自定义请求头，见 auth._extract_token()。
+        """
         try:
             key = _artifact_key(model_name)
             path = exporter.resolve_package(key, package)
@@ -1519,6 +1552,7 @@ class ModelExportPackage(Resource):
             str(path.parent), path.name, as_attachment=True, download_name=path.name,
             conditional=True)
 
+    @require_perm("export:delete")
     def delete(self, model_name, package):
         """删除一个发布包（只删磁盘文件 + 把记录标成「已删除」，**不删库记录**）。
 
@@ -1607,13 +1641,13 @@ class DatasetDb(Resource):
             # ⚠️ 库连不上给 503 而不是 500，并且照样带上 dialect：前端要能显示"配的是 MySQL、但连不上"，
             # 而不是一个什么都不带的 500 —— 这类故障排查全靠这一句话
             return {"error": str(exc), "dialect": database.dialect}, 503
+    @require_perm("dataset:write")
     def post(self):
         """登记一个数据集（同名则沿用已有行，响应里的 already_existed 标明是哪种）。"""
         body = _body()
         name = (body.get("name") or "").strip()
         if not name:
-            return {"error": "name 不能为空"}, 400
-        # 登记是**幂等**的：同名数据集由 register_dataset 决定复用已有行，所以成功有两种状态码——
+            return {"error": "name 不能为空"}, 400        # 登记是**幂等**的：同名数据集由 register_dataset 决定复用已有行，所以成功有两种状态码——
         # 201 = 新建，200 = 复用了已有行（响应里的 already_existed 就是判据，前端据此提示"已存在"）
         try:
             result = database.register_dataset(
@@ -1866,6 +1900,31 @@ _ROUTES = (
 # 只影响「接口索引」页的显示，不参与路由匹配。
 _PATH_DISPLAY = {"<int:task_id>": "<id>", "<path:relpath>": "<路径>", "<model_name>": "<model>",
                  "<name>": "<名>", "<package>": "<包名>"}
+
+
+def api_root_segments() -> frozenset[str]:
+    """所有业务接口路径的**第一段**（`/models/...` → `models`）。
+
+    ⚠️ 用途只有一个：给 web.py 的 SPA 兜底路由判断"这个请求到底是不是接口"。
+    背景：SPA 兜底 `/<path:path>` 会接住所有没注册的路径，
+    于是一个**拼错接口名**的请求（比如 `/models/nope/nope`）会拿到一坨 HTML，
+    前端 axios 报 "Unexpected token <"，排查时容易往语法错误上跑偏。
+    有了这个集合就能识别出"第一段是已知资源名 → 这是接口，不是前端路由"，
+    从而如实回 JSON 404。
+
+    ⚠️ 从 `_ROUTES` **现算**而不是手写常量：手写那份一定会漂
+    （加接口时忘了同步，于是新接口的 404 又变回 HTML）。
+    ⚠️ 排除 `/` —— 它的第一段是空串，混进来会让所有路径都被当成接口。
+    """
+    segs = set()
+    for _resource, paths in _ROUTES:
+        for p in paths:
+            first = p.strip("/").split("/")[0]
+            if first and not first.startswith("<"):
+                segs.add(first)
+    return frozenset(segs)
+
+
 def _route_index() -> dict[str, str]:
     """路径 → 用途说明，直接取各 Resource 的 docstring 首行（不再手抄一份）。
 
@@ -1961,6 +2020,21 @@ def _install_path_mask(api) -> None:
         # 放在**出口**做而不是逐个字段改，是因为路径散落在 30 多个字段里
         # （directory/weights/dataset.path/log_file/input_path/报错信息……），逐个改必然漏
         mimetype = response.mimetype or ""
+
+        # ⚠️⚠️ 必须跳过"文件直通"响应（direct_passthrough）——这是加静态托管时踩到的坑：
+        #    send_from_directory() 返回的不是内存里的字符串，而是一个**打开的文件句柄**
+        #    （werkzeug 的 FileWrapper），且 direct_passthrough=True。
+        #    对这种响应调 get_data() 会直接抛：
+        #        RuntimeError: Attempted implicit sequence conversion but the
+        #        response object is in direct passthrough mode.
+        #    后果不只是"某个接口坏掉"——**托管进来的每一个前端页面都会 500**：
+        #    首页 index.html 是 text/html，正好落进下面 elif 那个分支。
+        #    也就是说没有这一行，单端口托管等于完全不可用。
+        #    判断用 direct_passthrough 而不是 is_streamed：后者对生成器也返回 True，
+        #    而生成器响应是**可以**安全读的，用 is_streamed 会把该脱敏的漏掉。
+        if response.direct_passthrough:
+            return response
+
         if mimetype == "application/json":
             try:
                 payload = json.loads(response.get_data(as_text=True) or "null")

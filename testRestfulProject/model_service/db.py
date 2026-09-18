@@ -33,9 +33,15 @@ class DBError(RuntimeError):
     """数据库层通用错误。"""
 class DBUnavailable(DBError):
     """连不上或驱动缺失——上层据此降级并回报，而不是静默忽略。"""
-# 建表脚本里应该有的 8 张表（_tables_present 用它判断"是否已经建好、可以跳过 DDL"）
+# 建表脚本里应该有的表（_tables_present 用它判断"是否已经建好、可以跳过 DDL"）
+# ⚠️ 这里必须与 sql/schema_mysql.sql 里的表**完全一致**：少写一张，老库上就会
+#    出现"表存在但名单里没有 → 判定为未建表 → 反复跑建表脚本"；
+#    多写一张不存在的，则**永远判定为未建表**，每次请求都白跑一遍脚本。
+#    ⚠️ 而且 _tables_present 是"全都在才返回 True"，任何一个名字对不上都会退化成
+#    "每次都跑脚本"，所以新增表时**两处必须同步改**（这就是它被放在 _TABLES 常量里的原因）。
 _TABLES = ("Datasets", "Models", "Trainings", "ModelInvocations",
-           "ModelDeployments", "InferenceTasks", "InferenceResults", "EdgeDevices")
+           "ModelDeployments", "InferenceTasks", "InferenceResults", "EdgeDevices",
+           "Roles", "Users", "OperationLogs")
 def _now() -> str:
     """统一时间戳格式：MySQL 能解析的字符串（截断到毫秒）。"""
     return datetime.now().isoformat(sep=" ", timespec="milliseconds")
@@ -888,6 +894,202 @@ class Database:
     # api/platform/index.ts 里声明过 updateDataset/deleteDataset 两个方法，没有任何页面调它们，
     # 路由本身也从来只是"登记的补录入口"，所以整组一并删除。
     # 数据集登记的**写入**仍走 POST /datasets/db，对应下面的 ensure_dataset()。
+    # -------------------------------------------------------------- 用户与角色
+    def user_by_username(self, username: str) -> dict | None:
+        """按用户名取一行（含 PasswordHash 与 TokenVersion）。
+
+        ⚠️ 这个函数**会把密码哈希带出去**，只给 auth.py 的登录校验与
+        authenticate() 用。任何要"返回给前端"的地方都必须走 auth.login_payload()，
+        它对字段做了白名单，不会漏出哈希。
+        """
+        if not username:
+            return None
+        self.ensure_schema()
+        with self.cursor() as cur:
+            cur.execute(f"SELECT * FROM Users WHERE Username = {self.placeholder}",
+                        (username,))
+            rows = self._rows_to_dicts(cur)
+        return rows[0] if rows else None
+
+    def user_by_id(self, user_id: int) -> dict | None:
+        """按主键取一行。同样含哈希（供改密码用）。"""
+        self.ensure_schema()
+        with self.cursor() as cur:
+            cur.execute(f"SELECT * FROM Users WHERE UserID = {self.placeholder}", (user_id,))
+            rows = self._rows_to_dicts(cur)
+        return rows[0] if rows else None
+
+    def list_users(self) -> list[dict]:
+        """用户清单（**不含 PasswordHash**，这个结果会直接发给前端）。"""
+        self.ensure_schema()
+        with self.cursor() as cur:
+            cur.execute("SELECT UserID, Username, DisplayName, RoleKey, DeptName, Email, "
+                        "Mobile, IsActive, LastLogin, LoginCount, CreatedDate "
+                        "FROM Users ORDER BY UserID")
+            return self._rows_to_dicts(cur)
+
+    def create_user(self, username: str, password_hash: str, role_key: str, *,
+                    display_name: str | None = None, dept_name: str | None = None,
+                    email: str | None = None, mobile: str | None = None) -> int:
+        """新建用户，返回 UserID。用户名重复会抛 DBError（唯一键冲突）。
+
+        ⚠️ 只收**已经哈希好**的密码：本层不做哈希，免得多一条"有人绕过哈希
+        直接传明文"的路径。调用方必须用 auth.hash_password()。
+        """
+        self.ensure_schema()
+        with self.cursor(commit=True) as cur:
+            cur.execute(
+                f"INSERT INTO Users (Username, PasswordHash, DisplayName, RoleKey, DeptName, "
+                f"Email, Mobile, IsActive, TokenVersion, CreatedDate) VALUES "
+                f"({self.placeholder}, {self.placeholder}, {self.placeholder}, {self.placeholder}, "
+                f"{self.placeholder}, {self.placeholder}, {self.placeholder}, 1, 0, {self.placeholder})",
+                (username, password_hash, display_name or username, role_key, dept_name,
+                 email, mobile, _now()))
+            return int(cur.lastrowid)
+
+    def set_user_password(self, user_id: int, password_hash: str) -> None:
+        """改密码，并把 TokenVersion +1（让旧令牌立刻失效）。
+
+        ⚠️ 两件事必须在**同一个 UPDATE** 里做。分开写的话，中间崩溃就会出现
+        "密码改了但令牌没失效"，或者反过来"令牌失效了但密码没改成"——
+        前者是安全问题（旧令牌还能用），后者是可用性问题（用户被锁在外面）。
+        """
+        self.ensure_schema()
+        with self.cursor(commit=True) as cur:
+            cur.execute(
+                f"UPDATE Users SET PasswordHash = {self.placeholder}, "
+                f"TokenVersion = COALESCE(TokenVersion, 0) + 1, UpdatedDate = {self.placeholder} "
+                f"WHERE UserID = {self.placeholder}",
+                (password_hash, _now(), user_id))
+
+    def update_user(self, user_id: int, fields: dict) -> int:
+        """改用户的可编辑字段（角色/启停/显示名等）。返回受影响行数。
+
+        白名单式写入：只认下面这几个键，别的键静默忽略。
+        ⚠️ 刻意**不允许**从这里改 Username 与 PasswordHash：
+        用户名是令牌载荷里的身份键，改了会让存量令牌全部对不上；
+        密码必须走 set_user_password() 才能保证 TokenVersion 一起递增。
+        """
+        allowed = ("DisplayName", "RoleKey", "DeptName", "Email", "Mobile", "IsActive")
+        sets, params = [], []
+        for key in allowed:
+            if key in fields:
+                sets.append(f"{key} = {self.placeholder}")
+                params.append(fields[key])
+        if not sets:
+            return 0
+        sets.append(f"UpdatedDate = {self.placeholder}")
+        params.append(_now())
+        params.append(user_id)
+        self.ensure_schema()
+        with self.cursor(commit=True) as cur:
+            cur.execute(f"UPDATE Users SET {', '.join(sets)} WHERE UserID = {self.placeholder}",
+                        tuple(params))
+            return cur.rowcount
+
+    def touch_login(self, user_id: int) -> None:
+        """记录一次成功登录（LastLogin + LoginCount++）。
+
+        ⚠️ 用 `LoginCount = COALESCE(LoginCount, 0) + 1` 而不是在 Python 里读出来加一：
+        并发登录时读-改-写会丢计数，交给数据库做自增才准。
+        失败**不抛异常**——登录已经成功了，更新统计失败不该让人登不进来。
+        """
+        try:
+            with self.cursor(commit=True) as cur:
+                cur.execute(
+                    f"UPDATE Users SET LastLogin = {self.placeholder}, "
+                    f"LoginCount = COALESCE(LoginCount, 0) + 1 WHERE UserID = {self.placeholder}",
+                    (_now(), user_id))
+        except Exception:
+            pass
+
+    def roles_in_db(self) -> list[dict]:
+        """角色清单（Roles 表；空表时返回空，由调用方兜底代码里的默认三个）。"""
+        self.ensure_schema()
+        with self.cursor() as cur:
+            cur.execute("SELECT RoleID, RoleKey, RoleName, Description, IsActive "
+                        "FROM Roles ORDER BY RoleID")
+            return self._rows_to_dicts(cur)
+
+    def count_users(self) -> int:
+        """用户数量。用来判断"是否还没初始化过账号"（决定要不要种种子用户）。"""
+        self.ensure_schema()
+        with self.cursor() as cur:
+            cur.execute("SELECT COUNT(*) FROM Users")
+            return int(cur.fetchone()[0])
+
+    def bootstrap_users(self, admin_password_hash: str, *, with_samples: bool = True) -> int:
+        """首次启动时造种子账号。**只在 Users 表为空时**才插，返回插了几行。
+
+        ⚠️ 为什么不在 sql/schema_mysql.sql 里写 INSERT IGNORE 种子用户：
+        那样每个部署都会拿到**同一个密码哈希**，等于全网一个密码；而且脚本是幂等的，
+        想改密码还得手工 UPDATE。放在这里就能用配置里的口令现算哈希，
+        每台机器各自独立。
+        ⚠️ with_samples=False 时只建 admin：工厂交付时不该留着一堆默认口令的演示账号。
+        """
+        if self.count_users() > 0:
+            return 0
+        from .auth import ROLE_ADMIN, ROLE_ENGINEER, ROLE_OPERATOR, hash_password, role_name_of
+        seeded = [("admin", admin_password_hash, ROLE_ADMIN, "系统管理员")]
+        if with_samples:
+            # 演示账号口令是固定的，**部署到工厂前应当删掉或改密**。
+            # 用与 admin 不同的口令，避免"一个密码开所有门"。
+            seeded = [
+                ("admin", admin_password_hash, ROLE_ADMIN, "系统管理员"),
+                ("engineer", hash_password("Engineer@2026"), ROLE_ENGINEER, "算法工程师"),
+                ("operator", hash_password("Operator@2026"), ROLE_OPERATOR, "现场操作员"),
+            ]
+        n = 0
+        for username, pwd_hash, role_key, display in seeded:
+            try:
+                self.create_user(username, pwd_hash, role_key,
+                                 display_name=display, dept_name="模型管理平台")
+                n += 1
+            except Exception:
+                # 并发启动时另一个线程可能已经插进去了（唯一键冲突），忽略继续
+                continue
+        # 角色表也补上，供「用户管理」页展示
+        try:
+            with self.cursor(commit=True) as cur:
+                for key in (ROLE_ADMIN, ROLE_ENGINEER, ROLE_OPERATOR):
+                    cur.execute(
+                        f"INSERT IGNORE INTO Roles (RoleKey, RoleName, IsActive, CreatedDate) "
+                        f"VALUES ({self.placeholder}, {self.placeholder}, 1, {self.placeholder})",
+                        (key, role_name_of(key), _now()))
+        except Exception:
+            pass
+        return n
+
+    # -------------------------------------------------------------- 操作日志
+    def log_operation(self, *, username: str | None, role_key: str | None, action: str,
+                      target: str | None = None, detail=None, client_ip: str | None = None,
+                      result: str = "成功", message: str | None = None) -> None:
+        """写一条操作日志。**任何失败都不抛异常**（记日志是旁路，不能拖垮主流程）。
+
+        调用方已经有一层 try/except，这里再兜一层：本函数的调用点散布在
+        api.py 各处，漏包一处就会让"删除成功但日志写失败"变成 500。
+        """
+        try:
+            with self.cursor(commit=True) as cur:
+                cur.execute(
+                    f"INSERT INTO OperationLogs (Username, RoleKey, Action, Target, Detail, "
+                    f"ClientIP, Result, Message, CreatedDate) VALUES "
+                    f"({self.placeholder}, {self.placeholder}, {self.placeholder}, {self.placeholder}, "
+                    f"{self.placeholder}, {self.placeholder}, {self.placeholder}, {self.placeholder}, "
+                    f"{self.placeholder})",
+                    (username, role_key, _clip(action, 50), _clip(target, 200),
+                     _dump_json(detail), _clip(client_ip, 45), _clip(result, 20),
+                     _clip(message, 500), _now()))
+        except Exception:
+            pass
+
+    def recent_logs(self, limit: int = 100) -> list[dict]:
+        """最近的操作日志（新的在前）。"""
+        return self._select_limited(
+            "LogID, Username, RoleKey, Action, Target, ClientIP, Result, Message, CreatedDate",
+            "FROM OperationLogs ORDER BY LogID DESC",
+            limit)
+
     def table_counts(self, max_age: float = 30.0) -> dict:
         """8 张表的行数。**带 30 秒缓存**——/health 与 /system 每次都要它，而 8 条 COUNT(*) 在
         MySQL 上不算便宜（之前每个请求都真跑一遍，是页面跳转慢的一个来源）。
@@ -905,7 +1107,8 @@ class Database:
         out: dict[str, int] = {}
         with self.cursor() as cur:
             for table in ("Datasets", "Models", "Trainings", "ModelInvocations",
-                          "ModelDeployments", "InferenceTasks", "InferenceResults", "EdgeDevices"):
+                          "ModelDeployments", "InferenceTasks", "InferenceResults", "EdgeDevices",
+                          "Users", "OperationLogs"):
                 cur.execute(f"SELECT COUNT(*) FROM {table}")
                 out[table] = int(cur.fetchone()[0])
         self._counts_cache = {"at": now, "data": out}

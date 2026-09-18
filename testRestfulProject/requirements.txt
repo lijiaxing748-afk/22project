@@ -57,6 +57,9 @@ blinker==1.9.0
 aniso8601==10.0.1
 click==8.5.0
 MarkupSafe==3.0.3
+# 生产 WSGI 服务器（serve.py 用它代替 app.run，见 serve.py 顶部说明）。
+# 纯 Python 实现、Windows 无需编译，离线部署时直接下 wheel 即可。
+waitress==3.0.2
 
 # ---------- 数据库 ----------
 PyMySQL==1.2.0

@@ -13,6 +13,9 @@
      6. ModelDeployments    模型发布记录
      7. InferenceTasks      推理任务
      8. InferenceResults    推理结果明细
+     9. Roles               角色
+    10. Users               用户（登录凭据）
+    11. OperationLogs       操作审计日志
    特点:
      - CREATE TABLE IF NOT EXISTS，可重复执行
      - 外键在建表时内联（依赖顺序已排好）
@@ -233,6 +236,89 @@ CREATE TABLE IF NOT EXISTS `InferenceResults` (
     KEY `IX_InferenceResults_Timestamp` (`ResultTimestamp`),
     CONSTRAINT `FK_InferenceResults_Tasks`  FOREIGN KEY (`InferenceTaskID`) REFERENCES `InferenceTasks` (`InferenceTaskID`),
     CONSTRAINT `FK_InferenceResults_Models` FOREIGN KEY (`ModelID`)          REFERENCES `Models` (`ModelID`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+
+/* ---------------- 9. Roles ---------------- */
+CREATE TABLE IF NOT EXISTS `Roles` (
+    /* 角色：权限的唯一来源。RoleKey 是对外的稳定标识（前端按它判按钮显隐），
+       RoleName 只是给人看的，改名字不影响逻辑。
+       ⚠️ 权限是**写死在代码里**的（见 model_service/auth.py 的 _ROLE_PERMS），
+       这张表只负责"有哪些角色、每个角色叫什么、是否启用"，不做通用的权限点配置。
+       理由：本平台角色就三个、变动极少，做成通用 RBAC 权限表属于过度设计，
+       而且会让"这个角色到底能干什么"变得只能查库才能回答。 */
+    `RoleID`      INT           NOT NULL AUTO_INCREMENT,
+    `RoleKey`     VARCHAR(50)   NOT NULL,     -- admin / engineer / operator
+    `RoleName`    VARCHAR(100)  NOT NULL,     -- 超级管理员 / 算法工程师 / 现场操作员
+    `Description` VARCHAR(500)  NULL,
+    `IsActive`    TINYINT(1)    NULL DEFAULT 1,
+    `CreatedDate` DATETIME(6)   NULL DEFAULT CURRENT_TIMESTAMP(6),
+    PRIMARY KEY (`RoleID`),
+    UNIQUE KEY `UQ_Roles_RoleKey` (`RoleKey`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+
+/* ---------------- 10. Users ---------------- */
+CREATE TABLE IF NOT EXISTS `Users` (
+    /* 用户：登录凭据 + 归属角色。
+       密码只存哈希（werkzeug pbkdf2:sha256），**任何情况下都不落明文**，
+       连"初始密码"都只在种子数据和重置接口里出现一次。
+       ⚠️ PasswordHash 给 VARCHAR(255)：pbkdf2:sha256 的输出约 100 字符，
+       未来若换 argon2 会更长，留足余量免得改列。 */
+    `UserID`       INT           NOT NULL AUTO_INCREMENT,
+    `Username`     VARCHAR(50)   NOT NULL,
+    `PasswordHash` VARCHAR(255)  NOT NULL,
+    `DisplayName`  VARCHAR(100)  NULL,        -- 界面上显示的名字（"张工"），不参与登录
+    `RoleKey`      VARCHAR(50)   NOT NULL,    -- 直接存角色键，见下方"为什么不建 Users_Roles 中间表"
+    `DeptName`     VARCHAR(100)  NULL,
+    `Email`        VARCHAR(100)  NULL,
+    `Mobile`       VARCHAR(30)   NULL,
+    `IsActive`     TINYINT(1)    NULL DEFAULT 1,   -- 0 = 停用（离职/临时封禁），登录时拒绝
+    `Remark`       VARCHAR(500)  NULL,
+    `LastLogin`    DATETIME(6)   NULL,
+    `LoginCount`   INT           NULL DEFAULT 0,
+    /* 令牌版本：改密码时 +1，让此前签发的所有令牌立即失效。
+       ⚠️ 令牌是无状态自签的，服务端没有"会话列表"可以清理，所以需要一个
+       能被令牌携带、也能被服务端比对的计数器来实现"改密码即踢下线"。
+       没这个字段的话，改完密码旧令牌照样能用满 12 小时。 */
+    `TokenVersion` INT           NULL DEFAULT 0,
+    `CreatedDate`  DATETIME(6)   NULL DEFAULT CURRENT_TIMESTAMP(6),
+    `UpdatedDate`  DATETIME(6)   NULL,
+    PRIMARY KEY (`UserID`),
+    UNIQUE KEY `UQ_Users_Username` (`Username`),
+    KEY `IX_Users_RoleKey` (`RoleKey`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+/* ⚠️ 为什么**不**建 Users_Roles 中间表（多对多）：
+   本项目一人只可能有一个角色——"算法工程师兼现场操作员"这种需求从没出现过，
+   而多对多会立刻带来"取权限时要不要合并、冲突时听谁的"这类问题，
+   收益为零、复杂度实打实。真需要一人多角色时再加中间表也不迟（本表 RoleKey 可留作主角色）。
+   同理，RoleKey 没有加外键约束指向 Roles.RoleKey：种子数据里 Users 的插入顺序
+   与 Roles 的先后关系会让外键成为负担，而角色键的合法性在代码里已经校验了。 */
+
+
+/* ---------------- 11. OperationLogs ---------------- */
+CREATE TABLE IF NOT EXISTS `OperationLogs` (
+    /* 操作审计日志：记录"谁在什么时候干了什么"。
+       工厂场景下最关心的是**训练、发布、删除**这三类动作——模型换了版本、
+       谁把记录删了，都必须能追溯。
+       ⚠️ 写入必须"尽力而为"：记日志失败**绝不能**让业务操作回滚。
+       用户点了删除、文件真删了，却因为写日志失败而报错，那是本末倒置。
+       所以 db.log_operation() 内部吞掉异常（见实现）。 */
+    `LogID`         BIGINT        NOT NULL AUTO_INCREMENT,
+    `Username`      VARCHAR(50)   NULL,       -- 操作人；未登录/匿名时为 NULL
+    `RoleKey`       VARCHAR(50)   NULL,
+    `Action`        VARCHAR(50)   NOT NULL,   -- login / train / predict / export / delete_model …
+    `Target`        VARCHAR(200)  NULL,       -- 操作对象（模型名/包名/用户）
+    `Detail`        LONGTEXT      NULL,       -- 请求摘要 JSON（已脱敏、已截断）
+    `ClientIP`      VARCHAR(45)   NULL,
+    `Result`        VARCHAR(20)   NULL,       -- 成功 / 失败
+    `Message`       VARCHAR(500)  NULL,       -- 失败原因或补充说明
+    `CreatedDate`   DATETIME(6)   NULL DEFAULT CURRENT_TIMESTAMP(6),
+    PRIMARY KEY (`LogID`),
+    KEY `IX_OperationLogs_CreatedDate` (`CreatedDate`),
+    KEY `IX_OperationLogs_Action` (`Action`),
+    KEY `IX_OperationLogs_Username` (`Username`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 

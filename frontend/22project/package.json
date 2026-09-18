@@ -9,6 +9,7 @@
 		"build:dev": "vite build --mode development",
 		"build": "vite build",
 		"build:local": "vite build --mode local_prod",
+		"build:singleport": "vite build --mode singleport",
 		"lint-fix": "eslint --fix --ext .js --ext .jsx --ext .vue src/",
 		"build:flowH5": "vite build --config flowH5.config.ts"
 	},
