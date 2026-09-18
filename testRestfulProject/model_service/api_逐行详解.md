@@ -1,8 +1,28 @@
 # api.py 逐行详解
 
-> 对应文件：`testRestfulProject/model_service/api.py`（共 1604 行）
+> 对应文件：`testRestfulProject/model_service/api.py`（本文基准版 `e361fa6` 共 1604 行；当前 `06a8fb8` 为 1649 行，见下方「行号基准」）
 > 本文按**行号**逐行解释：每一行都有对应的条目，相邻且属于同一逻辑的行合并为一条（写在
 > 一个区间里），但**没有任何一行被跳过**。行号与当前文件一一对应，改动代码后请重新生成。
+
+> ## ⚠️ 行号基准（2026-09-18 补记）
+>
+> 本文写于提交 `e361fa6`，当时 api.py 是 **1604 行**。此后提交 **`06a8fb8`** 修掉了本文
+> 列出的 **5 个问题**（落在后端 7 处代码位点 + 前端 4 处文案），**净增 45 行**（现 **1649 行**）。
+> 本文已把那几处的正文改写成当前实现口径并标注了新行号，**其余的行号引用一律仍是
+> `e361fa6` 的旧编号**（文末有精确换算表，一眼可换算）。之所以不整体重排：文中大量出现
+> `784`、`500`、`1500` 这类**数据字面量**，与行号混在一句话里，机器批量加偏移会把字面量一起改错。
+>
+> 改动位点（旧行号 → 新行号）：
+>
+> | 改动 | 旧 | 新 |
+> | --- | --- | --- |
+> | `_PACKAGES` 去掉 pyodbc/pywin32/python-docx | 44–46 | 44–48 |
+> | 新增 `_PICKLE_MAX_OPS` | — | 49–50 |
+> | `_HEAD_LAYER_RE` 加词边界 | 60–61 | 65–72 |
+> | `probe_weight` docstring 按实现重写 | 158–159 | 169–181 |
+> | 后缀不支持时的 reason 补 `.pt2` | 168 | 190–191 |
+> | `.pkl` 判据改成`pickletools` 操作码校验 | 278–282 | 301–325 |
+> | 上传两处文案补 `.pt2` | 1012 / 1032 | 1055–1056 / 1076–1077 |
 
 ## 怎么用这份文档
 
@@ -62,13 +82,14 @@
 ## 行 43–61 · 模块级常量
 
 - **43** `_ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")` — 匹配 CSI 形态的 ANSI 转义序列（Keras 训练进度条会往 stdout 吐 `\x1b[K`、`\x1b[1m` 之类，被重定向进训练日志）。唯一使用点是 `SystemLogFile.get`（1430）`_ANSI.sub("", ln)`：日志按 `encoding="utf-8", errors="replace"` 读出来后在浏览器里显示，不剥掉就是乱码。
-- **44–46** `_PACKAGES = ("numpy", ..., "pywin32")` — `/system` 依赖版本表的**白名单**（1392 `{name: dist_version(name) for name in _PACKAGES}`）。写成元组常量而不是内联列表，是为了让它成为"本服务关心的包"的唯一清单；注意里面同时列了 `tensorflow`/`tf-nightly`、`keras`/`keras-nightly`，未安装的项会被 `dist_version` 变成 `None`。
+- **44–46**（**今 44–48 行；`06a8fb8` 已改**）`_PACKAGES = ("numpy", ..., "torch")` — `/system` 依赖版本表的**白名单**（1392 `{name: dist_version(name) for name in _PACKAGES}`）。写成元组常量而不是内联列表，是为了让它成为"本服务关心的包"的唯一清单；注意里面同时列了 `tensorflow`/`tf-nightly`、`keras`/`keras-nightly`，未安装的项会被 `dist_version` 变成 `None`。**改动**：删掉了 `pyodbc`、`pywin32`、`python-docx` —— 全项目零引用（SQL Server 分支早已删除），列在"依赖版本"里只会让人误以为平台依赖它们；`requirements.txt` 是 `pip freeze` 的整体快照，不等于依赖清单，所以只清理这张展示表。名字数从 17 变成 **14**。
+- **49–50**（新增）`_PICKLE_MAX_OPS = 20000` — `.pkl` 校验时最多解码多少个 pickle 操作码。为什么需要封顶：解码操作码是纯 Python，实测真 adtk 产物（610 个操作码）只要 0.37 ms，但"20 万个小键的 dict"这种畸形 2.7 MB 文件要解 60 万个操作码 / 358 ms，足以拖住一个工作线程。超限时判据退化为"前缀合法即放过"（宁可宽松，也不为畸形大文件卡住请求）。
 - **47** `MAX_EPOCHS = 200` — `/train` 的 `epochs` 上界（534–535：`1 <= epochs <= MAX_EPOCHS`，超出抛 `InvalidInput` → 400）。注释说"防止一条 HTTP 请求把服务占住几小时"，因为训练是同步阻塞的。
 - **48** `MAX_LIMIT = 500` — `POST /predict` 的 `limit`（窗口数）上界（669–670）。与 `/figures` 那类接口里硬编码的 `200`/`500` 是两套数字，改这里不会影响它们。
 - **49–51** 三条注释 — 交代探测功能的设计前提：「上传时不要求用户填 input_len/类别数，先按扩展名分类，再打开文件看内容」。这就是 `probe_weight` 的存在理由，也解释了为什么它的失败态是 `ok=False` + 人话 `reason`（前端逐条展示）而不是抛异常。
 - **52–56** `WEIGHT_SUFFIXES = {...}` — 后缀 → 框架名的**第一层分类**（粗筛）。两个使用点：`probe_weight` 的开头闸门（164）与 `ModelUpload` 的 `_upload_blobs(..., WEIGHT_SUFFIXES, ...)`（1009 当作 `weight_whitelist` 挑候选）。它的**值**必须与 `inference._DISPATCH` 的键一致（`tensorflow-keras`/`pytorch`/`pytorch-exported`/`adtk`，见 inference.py:336–338），而 `pytorch-jit` 只在内容探测后才可能出现（232）。
-- **57–59** `KEEP_SUFFIXES = {...}` — 上传**文件夹**时"允许落盘"的附件白名单（1009 传给 `_upload_blobs` 的 `keep_suffix`），比权重白名单宽得多：允许 `scaler.npz`、`meta.json`、`*.txt/*.yaml/*.onnx` 等一起带上来，其余文件只记进响应里的 `skipped` 不写盘。注意它列了 `.pt2`/`.pickle`，而 168 行的错误提示文本里**漏了 `.pt2`**。
-- **60–61** `_HEAD_LAYER_RE = re.compile(r"(fc|classifier|linear|head|dense|out|output)\d*\.weight$")` — 用来在 torch `state_dict` 的键名里认出"分类头"（唯一使用点 271 `_HEAD_LAYER_RE.search(k)`），从而把该层 weight 的第 0 维当类别数。
+- **57–59** `KEEP_SUFFIXES = {...}` — 上传**文件夹**时"允许落盘"的附件白名单（1009 传给 `_upload_blobs` 的 `keep_suffix`），比权重白名单宽得多：允许 `scaler.npz`、`meta.json`、`*.txt/*.yaml/*.onnx` 等一起带上来，其余文件只记进响应里的 `skipped` 不写盘。注意它列了 `.pt2`/`.pickle`，而 168 行的错误提示文本里曾经**漏了 `.pt2`** —— **`06a8fb8` 已补**（今 190–191 行，后端 3 处 + 前端 4 处文案一起补的）。
+- **60–61**（**今 65–72 行；`06a8fb8` 已改**）`_HEAD_LAYER_RE = re.compile(r"(?<![A-Za-z0-9])(?:fc|classifier|linear|head|dense|out|output)\d*\.weight$")` — 用来在 torch `state_dict` 的键名里认出"分类头"（唯一使用点 271 `_HEAD_LAYER_RE.search(k)`），从而把该层 weight 的第 0 维当类别数。**改动**：加了否定环视 `(?<![A-Za-z0-9])`；没有它时 `re.search` 会把**更长的层名后缀**也算命中 —— 实测 `dropout.weight`、`about.weight`、`readout.weight`、`without.weight` 都因为结尾的 `out` 而匹配上，类别数就可能取到别的层。环视只挡"字母/数字左边"，`_` 是**故意放行**的（`self._fc.weight` 这类私有属性仍要认出来，而 `dropout` 前面是字母 `p`，照样被挡）。顺便把 `(?:...)` 改成非捕获组、注释写清了这条边界：`features.0.weight` 这种纯序号命名谁也认不出，走 272 行的兜底。
 
 ## 行 62–109 · `_keras_shapes(config)`
 
@@ -111,12 +132,12 @@
 **作用**：判断一个上传文件"是不是模型权重"，并尽量读出 `input_len` / `num_classes` —— 它是上传接口的核心判据。
 
 - **151** `def probe_weight(filename: str, blob: bytes) -> dict:` — 只吃内存字节（调用方在 `_upload_blobs` 里已把文件读进内存），所以本函数不做任何磁盘 IO，天然可测（`_selftest_upload.py` 就是直接喂字节）。
-- **152–160** docstring — 列出每种后缀的判据：`.h5` 要看 HDF5 里有没有 `model_weights` 组或 `model_config` 属性；`.keras` 看是不是 zip 且含 `config.json`/`metadata.json`；`.pt/.pth` 看 zip 里有没有 torch 的 `data.pkl` 并顺手读类别数；`.pkl` 只看 pickle 魔数、**绝不反序列化**（"上传即执行代码"的风险）。
+- **152–160**（**今 169–181 行；`06a8fb8` 已按实现重写**）docstring — 列出每种后缀的判据：`.h5` 要看 HDF5 里有没有 `model_weights` 组或 `model_config` 属性；`.keras` 看是不是 zip 且含 `config.json`/`metadata.json`；`.pt/.pth/.pt2` 是**三路分支**（`archive/data/weights/` → torch.export 产物 → `pytorch-exported`；含 `"/code/"` → TorchScript → `pytorch-jit`；含 `data.pkl` → 老式 state_dict → `pytorch`），并说明前两种**自包含**、第三种要靠本项目架构重建；`.pkl` 只解析操作码流、**绝不反序列化**。原版只写了 ".pt/.pth 看 data.pkl"，与实现了三路分支的代码不符，也没有提 `.pt2`。
 - **161–162** `import io` / `import zipfile` — 局部导入；本函数体被调用一次就要解 1–2 次 zip，用 `io.BytesIO` 把内存字节伪装成文件对象。
 - **163** `suffix = Path(filename).suffix.lower()` — 只取后缀（不含目录部分），所以上传时带的 `C:\fake\path\model.h5` 这种 filename 不会带来任何路径风险；`.lower()` 让 `.H5`/`.Keras` 也能认。
 - **164** `framework = WEIGHT_SUFFIXES.get(suffix)` — 第一层分类；`None` 表示"连后缀都不认"。这个值同时是**候选的初始框架名**，之后内容探测可以覆盖它（232）。
 - **165** `result = {"ok": False, "framework": framework, "reason": "", "input_len": None, "num_classes": None}` — 一次建好 5 个键，保证**无论走哪条分支返回的字典键都齐全**。这是与前端的隐性契约：`ModelUpload` 直接读 `info["ok"]/["reason"]/["input_len"]/["num_classes"]` 并 `.get("framework")`（1016–1019），`_upload_meta` 也按这三个键取探测结果（1132–1134、1158）。**键名/`ok` 语义不能改**。
-- **166–169** 后缀闸门 — 不在表里就直接返回并给出人话原因。**⚠️ 存疑（提示文本与代码不符）**：168 行的 reason 写"支持 `.h5/.keras/.pt/.pth/.pkl/.pickle`"，但 `WEIGHT_SUFFIXES`（52–56）与后续分支（217）都**包含 `.pt2`**，同样地 1012、1032 两处用户可见提示也漏了 `.pt2`。功能上 `.pt2` 能上传，文案上却告诉用户不支持 —— 属提示漏项，会造成"明明支持却说不行"的困惑。
+- **166–169**（**今 190–193 行；`06a8fb8` 已修**）后缀闸门 — 不在表里就直接返回并给出人话原因。**修掉了这处文案漏项**：原 reason 写"支持 `.h5/.keras/.pt/.pth/.pkl/.pickle`"，但 `WEIGHT_SUFFIXES`（52–56）与后续分支（217）都**包含 `.pt2`**，同样地 1012、1032 两处用户可见提示也漏了 —— 功能上 `.pt2` 能上传、文案却说不行。现在三处后端文案都写成 `.h5/.keras/.pt/.pth/.pt2/.pkl/.pickle`；前端另有 4 处也漏（上传页提示、`accept` 属性、`pickKind()` 的权重识别、警告文案），其中 `pickKind()` 会把 `.pt2` 标成"其他"并弹「没识别到权重文件」的误导警告，已一并补上。
 - **170–172** 空文件闸门 — `if not blob`（0 字节）直接拒。放在后缀判断之后、内容判断之前：空文件即使后缀对也一定会让后面解包失败，早点给出确切原因比让异常兜底更友好。
 - **173** `try:` — 从这里到 285 行是一整块；286–289 的 `except Exception` 是**统一兜底**。这种"大 try + 末尾兜底"的代价是错误原因会被降级成"读取失败，不像有效模型文件"，收益是任何畸形上传都不会 500。
 - **174–176** Keras 分支入口 — 只处理 `.h5`/`.keras` 两个后缀；用 `blob[:2] == b"PK"` 区分两种形态（Keras 3 的 `.keras` 是 zip，Keras 2 的 `.h5` 是 HDF5，而 HDF5 魔数是 `\x89HDF`，两者不可能混淆）。注意判据是**内容**不是后缀：一个其实是 HDF5 的 `.keras` 会走下面的 HDF5 分支。
@@ -143,21 +164,22 @@
 - **265** `shapes = [(k, tuple(v.shape)) for k, v in state.items()] if hasattr(state, "items") else []` — 把参数名与形状**预先物化成 list**，是为了后面能对同一份数据 `reversed()` 两遍（271、272）而不必重新遍历；`hasattr(state, "items")` 兜住 `obj` 是单个张量/自定义对象的情况。**⚠️ 存疑（健壮性小坑）**：这个推导式对每个 `v` 直接取 `v.shape`，若 `weights_only=True` 读出来的 dict 里混有非张量值（例如 `{"epoch": 3}`、`{"cfg": {...}}` 之类），会抛 `AttributeError` 落到 286 的兜底，报成"读取失败，不像有效模型文件" —— 而这本来应该由 266–268 输出"torch 文件里没有张量参数，不像模型权重"。也就是说 266 那条精心写的提示在这种输入下不可达。
 - **266–268** 空参数闸门 — `shapes` 为空（`state` 不是映射，或者映射里一个参数都没有）时明确拒绝，不把空 zip 当模型。
 - **269–270** 注释 — 说明类别数的猜法：倒着找第一个"像分类头"的二维权重（`fc/classifier/linear/head...`），取第 0 维；找不到就退而取最后一个二维权重。
-- **271** `head = next((s for k, s in reversed(shapes) if len(s) == 2 and _HEAD_LAYER_RE.search(k)), None)` — 只接受**二维**权重（`Linear` 的 weight 是 `(out, in)`，第 0 维正好是类别数；卷积/BN 的更高维权重被排除）且键名匹配分类头模式，倒序保证取到"最后一层"。**⚠️ 轻微**：`_HEAD_LAYER_RE` 没有词边界（没有 `\b` 或 `\.` 前缀约束），`search` 会命中任意位置，所以 `dropout.weight`、`about.weight` 这类名字里的 `out.weight` 也会被当成分类头 —— 命中错了也只是让这个"提示值"取了别的层的宽度，不影响 `ok`，但会让类别数不准。
+- **271** `head = next((s for k, s in reversed(shapes) if len(s) == 2 and _HEAD_LAYER_RE.search(k)), None)` — 只接受**二维**权重（`Linear` 的 weight 是 `(out, in)`，第 0 维正好是类别数；卷积/BN 的更高维权重被排除）且键名匹配分类头模式，倒序保证取到"最后一层"。**`06a8fb8` 已修**：`_HEAD_LAYER_RE` 加了否定环视 `(?<![A-Za-z0-9])`，现在 `dropout.weight`、`about.weight`、`readout.weight`、`without.weight` 都不再命中，而 `module.fc1.weight`、`self._fc.weight` 仍命中。**诚实补一句**：本平台现有 3 个模型都不受这个 bug 影响 —— 实测 cwt_cnn 的 state_dict 里 `fc1.weight (32,3136)` 是**隐藏层**、`fc2.weight (10,32)` 才是输出层，新旧判据都取到 `fc2`（类别数 10，与 meta.json 一致），所以这是**防御性修复**，不是线上正出错。
 - **272** `head = head or next((s for _, s in reversed(shapes) if len(s) == 2), None)` — 兜底取最后一个二维权重。注意是"最后一个"而不是"第一层"：对 `Sequential(Linear(8,16), ReLU, Linear(16,3))` 这种结构能拿对（selftest 的 `fake_pt` 正是靠这条把 `num_classes` 读成 3，因为键名 `0.weight`/`2.weight` 不匹配 271 的模式）。
 - **273–277** 收尾 update+return — `num_classes=int(head[0]) if head else None`；reason 同时报"多少个张量""类别数"，并**主动说明这种格式没有结构**：推理时按本项目的 `cwt_cnn` 架构重建（`inference._predict_torch` 确实 `from .training import _import_project_module` 后 `build_model(...)` + `load_state_dict`），外部模型结构不同请改用 torch.export。这段文案与推理侧行为一致，是有意把"可能失败"提前告知。
-- **278–280** pickle 注释 — 说明为什么只验魔数不反序列化：反序列化 pickle 等于执行上传文件里的任意代码，而"是不是 pickle"看头 1 个字节就够（协议 2+ 都以 `0x80` 开头）。注释与实现（281）一致。
-- **281–283** `if blob[:1] != b"\x80"` — 检查第一个字节。**⚠️ 存疑（会误拒合法 pickle）**：`\x80`(PROTO) 只有**协议 2 及以上**才会写；实测 `pickle.dumps({"k":1}, protocol=0)` 以 `b'(d'` 开头、`protocol=1` 以 `b'}q'` 开头。所以用协议 0/1（Python 2 产物、或显式 `protocol=0/1`）存的合法 `.pkl` 会被判成"不是 pickle 文件"，reason 还是错的。本项目自己的 `detector.pkl` 用 `pickle.dump(...)` 默认协议（3.8+ 为 5）保存（training.py:474），所以不受影响；`inference._predict_adtk` 用 `pickle.load` 读文件时也不看魔数，即**探测侧与推理侧口径不一致**。稳妥的判据应当同时接受 `\x80` 与协议 0/1 的合法开头，或直接改成"能 `pickletools.genops` 解析"之类的纯解析校验。
-- **284–285** `result.update(ok=True, reason="pickle 序列化对象（adtk 检测器/传统模型；为安全起见不做反序列化校验）")` — `ok=True` 只声明"它是个 pickle 权重"，`framework` 仍是 165 行按后缀给的 `"adtk"`（`.pickle` 同理）。**⚠️ 需要知道的行为**：内容完全不校验，所以任何 pickle（selftest 里连 `{"k": 1}` 都算合格）都会被当 `adtk` 模型登记；而 `inference._predict_adtk` 要求 bundle 里同时有 `feature_mode` 与 `transformer`，否则抛 `InvalidInput`；且上传产物 meta 里 `trusted=False`（1155、1130），推理默认**拒绝对它反序列化**，除非设 `MODEL_ALLOW_UNTRUSTED_PICKLE=1`。也就是说 `.pkl` 这条路的"上传成功"与"能推理"是两件事，前端的提示文案别写成"上传即可推理"。
+- **278–280**（**今 301–310 行；`06a8fb8` 已重写**）pickle 注释 — 说明为什么只解析操作码、绝不反序列化：反序列化 pickle 等于执行上传文件里的任意代码。新注释还记了两条实测结论，说清"判据不能怎么写"：① 不能用"首字节是不是 `0x80`"——`0x80` 是 PROTO 标记，**只有协议 2+ 才写**（`protocol=0` → `b'(d'`、`protocol=1` → `b'}q'`）；② 也不能只看"第一个操作码能不能解码"——`hello world`、`a,b,c` 的首字节恰好是合法操作码，只看一个就会把文本放进来。
+- **281–310**（**今 311–325 行；`06a8fb8` 已换实现**）`pickletools.genops(blob)` 校验 — 用生成器**惰性解码操作码流**（不执行任何字节码），判据是"**能解到底且最后一个操作码是 STOP**"（合法 pickle 必以 STOP 收尾，`pickle.loads` 也必须有它）；`seen >= _PICKLE_MAX_OPS` 时提前 break，并按"前缀合法"放过（见 49–50 行的封顶理由）。实测效果：协议 0/1/2/3/4/5 全部通过；纯文本、`he is not a pickle`、JSON、CSV、随机二进制、半截 pickle、被截掉 STOP 的文件全部拒绝。**原实现（`if blob[:1] != b"\x80"`）会误拒协议 0/1 的合法 pickle**，reason 还反过来指责用户；而且它只验证 1 个字节，与推理侧 `inference._predict_adtk` 用 `pickle.load` 直接读文件的口径不一致 —— 现在两侧都接受任意合法协议。
+- **281–283**（**旧实现，`06a8fb8` 已删除**）`if blob[:1] != b"\x80"` — 只检查第一个字节。**⚠️ 存疑（会误拒合法 pickle）**：`\x80`(PROTO) 只有**协议 2 及以上**才会写；实测 `pickle.dumps({"k":1}, protocol=0)` 以 `b'(d'` 开头、`protocol=1` 以 `b'}q'` 开头。所以用协议 0/1（Python 2 产物、或显式 `protocol=0/1`）存的合法 `.pkl` 会被判成"不是 pickle 文件"，reason 还是错的。本项目自己的 `detector.pkl` 用 `pickle.dump(...)` 默认协议（3.8+ 为 5）保存（training.py:474），所以不受影响；`inference._predict_adtk` 用 `pickle.load` 读文件时也不看魔数，即**探测侧与推理侧口径不一致**。→ 已按这里建议的第二种改法（"能 `pickletools.genops` 解析"）修掉，见上一条。
+- **284–285**（**今 323–325 行，内容不变**）`result.update(ok=True, reason="pickle 序列化对象（adtk 检测器/传统模型；为安全起见不做反序列化校验）")` — `ok=True` 只声明"它是个 pickle 权重"，`framework` 仍是 165 行按后缀给的 `"adtk"`（`.pickle` 同理）。**⚠️ 需要知道的行为**：操作码校验只证明"这是个合法 pickle 文件"，**不证明它是个检测器**，所以任何 pickle（selftest 里连 `{"k": 1}` 都算合格）都会被当 `adtk` 模型登记；而 `inference._predict_adtk` 要求 bundle 里同时有 `feature_mode` 与 `transformer`，否则抛 `InvalidInput`；且上传产物 meta 里 `trusted=False`（1155、1130），推理默认**拒绝对它反序列化**，除非设 `MODEL_ALLOW_UNTRUSTED_PICKLE=1`。也就是说 `.pkl` 这条路的"上传成功"与"能推理"是两件事，前端的提示文案别写成"上传即可推理"。
 - **286–289** 统一兜底 — 注释说"坏文件、半截文件、权限问题都会落到这里，reason 会被前端逐条展示，所以要说人话"。实现是 `f"读取失败，不像有效模型文件：{type(exc).__name__}: {exc}"`，占位符与注释一致；但它把"文件确实不是模型"与"我们自己读错了/环境缺依赖"混成同一句话，且这两类在 255–263 那种刻意区分过的场景之外没有进一步细分。**这条分支同时吞掉了所有意外异常**（包括上面的 `AttributeError` 与 `ImportError`），所以排查上传问题时 reason 是唯一线索 —— 想更精确就得看服务端日志。
 
 ---
 
 ### 本段涉及的存疑/偏差清单（汇总）
 
-> ⚠️ 存疑：**168 行提示漏 `.pt2`**（另有 1012、1032 两处同样漏）。代码（`WEIGHT_SUFFIXES` 52–56 与分支 217）明确支持 `.pt2`，用户可见文案却写"支持 .h5/.keras/.pt/.pth/.pkl/.pickle" —— 会让 `.pt2` 用户以为格式不受支持。
+> ✅ **已修（`06a8fb8`）**：**168 行提示漏 `.pt2`**（另有 1012、1032 两处同样漏）。代码（`WEIGHT_SUFFIXES` 52–56 与分支 217）明确支持 `.pt2`，用户可见文案却写"支持 .h5/.keras/.pt/.pth/.pkl/.pickle" —— 会让 `.pt2` 用户以为格式不受支持。后端 3 处已补齐，前端另有 4 处（上传页提示、`accept`、`pickKind()`、警告文案）一并补齐。
 
-> ⚠️ 存疑：**281 行的 pickle 魔数判据会误拒协议 0/1 的合法 pickle**（`\x80` 只有协议 2+ 才写；实测 `protocol=0` 以 `b'(d'`、`protocol=1` 以 `b'}q'` 开头），且 `reason` 文案"不是 pickle 文件"与事实相反。同一份文件在 `inference._predict_adtk` 里用 `pickle.load` 是能读的，**两侧口径不一致**；本项目自己产出的 `detector.pkl` 用默认协议（≥3）保存，故未暴露。
+> ✅ **已修（`06a8fb8`）**：**281 行的 pickle 魔数判据会误拒协议 0/1 的合法 pickle**（`\x80` 只有协议 2+ 才写；实测 `protocol=0` 以 `b'(d'`、`protocol=1` 以 `b'}q'` 开头），且 `reason` 文案"不是 pickle 文件"与事实相反。同一份文件在 `inference._predict_adtk` 里用 `pickle.load` 是能读的，**两侧口径不一致**。现在改成 `pickletools.genops` 解到底 + 必须 STOP 收尾（今 301–325 行），协议 0~5 全部通过，同时能挡住文本/JSON/半截文件。
 
 > ⚠️ 存疑：**265 行的形状推导式**对每个 state 值直接取 `v.shape`，遇到 dict 里混有非张量值（int/dict 等）会抛 `AttributeError`，被 286 兜底成"读取失败，不像有效模型文件"，于是 266 行那条"torch 文件里没有张量参数"的提示在这类输入下**不可达**。
 
@@ -167,7 +189,7 @@
 
 > ⚠️ 存疑（低置信、未复现）：**`_exported_input_len` 读的是 `candidates[0]`** —— 若 `.pt2` 包内含显式目录条目 `archive/data/sample_inputs/`，它会排在真实文件前，`zf.read` 得到空字节、`torch.load` 抛错，函数静默退化成 `None`。当前产物不带这种条目（docstring 记录了实测值），所以只是潜在隐患。
 
-> ⚠️ 存疑（轻微）：**`_HEAD_LAYER_RE` 无词边界**：`search` 会命中 `dropout.weight`、`about.weight` 里的 `out.weight`，可能让类别数从"别的层"取宽度。只影响提示值，不影响 `ok` 判定与推理。
+> ✅ **已修（`06a8fb8`）**：**`_HEAD_LAYER_RE` 无词边界**：`search` 会命中 `dropout.weight`、`about.weight` 里的 `out.weight`，可能让类别数从"别的层"取宽度。现在加了 `(?<![A-Za-z0-9])`。本平台现有 3 个模型实测都不受影响（防御性修复）。
 
 > ⚠️ 存疑（轻微）：**`_keras_shapes.first_dim` 假定"长度在前"** —— 对通道在前的形状 `[None, 1, 784]` 会返回 `1` 而非 `784`。本项目数据固定为 `(length, 1)`（`1DCNN.py:100` + selftest `[None, input_len, 1]`），与 `inference.py:462` 的 `input_len` 语义一致，故当前正确；对外部通道在前模型会给错提示值。
 
@@ -710,13 +732,13 @@
 ## 行 1010–1013 · 第 ② 步前置：连候选都没有
 
 - **1010** 注释点题："判断这是不是一个模型"。
-- **1011–1013** 若 `candidates` 为空（扩展名表里一个都没有），直接 400，并附带 `received: sorted(blobs)`（收到的全是非权重文件）与 `skipped`（被后缀表挡掉的文件及原因）。这两项是给前端排错用的：用户能立刻看出"我传的是 .zip/说明文档，不是权重"。
+- **1011–1013** 若 `candidates` 为空（扩展名表里一个都没有），直接 400，并附带 `received: sorted(blobs)`（收到的全是非权重文件）与 `skipped`（被后缀表挡掉的文件及原因）。这两项是给前端排错用的：用户能立刻看出"我传的是 .zip/说明文档，不是权重"。**`06a8fb8` 已给这条 `error` 补上 `.pt2`**（今 1055–1056 行）。
 
 ## 行 1014–1019 · 逐个候选做内容探测
 
 - **1014** `probed: list[dict] = []` — 累积每个候选的探测结论，最后原样回给前端（1073 行的 `probed_files`）。
 - **1015** `for filename, framework in candidates:` — `candidates` 里的 `framework` 是 1109–1110 行由**后缀表**给的猜测值，仅作候选筛选标签，不保证对。
-- **1016** `info = probe_weight(filename, blobs[filename])` — 真正的判定发生在这一步：打开文件内容（HDF5/zip 结构、pickle 魔数），返回 `{ok, framework, reason, input_len, num_classes}`。用内存里的 `blobs`，不重读磁盘。
+- **1016** `info = probe_weight(filename, blobs[filename])` — 真正的判定发生在这一步：打开文件内容（HDF5/zip 结构、pickle 操作码流），返回 `{ok, framework, reason, input_len, num_classes}`。用内存里的 `blobs`，不重读磁盘。
 - **1017–1019** 把探测结果记进 `probed`：`framework` 优先取探测结果（`info.get("framework") or framework`），`ok`/`reason`/`input_len`/`num_classes` 原样带上。这一条是**先 append 再判 ok**，所以被采纳的那个文件也会出现在 `probed_files` 里（是好事，前端能看到"为什么选中它"）。
 
 ## 行 1020–1027 · 采纳第一个通过的候选（framework 以探测为准）
@@ -732,7 +754,7 @@
 ## 行 1028–1032 · `for ... else`：全部候选都没通过
 
 - **1028** `else:` — 挂在 `for` 上而不是 `if` 上：Python 的 `for...else` 在循环**未被 `break` 打断**时执行，语义正好是"没有一个候选通过"。
-- **1029–1032** 回 400，带上 `detail: probed`（每个候选失败的具体原因）、`skipped`、以及一段 `hint` 说明各格式的判定条件。
+- **1029–1032** 回 400，带上 `detail: probed`（每个候选失败的具体原因）、`skipped`、以及一段 `hint` 说明各格式的判定条件。**`06a8fb8` 已补 `.pt2`**（今 1076–1077 行）：hint 现在写"PyTorch 的 `.pt/.pth/.pt2`（torch 的 zip 检查点；`.pt2`/TorchScript 自带结构，推荐用 `torch.export` 导出）"。
 
 > 为什么这里能替掉 `weights is None` 的判断：1011 行已经保证 `candidates` 非空，所以循环要么 `break`（`weights`/`probe` 必然被赋值），要么耗尽走 `else` 直接 `return`。也就是说走到 1033 行之后的代码时，`weights`/`probe` 一定已绑定——用 `for...else` 把"全灭"这条分支提前 return 掉，就省掉了 `if weights is None: ...` 这种"循环后判空 + 变量可能未绑定"的静态检查困扰。反过来，如果不写 `else` 而在循环后判 `weights is None`，类型检查器（和读者）都必须考虑 `weights` 可能未赋值的情况。
 
@@ -1066,7 +1088,7 @@
 - **1376–1380** `artifacts` / `figure_items` / `logs` — `list_artifacts()` 来自 registry（只返回 `weights` **确实存在且非空**的产物，见 `registry.py` 88–104、184–205 行），所以下面 `.stat()` 是安全的；`list_figures(limit=1000)` 是"按 mtime 倒序 + 到 limit 就 break"；`glob("*.log")` **不递归**，只统计日志目录第一层。
 - **1381–1386** 数据库容错 — 只有这一块允许失败：`DBError` 时把错误塞进 `counts` 并置 `db_ok = False`，页面其余部分照常返回。这正是"库连不上时最需要 /system"的写法；`table_counts()` 本身在 db.py 里带 30 秒缓存（`db.py` 760–781 行），所以连点刷新不会反复跑 8 条 `COUNT(*)`。
 - **1387–1391** `runtime` 块 — `sys.version.split()[0]` 取纯版本号，`sys.executable` 与 `platform.platform()/machine()` 都是真实环境值；实测出口脱敏后 `executable` 显示成 `testRestfulProject\venv\Scripts\python.exe`。
-- **1392** `packages` — 字典推导遍历模块级 `_PACKAGES`（17 个名字，含 tensorflow/torch 双栈），每个都过一次 `dist_version`，缺包不影响其它键。
+- **1392** `packages` — 字典推导遍历模块级 `_PACKAGES`（**`06a8fb8` 后是 14 个名字**，原 17 个；含 tensorflow/torch 双栈），每个都过一次 `dist_version`，缺包不影响其它键。
 - **1393** `paths` — 直接给 `config.describe()`。实测返回 `project_dir/model_dir/temp_dir/env_file/db/datasets/upload_dir`，**不含** `log_dir`、`workspace_dir`：想看日志目录得去 `logs.dir`，工作区路径不在这一页（`config.describe()` 里本来就没有）。
 - **1394–1395** `database` 块 — `ok`/`counts` 来自上面那个 try，`bootstrap = database.last_bootstrap` 只在"顺手建过库/表"时有值（正常库是 `null`，实测如此）。
 - **1396–1399** `artifacts` 块 — `count` 是产物个数，`items` 每项带 `size_kb = weights.stat().st_size / 1024`；只算权重文件大小（meta/scaler 不计），与 docstring 的说法一致。
@@ -1185,5 +1207,27 @@
 6. **`fix()` 用 lambda 的理由与字面量不符**（行 1559–1561）：注释说"替换串以反斜杠结尾会让 `re.sub` 抛 bad escape"，而实际替换文本是 `"<本机>/"`（正斜杠结尾），实测当模板直接传不会报错（`"<本机>\\"` 才会抛 `PatternError: bad escape (end of pattern)`；`"<本机>\1"` 则会静默变成 `\x01`）。当前 lambda 属防御性写法，注释把机制说成了当下必需的约束。
 7. **`/system` 的图库统计被 `limit=1000` 截断**（行 1379、1400–1401）：`list_figures(limit=1000)` 到 1000 条就 break，所以 `figures.count` 与 `total_kb` 在超过 1000 张图时都是"前 1000 张"的口径；`/figures` 那边同样有 500 的截断（1200–1219）。目前图库规模小，看不出问题。
 8. **`DatasetSignal` 第二道闸门的存在理由需要改写注释**（行 1311–1313）：真正不可替代的是 `file=..`（实测 `Path("..").name == ".."`，未被削平，靠 `relative_to` 拦成 400）与目录内符号链接，而不是"绝对路径"（`Path(r"C:\Windows\win.ini").name == "win.ini"` 已被第一道闸门削平）。
+
+---
+
+## 行号换算（`e361fa6` 1604 行 → `06a8fb8` 1649 行）
+
+本文所有行号仍是 `e361fa6` 的编号。要换到当前文件，按**旧行号落在哪个区间**加偏移即可：
+
+| 旧行号区间 | 偏移 | 新行号区间 |
+| --- | --- | --- |
+| 1–43 | +0 | 1–43 |
+| 44–48 | +3 | 47–51 |
+| 49–59 | +5 | 54–64 |
+| 62–157 | +11 | 73–168 |
+| 160–167 | +22 | 182–189 |
+| 169–277 | +23 | 192–300 |
+| 283–1011 | +43 | 326–1054 |
+| 1013–1031 | +44 | 1057–1075 |
+| 1033–1604 | +45 | 1078–1649 |
+
+那 6 个"缺口"（60–61、158–159、168、278–282、1012、1032）就是本次被改写的行本身，对应关系已在正文里逐条标了「今 X–Y 行」。
+
+> 为什么用分段偏移而不是整篇重排：doc 里 `784`、`500`、`1500`、`1604` 这类**数据字面量**与行号混在同一句话里（例如"输入长度 784"和"（778）"），批量加偏移会把字面量一起改错。真要重新生成，稳妥办法是照当前 api.py 重写一遍，而不是改数字。
 
 ---
