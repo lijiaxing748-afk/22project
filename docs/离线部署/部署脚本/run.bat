@@ -31,6 +31,11 @@ if /i "%STEP%"=="03" goto s03
 if /i "%STEP%"=="04" goto s04
 if /i "%STEP%"=="05" goto s05
 if /i "%STEP%"=="06" goto s06
+rem 90/91 were advertised in the help text but NEVER dispatched here --
+rem the :s90 / :s91 labels below were unreachable dead code, so
+rem "run.bat 90" silently fell through to the help screen.
+if /i "%STEP%"=="90" goto s90
+if /i "%STEP%"=="91" goto s91
 goto help
 
 :s00
@@ -62,11 +67,35 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "%DIR%elevate.ps1" -Script "
 goto end
 
 :s90
-powershell -NoProfile -ExecutionPolicy Bypass -File "%DIR%90-build-update-package.ps1"
+rem Update-package scripts live in TWO possible layouts; try both.
+rem   1) offline package layout : <this dir>\90-build-update-package.ps1
+rem      (00-check-package.ps1 validates exactly this name)
+rem   2) repo layout            : <repo root>\tools\make-update-package.ps1
+rem This block used to reference only "%DIR%90-build-update-package.ps1",
+rem which never existed in the repo, so "run.bat 90" just failed with
+rem "file not found". Both layouts are handled now.
+if exist "%DIR%90-build-update-package.ps1" (
+    powershell -NoProfile -ExecutionPolicy Bypass -File "%DIR%90-build-update-package.ps1"
+) else if exist "%DIR%..\..\..\tools\make-update-package.ps1" (
+    powershell -NoProfile -ExecutionPolicy Bypass -File "%DIR%..\..\..\tools\make-update-package.ps1"
+) else (
+    echo [ERROR] Cannot find the update-package script. Looked for:
+    echo           %DIR%90-build-update-package.ps1
+    echo           %DIR%..\..\..\tools\make-update-package.ps1
+)
 goto end
 
 :s91
-powershell -NoProfile -ExecutionPolicy Bypass -File "%DIR%91-apply-update.ps1"
+rem Same two-layout fallback for applying an update package.
+if exist "%DIR%91-apply-update.ps1" (
+    powershell -NoProfile -ExecutionPolicy Bypass -File "%DIR%91-apply-update.ps1"
+) else if exist "%DIR%..\..\..\tools\apply-update.ps1" (
+    powershell -NoProfile -ExecutionPolicy Bypass -File "%DIR%..\..\..\tools\apply-update.ps1"
+) else (
+    echo [ERROR] Cannot find the apply-update script. Looked for:
+    echo           %DIR%91-apply-update.ps1
+    echo           %DIR%..\..\..\tools\apply-update.ps1
+)
 goto end
 
 :help

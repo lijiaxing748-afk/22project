@@ -95,6 +95,10 @@ $beSkip = {
     $full -match '\\data\\logs\\'      -or
     $full -match '\\data\\figures\\'   -or
     $full -match '\\data\\tmp\\'       -or
+    # 缓存类产物（如 data\.cache\matplotlib\fontlist-*.json）：
+    # 体积很小、无害，但属于本机运行期缓存，没必要随代码更新传过去，
+    # 覆盖过去反而可能让实验室机器的字体缓存与它的 matplotlib 版本对不上。
+    $full -match '\\data\\\.cache\\'   -or
     $full -match '\\data\\uploads\\'   -or
     $full -match '\\data\\archive\\'   -or
     $full -match '\\data\\datasets\\'  -or
@@ -153,6 +157,43 @@ foreach ($f in $feFiles) {
 }
 Say ""
 
+# ---------------------------------------------------------------- 4a 带上前端构建产物 dist
+# ⚠️ 这一步以前**不存在**，是"改了前端却看不到效果"的根因：
+#    .env / .ts / .vue 这些**源码**改了，但实验室机器上跑的是 `npm run build`
+#    出来的 dist/（纯静态文件）。只覆盖源码、不覆盖 dist，等于没改 ——
+#    浏览器加载的还是旧 JS。而且 apply-update.ps1 复制时会显式跳过 \dist\，
+#    两件事叠加，前端修复永远到不了实验室机器。
+#    所以这里把**当前已构建好的 dist** 一起打进去，覆盖后立即生效，
+#    实验室机器不需要装 Node、也不需要重新 build。
+$distSrc = Join-Path $fe 'dist'
+if (Test-Path (Join-Path $distSrc 'index.html')) {
+    $distDst = Join-Path $feDst 'dist'
+    Copy-Item $distSrc $distDst -Recurse -Force
+    $dc = (Get-ChildItem $distDst -Recurse -File | Measure-Object).Count
+    $dm = [math]::Round((Get-ChildItem $distDst -Recurse -File | Measure-Object Length -Sum).Sum/1MB, 1)
+    Ok "已带上前端构建产物 dist（$dc 个文件，$dm MB）"
+} else {
+    # 没构建过就别硬塞：提示先去 build，否则前端改动不会生效
+    Warn "没找到 frontend\22project\dist（前端未构建）"
+    Warn "前端改动不会生效！请先执行： npm run build:singleport"
+}
+
+# ---------------------------------------------------------------- 4b 带上应用脚本
+# ⚠️ 这一步以前**不存在**，是个会让更新流程走不通的漏洞：
+#    下面生成的 README 让用户在实验室电脑上运行「应用更新.ps1」，
+#    但打包时从来没把这个脚本放进包里 —— 结果包内一个 .ps1 都没有，
+#    用户照着 README 做会发现文件不存在，只能手动复制目录（README 里的备选路径）。
+#    现在把它一起打进去，README 的主路径才真正可用。
+$applySrc = Join-Path $Root 'tools\apply-update.ps1'
+if (Test-Path $applySrc) {
+    # 包内改名为「应用更新.ps1」，与 README 的措辞一致（中文名对用户更直观）
+    Copy-Item $applySrc (Join-Path $out '应用更新.ps1') -Force
+    Ok "已带上应用脚本 -> 应用更新.ps1"
+} else {
+    Warn "没找到 tools\apply-update.ps1 —— 包里将缺少一键应用脚本"
+    Warn "用户需要照 README 的手动复制方式操作"
+}
+
 # ---------------------------------------------------------------- 5 统计
 Say "[4] 更新包内容"
 
@@ -188,11 +229,26 @@ $readme = @"
 
 1. 把本文件夹整个拷到实验室电脑（优盘/网线都行，通常只有几 MB）
 2. **先关掉后端和前端那两个窗口**
-3. 在实验室电脑上运行 ``应用更新.ps1``（右键 ->「使用 PowerShell 运行」）
-   或者手动把这两个目录覆盖过去：
-       code-update-*/testRestfulProject/     ->  04-项目源码/testRestfulProject/
-       code-update-*/frontend/22project/     ->  04-项目源码/frontend/22project/
-4. 重新运行 ``06-部署脚本/run.bat 04`` 启动
+   （如果系统已装成 Windows 服务，改成停止服务：``net stop ModelPlatform``）
+3. 在本文件夹里运行 ``应用更新.ps1``（右键 ->「使用 PowerShell 运行」）
+   脚本会自动找到实验室电脑上的项目目录并覆盖代码。
+   如果不想用脚本，也可以手动覆盖这两个目录：
+       <本包>/testRestfulProject/     ->  04-项目源码/testRestfulProject/
+       <本包>/frontend/22project/     ->  04-项目源码/frontend/22project/
+4. 启动（二选一）：
+   生产模式（单端口，已装服务）: ``net start ModelPlatform``，然后浏览器开 http://本机IP:8080
+   开发模式（两个窗口）        : ``06-部署脚本/run.bat 04``
+
+## ⚠️ 本次更新需要额外做一步
+
+本次含**鉴权头格式修复**（修的是"登录成功却提示登录已失效"）。覆盖代码后：
+
+- 前端已经重新打包过（本包内 ``frontend/22project/dist`` 若存在则直接生效），
+  但**浏览器会缓存旧 JS**。覆盖后请在浏览器里按 ``Ctrl + F5`` 强制刷新一次，
+  否则旧的 ``JWT`` 前缀代码仍会跑，问题看起来"没修好"。
+- 如果实验室的数据库还是旧结构（没有 Users / Roles / OperationLogs 三张表），
+  需要先执行 ``testRestfulProject/sql/auth-migration.sql``，否则登录会直接报错。
+  判断方法：能登录成功就不用管；若登录报数据库错误，就执行它。
 
 ## 为什么这么快
 
