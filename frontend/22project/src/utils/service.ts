@@ -182,8 +182,15 @@ function createRequestFunction(service: any) {
 		// const token = userStore.getToken;
 		const token = Session.get('token');
 		if (token != null) {
+			// ⚠️ 必须是标准的 `Bearer <token>`，不能写 `JWT <token>`（2026-09 修）。
+			// 原来是 `'JWT ' + token`，这是从 django-vue-admin 模板抄来的：
+			// 那边后端是 DRF，配了 JWT_AUTH_HEADER_PREFIX = 'JWT'，属于 DRF 生态的私有约定。
+			// 而我们后端是 Flask，auth.py 按 RFC 6750 解析 `Bearer ` 前缀——
+			// 于是前端发 `JWT xxx`、后端把它当成整串令牌去验签，必然失败，
+			// 表现成"登录成功但立刻提示登录已失效"。
+			// JWT 是**令牌格式**，不是认证方案名，放进 auth-scheme 位置本身就是错的。
 			// @ts-ignore
-			configDefault.headers.Authorization = 'JWT ' + token;
+			configDefault.headers.Authorization = 'Bearer ' + token;
 		}
 		return service(configDefault);
 	};
