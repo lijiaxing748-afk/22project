@@ -1,4 +1,4 @@
-# =====================================================================
+﻿# =====================================================================
 #  代码更新包制作脚本（在**你自己的笔记本**上运行）
 #
 #  用途：代码改完之后，打一个"只含代码"的小包，用优盘拷到实验室电脑覆盖，
@@ -187,8 +187,27 @@ if (Test-Path (Join-Path $distSrc 'index.html')) {
 $applySrc = Join-Path $Root 'tools\apply-update.ps1'
 if (Test-Path $applySrc) {
     # 包内改名为「应用更新.ps1」，与 README 的措辞一致（中文名对用户更直观）
-    Copy-Item $applySrc (Join-Path $out '应用更新.ps1') -Force
-    Ok "已带上应用脚本 -> 应用更新.ps1"
+    $applyDst = Join-Path $out '应用更新.ps1'
+    Copy-Item $applySrc $applyDst -Force
+
+    # ⚠️ 必须写成 **UTF-8 with BOM**，否则实验室机器上跑不起来。
+    #    踩过的坑：Windows PowerShell 5.1（"右键 → 使用 PowerShell 运行"默认用它）
+    #    对**无 BOM** 的文件按系统 ANSI 代码页（中文机器是 GBK）解码。
+    #    本脚本注释里有大量中文，被按 GBK 误读后会产出乱码字节，
+    #    其中某些字节会把行尾吃掉、把注释和下一行连起来，
+    #    最终报出「Unexpected token '}'」「Missing closing '}'」这种
+    #    **看起来像大括号不配对、实际文件完全没问题**的假故障。
+    #    加了 BOM，PowerShell 才认得这是 UTF-8。
+    $utf8bom = New-Object System.Text.UTF8Encoding($true)
+    $bytes = [System.IO.File]::ReadAllBytes($applyDst)
+    $hasBom = ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF)
+    if ($hasBom) {
+        Ok "已带上应用脚本 -> 应用更新.ps1（UTF-8 BOM）"
+    } else {
+        $text = [System.IO.File]::ReadAllText($applyDst, (New-Object System.Text.UTF8Encoding($false)))
+        [System.IO.File]::WriteAllText($applyDst, $text, $utf8bom)
+        Ok "已带上应用脚本 -> 应用更新.ps1（已补 UTF-8 BOM，防中文被 GBK 误读）"
+    }
 } else {
     Warn "没找到 tools\apply-update.ps1 —— 包里将缺少一键应用脚本"
     Warn "用户需要照 README 的手动复制方式操作"
@@ -243,12 +262,52 @@ $readme = @"
 
 本次含**鉴权头格式修复**（修的是"登录成功却提示登录已失效"）。覆盖代码后：
 
-- 前端已经重新打包过（本包内 ``frontend/22project/dist`` 若存在则直接生效），
-  但**浏览器会缓存旧 JS**。覆盖后请在浏览器里按 ``Ctrl + F5`` 强制刷新一次，
+- 前端已经重新打包过，本包内 ``frontend\22project\dist`` 就是新产物，
+  覆盖后**浏览器会缓存旧 JS**。请按 ``Ctrl + F5`` 强制刷新一次，
   否则旧的 ``JWT`` 前缀代码仍会跑，问题看起来"没修好"。
 - 如果实验室的数据库还是旧结构（没有 Users / Roles / OperationLogs 三张表），
-  需要先执行 ``testRestfulProject/sql/auth-migration.sql``，否则登录会直接报错。
-  判断方法：能登录成功就不用管；若登录报数据库错误，就执行它。
+  需要执行 ``testRestfulProject/sql/auth-migration.sql``（本包已带），
+  否则登录会直接报数据库错误。
+
+## 登录不上时的修复办法（重要）
+
+实验室机器上如果出现「用户名或密码错误」，**先确认口令，别急着怀疑哈希算法**：
+
+1. **默认口令不是 ``123456``，而是**：
+
+   | 账号 | 口令 |
+   |---|---|
+   | ``admin`` | ``Admin@2026`` |
+   | ``engineer`` | ``Engineer@2026`` |
+   | ``operator`` | ``Operator@2026`` |
+
+   账号不是 SQL 脚本建的，是后端**首次启动**时由 ``bootstrap_users()``
+   用配置里的口令**现算哈希**插入的（见 ``main.py``）。
+
+2. **口令确实忘了，或者手工改哈希改坏了**，用本包自带的修复脚本
+   （它自己调 ``hash_password()`` 生成哈希并直接写库，**不需要手工粘贴哈希**）：
+
+   ```powershell
+   cd <项目目录>\testRestfulProject
+   venv\Scripts\python.exe tools\reset-login-accounts.py
+   ```
+
+   指定新口令：
+
+   ```powershell
+   venv\Scripts\python.exe tools\reset-login-accounts.py --admin-password "你的新口令"
+   ```
+
+   只想看会改什么、不真改：加 ``--dry-run``。
+
+   > ⚠️ **为什么不能靠重启服务修复**：``bootstrap_users()`` 第一行是
+   > ``if count_users() > 0: return 0`` —— 只要 Users 表非空（比如你手工插过账号），
+   > 它**永远不会**再去修正那行哈希。必须在库里直接改对，本脚本做的就是这件事。
+   >
+   > ⚠️ **手工 UPDATE 极易失败且是静默的**：``check_password_hash()`` 遇到
+   > 前后空格会抛 ValueError（被吞掉当失败）、末尾换行或 ``$`` 被客户端吃掉会
+   > 直接返回 False。列宽不是问题（``PasswordHash`` 是 VARCHAR(255)，
+   > 哈希约 103 字符）。所以请用脚本，别手工复制粘贴哈希。
 
 ## 为什么这么快
 

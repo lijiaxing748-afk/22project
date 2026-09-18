@@ -1,0 +1,40 @@
+fix(离线): 修复更新脚本中文被 GBK 误读、新增账号修复脚本
+
+线环境反馈的两个真问题，都不是"哈希算法不匹配"这么简单：
+
+1. 应用更新.ps1 报"大括号不配对"，无法运行
+
+   文件本身语法完全正确。真因是**编码**：脚本存成无 BOM 的 UTF-8，
+   而 Windows PowerShell 5.1（"右键 → 使用 PowerShell 运行"默认用它）
+   对无 BOM 文件按系统 ANSI 代码页（中文机器 GBK）解码。
+   脚本注释里有 74 行中文，误读后产出乱码字节，某些字节把行尾吃掉、
+   把注释与下一行连起来，于是报出
+       Unexpected token '}' / Missing closing '}'
+   这种"看起来像大括号错、实际文件没问题"的假故障。
+
+   已给 tools/ 与 docs/离线部署/部署脚本/ 下全部 10 个 .ps1 补上 UTF-8 BOM，
+   并让 make-update-package.ps1 在把脚本放进更新包时自动确保 BOM，
+   防复发。
+
+2. 登录失败，且"手动生成哈希更新到库里"依然校验不过
+
+   a) 口令本身就不是 123456，而是 Admin@2026。
+      账号由 main.py 的 bootstrap_users() 在首次启动时用配置口令现算哈希插入。
+   b) bootstrap_users() 第一行是 `if count_users() > 0: return 0` ——
+      手工插过账号后 Users 表非空，服务重启也不会去修正那行哈希。
+      所以"重启服务"这条路是走不通的，必须在库里直接改对。
+   c) 手工粘贴哈希极易失败且是静默的：check_password_hash 对
+      前导空格抛 ValueError（被 verify_password 吞成 False）、
+      末尾换行或 '$' 被客户端吃掉则直接返回 False。
+      列宽不是问题：PasswordHash 是 VARCHAR(255)，而哈希约 103 字符。
+
+   新增 tools/reset-login-accounts.py：自己调 hash_password() 生成并写库，
+   不依赖手工粘贴。会先给库里现有哈希做体检（长度/前缀/首尾空白），
+   支持 --admin-password / --no-samples / --dry-run，写完用
+   auth.verify_password 复核。已用假 DB 对新建/覆盖/TokenVersion 递增/
+   dry-run 不改库/大小写敏感逐项验证。
+
+   顺带确认：auth-migration.sql 其实**一直**在更新包里，
+   上次报告"缺失"是因为应用脚本跑不起来、改用手工复制时漏掉了 sql 目录。
+
+更新包 README 增加"登录不上时的修复办法"章节，写明默认口令与脚本用法。
