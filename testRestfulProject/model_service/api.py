@@ -583,10 +583,6 @@ class Train(Resource):
             # 产物可能已经落盘、但库里没有 Trainings 行 —— 调用方必须知道，别只看 status
             result["warning"] = ("训练结果未写入数据库：" + str((result.get("db") or {}).get("error")))
         return result, http
-class TrainingList(Resource):
-    """GET /trainings?limit=N —— 最近训练记录（读库）。"""
-    def get(self):
-        return _recent_list("trainings", database.recent_trainings)
 def _recent_list(key: str, fetch):
     """`GET /xxx?limit=N`（默认 20、上限 200）的"最近 N 条"读库接口，/trainings 与 /inference-tasks 共用。
 
