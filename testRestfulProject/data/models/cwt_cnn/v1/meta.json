@@ -1,6 +1,6 @@
 {
-  "model": "1dcnn",
-  "framework": "tensorflow-keras",
+  "model": "cwt_cnn",
+  "framework": "pytorch",
   "task": "classification",
   "input_len": 784,
   "num_classes": 10,
@@ -18,25 +18,26 @@
   ],
   "dataset": {
     "name": "CWRU-0HP",
-    "path": "D:\\HUAT\\22project\\testRestfulProject\\1DCNN\\0HP",
+    "path": "D:\\22project\\testRestfulProject\\1DCNN\\0HP",
     "stats": {
-      "dataset_dir": "D:\\HUAT\\22project\\testRestfulProject\\1DCNN\\0HP",
-      "dataset_type": "matlab",
+      "dataset_dir": "D:\\22project\\testRestfulProject\\1DCNN\\0HP",
       "strict": true,
       "legacy_scaler": false,
       "seed": 42,
       "num_classes": 10,
+      "train_total": 1500,
+      "valid_total": 750,
+      "test_total": 750,
       "nan_windows_total": 0,
-      "skipped_out_of_range_total": 180,
-      "unregistered_files": [],
+      "skipped_out_of_range_total": 0,
       "per_class": [
         {
           "filename": "48k_Drive_End_B007_0_122.mat",
           "class_id": 0,
           "label": "滚动体故障-0.007in",
           "samples_in_file": 244739,
-          "train_windows": 420,
-          "test_windows": 180,
+          "train_windows": 150,
+          "test_windows": 150,
           "skipped_out_of_range": {
             "train": 0,
             "test": 0
@@ -48,8 +49,8 @@
           "class_id": 1,
           "label": "滚动体故障-0.014in",
           "samples_in_file": 249146,
-          "train_windows": 420,
-          "test_windows": 180,
+          "train_windows": 150,
+          "test_windows": 150,
           "skipped_out_of_range": {
             "train": 0,
             "test": 0
@@ -61,8 +62,8 @@
           "class_id": 2,
           "label": "滚动体故障-0.021in",
           "samples_in_file": 243938,
-          "train_windows": 420,
-          "test_windows": 180,
+          "train_windows": 150,
+          "test_windows": 150,
           "skipped_out_of_range": {
             "train": 0,
             "test": 0
@@ -74,8 +75,8 @@
           "class_id": 3,
           "label": "内圈故障-0.007in",
           "samples_in_file": 243938,
-          "train_windows": 420,
-          "test_windows": 180,
+          "train_windows": 150,
+          "test_windows": 150,
           "skipped_out_of_range": {
             "train": 0,
             "test": 0
@@ -87,11 +88,11 @@
           "class_id": 4,
           "label": "内圈故障-0.014in",
           "samples_in_file": 63788,
-          "train_windows": 420,
-          "test_windows": 0,
+          "train_windows": 150,
+          "test_windows": 150,
           "skipped_out_of_range": {
             "train": 0,
-            "test": 180
+            "test": 0
           },
           "nan_windows": 0
         },
@@ -100,8 +101,8 @@
           "class_id": 5,
           "label": "内圈故障-0.021in",
           "samples_in_file": 244339,
-          "train_windows": 420,
-          "test_windows": 180,
+          "train_windows": 150,
+          "test_windows": 150,
           "skipped_out_of_range": {
             "train": 0,
             "test": 0
@@ -113,8 +114,8 @@
           "class_id": 6,
           "label": "外圈故障-0.007in@6点钟",
           "samples_in_file": 243538,
-          "train_windows": 420,
-          "test_windows": 180,
+          "train_windows": 150,
+          "test_windows": 150,
           "skipped_out_of_range": {
             "train": 0,
             "test": 0
@@ -126,8 +127,8 @@
           "class_id": 7,
           "label": "外圈故障-0.014in@6点钟",
           "samples_in_file": 245140,
-          "train_windows": 420,
-          "test_windows": 180,
+          "train_windows": 150,
+          "test_windows": 150,
           "skipped_out_of_range": {
             "train": 0,
             "test": 0
@@ -139,8 +140,8 @@
           "class_id": 8,
           "label": "外圈故障-0.021in@6点钟",
           "samples_in_file": 246342,
-          "train_windows": 420,
-          "test_windows": 180,
+          "train_windows": 150,
+          "test_windows": 150,
           "skipped_out_of_range": {
             "train": 0,
             "test": 0
@@ -152,101 +153,96 @@
           "class_id": 9,
           "label": "正常",
           "samples_in_file": 243938,
-          "train_windows": 420,
-          "test_windows": 180,
+          "train_windows": 150,
+          "test_windows": 150,
           "skipped_out_of_range": {
             "train": 0,
             "test": 0
           },
           "nan_windows": 0
         }
-      ],
-      "train_total": 4200,
-      "valid_total": 810,
-      "test_total": 810
+      ]
     }
   },
   "params": {
-    "epochs": 10,
-    "batch_size": 128,
+    "epochs": 50,
+    "batch_size": 0,
     "length": 784,
-    "number": 600,
+    "number": 300,
     "stride": 150,
     "rate": [
-      0.7,
-      0.15,
-      0.15
+      0.5,
+      0.25,
+      0.25
     ],
+    "lr": 0.001,
     "seed": 42,
-    "dataset_type": "matlab",
-    "signal_column": null,
-    "strict": true,
-    "legacy_scaler": false
+    "device": "cpu"
   },
   "metrics": {
-    "test_accuracy": 0.930864,
-    "test_loss": 0.210662,
-    "val_accuracy": 0.928395,
-    "val_loss": 0.212655,
+    "test_accuracy": 0.668,
+    "test_loss": 0.83348,
+    "val_accuracy": null,
+    "val_loss": null,
     "history": {
-      "accuracy": [
-        0.221667,
-        0.609048,
-        0.749048,
-        0.807381,
-        0.849286,
-        0.871905,
-        0.884286,
-        0.896667,
-        0.910714,
-        0.907381
-      ],
       "loss": [
-        1.923996,
-        1.055152,
-        0.654111,
-        0.508621,
-        0.406808,
-        0.339691,
-        0.301884,
-        0.271084,
-        0.241755,
-        0.229236
-      ],
-      "val_accuracy": [
-        0.52716,
-        0.775309,
-        0.822222,
-        0.853086,
-        0.902469,
-        0.920988,
-        0.919753,
-        0.92963,
-        0.935802,
-        0.928395
-      ],
-      "val_loss": [
-        1.357622,
-        0.649905,
-        0.472084,
-        0.399385,
-        0.29445,
-        0.273939,
-        0.24371,
-        0.216326,
-        0.215087,
-        0.212655
+        2.301738,
+        2.270636,
+        2.236501,
+        2.2004,
+        2.164337,
+        2.125582,
+        2.085761,
+        2.049619,
+        2.012033,
+        1.972591,
+        1.932465,
+        1.897959,
+        1.858153,
+        1.818855,
+        1.781,
+        1.743446,
+        1.70169,
+        1.662561,
+        1.618545,
+        1.581152,
+        1.535995,
+        1.496807,
+        1.44782,
+        1.412675,
+        1.368528,
+        1.328758,
+        1.288551,
+        1.262037,
+        1.218492,
+        1.187278,
+        1.157913,
+        1.126575,
+        1.112026,
+        1.079246,
+        1.063837,
+        1.043638,
+        1.015703,
+        0.997399,
+        0.979404,
+        0.964819,
+        0.950585,
+        0.933906,
+        0.913723,
+        0.897097,
+        0.890266,
+        0.876621,
+        0.864943,
+        0.838883,
+        0.838864,
+        0.83348
       ]
     },
-    "classification_report": "              precision    recall  f1-score   support\n\n           0     0.8256    0.7889    0.8068        90\n           1     0.8529    0.6444    0.7342        90\n           2     1.0000    1.0000    1.0000        90\n           3     1.0000    1.0000    1.0000        90\n           4     0.0000    0.0000    0.0000         0\n           5     0.9890    1.0000    0.9945        90\n           6     0.9890    1.0000    0.9945        90\n           7     1.0000    1.0000    1.0000        90\n           8     1.0000    0.9444    0.9714        90\n           9     1.0000    1.0000    1.0000        90\n\n    accuracy                         0.9309       810\n   macro avg     0.8657    0.8378    0.8501       810\nweighted avg     0.9618    0.9309    0.9446       810\n",
-    "untested_labels": [
-      "内圈故障-0.014in"
-    ],
-    "note": "以下类别没有任何测试样本，未参与测试指标计算：['内圈故障-0.014in']"
+    "classification_report": "              precision    recall  f1-score   support\n\n           0     0.6857    0.6400    0.6621        75\n           1     0.2500    0.0400    0.0690        75\n           2     0.9868    1.0000    0.9934        75\n           3     0.7097    0.8800    0.7857        75\n           4     0.5429    0.5067    0.5241        75\n           5     0.5312    0.2267    0.3178        75\n           6     0.9333    0.9333    0.9333        75\n           7     1.0000    1.0000    1.0000        75\n           8     0.4359    0.4533    0.4444        75\n           9     0.4438    1.0000    0.6148        75\n\n    accuracy                         0.6680       750\n   macro avg     0.6519    0.6680    0.6345       750\nweighted avg     0.6519    0.6680    0.6345       750\n"
   },
   "confusion": [
     [
-      71,
+      48,
       7,
       0,
       0,
@@ -255,102 +251,102 @@
       0,
       0,
       0,
-      0
+      8
     ],
     [
-      15,
-      58,
-      0,
-      0,
-      17,
-      0,
-      0,
-      0,
-      0,
-      0
-    ],
-    [
-      0,
-      0,
-      90,
-      0,
-      0,
-      0,
-      0,
-      0,
-      0,
-      0
-    ],
-    [
-      0,
-      0,
-      0,
-      90,
-      0,
-      0,
-      0,
-      0,
-      0,
-      0
-    ],
-    [
-      0,
-      0,
-      0,
-      0,
-      0,
-      0,
-      0,
-      0,
-      0,
-      0
-    ],
-    [
-      0,
-      0,
-      0,
-      0,
-      0,
-      90,
-      0,
-      0,
-      0,
-      0
-    ],
-    [
-      0,
-      0,
-      0,
-      0,
-      0,
-      0,
-      90,
-      0,
-      0,
-      0
-    ],
-    [
-      0,
-      0,
-      0,
-      0,
-      0,
-      0,
-      0,
-      90,
-      0,
-      0
-    ],
-    [
-      0,
+      6,
       3,
       0,
       0,
       0,
-      1,
-      1,
       0,
-      85,
+      0,
+      0,
+      0,
+      66
+    ],
+    [
+      0,
+      0,
+      75,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+    ],
+    [
+      0,
+      0,
+      0,
+      66,
+      0,
+      9,
+      0,
+      0,
+      0,
+      0
+    ],
+    [
+      12,
+      2,
+      0,
+      0,
+      38,
+      0,
+      0,
+      0,
+      3,
+      20
+    ],
+    [
+      0,
+      0,
+      1,
+      17,
+      0,
+      17,
+      0,
+      0,
+      40,
+      0
+    ],
+    [
+      0,
+      0,
+      0,
+      4,
+      0,
+      0,
+      70,
+      0,
+      1,
+      0
+    ],
+    [
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      75,
+      0,
+      0
+    ],
+    [
+      4,
+      0,
+      0,
+      6,
+      20,
+      6,
+      5,
+      0,
+      34,
       0
     ],
     [
@@ -363,14 +359,13 @@
       0,
       0,
       0,
-      90
+      75
     ]
   ],
   "scaler_file": "scaler.npz",
-  "trained_at": "2026-09-17T22:06:39",
-  "log_file": "D:\\HUAT\\22project\\testRestfulProject\\data\\logs\\train-1dcnn-20260917-220639.log",
-  "trusted": true,
-  "provenance": "train",
-  "weights_file": "model.keras",
-  "created_at": "2026-09-17T22:06:44"
+  "trained_at": "2026-09-12T21:13:35",
+  "log_file": "D:\\22project\\testRestfulProject\\data\\logs\\train-cwt_cnn-20260912-211335.log",
+  "version": "v1",
+  "weights_file": "model.pt",
+  "created_at": "2026-09-12T21:13:58"
 }
