@@ -66,9 +66,45 @@ _dcscan_tmp/
 # 所以这里排除它不会造成信息丢失。
 offline_package/
 
+# ⚠️ 下面这行原来只写了 `offline_package/`（带斜杠，git 只匹配**目录**），
+#    但实际产物还有 `offline_package.zip` 这种**文件**形式，规则漏掉了。
+#    后果很严重：`git add -A` 会把这个 1.4 GB 的 zip 一起提交，
+#    推送时被 GitHub 的 100 MB 单文件上限直接拒绝；就算推上去，
+#    仓库也会变成 1.5 GB，队友 clone 会非常痛苦，而且进了历史很难清干净。
+#    所以这里补上 *.zip / *.7z 这类通配，把文件和目录一起挡住。
+offline_package/
+offline_package.*
+offline_package*.zip
+offline_package*.7z
+
 # 打包/核对过程中的中间产物
 docs/_dl/
 *.tmp.whl
+
+# ---------------- 调试日志（前端根目录下跑服务时产生的）----------------
+# 这些是本地排查用的，不属于源码；公开仓库里没必要带，也避免日志里
+# 混进本机路径、token 之类的信息。
+frontend/*.log
+frontend/*.err
+
+# ---------------- 模型发布功能的临时验证产物 ----------------
+# verify_pkg/ 是人工验证「发布包能不能被别人用起来」时解压出来的目录，
+# 属于一次性产物，真正的发布包在运行期由 data/exports/ 生成。
+verify_pkg/
+
+# ---------------- 应用数据集（用户上传的表格类数据）----------------
+# data/datasets/ 里是 CSV/XLSX 数据集，属于"数据"不是"代码"。
+# 注意：CWRU 的 .mat 测试数据**不在这里**（在 1DCNN/0HP/ 和 cwt_cnn/0HP/），
+# 那些是特意入库的，保证 clone 下来就能直接跑训练/推理。
+testRestfulProject/data/datasets/
+testRestfulProject/data/exports/
+
+# ---------------- 内部过程文档（会议记录/分工/需求）----------------
+# 这些是团队内部协作材料，不属于项目源码，也不适合公开。
+# 需要给老师看的话直接单独发送，不要走仓库。
+会议讨论说明/
+接下来的计划安排.docx
+testRestfulProject/docs/
 
 # 代码更新包（make-update-package.ps1 的产物，优盘用的，不进仓库）
 code-update-*/
