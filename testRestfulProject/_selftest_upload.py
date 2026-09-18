@@ -82,6 +82,18 @@ def fake_pt(units: int = 3) -> bytes:
     return buf.getvalue()
 
 
+def fake_pt_dict(shapes: dict) -> bytes:
+    """手搓一个 state_dict（只造张量、不建网络），用来锁定「按层名猜类别数」的规则。
+
+    ⚠️ 为什么需要它：真实模型的层名千奇百怪，用 nn.Sequential 永远只能造出 `0.weight`
+    这种纯序号键，测不到 `_HEAD_LAYER_RE` 的词边界。这里直接指定键名/形状才测得准。
+    """
+    import torch
+    buf = io.BytesIO()
+    torch.save({key: torch.zeros(*shape) for key, shape in shapes.items()}, buf)
+    return buf.getvalue()
+
+
 def main() -> int:
     print("=== 0) 清理上一轮残留 ===")
     for name in TEST_NAMES:
@@ -100,10 +112,22 @@ def main() -> int:
         ("model.h5", fake_h5(512, 10), True, {"input_len": 512, "num_classes": 10}),
         ("model.pt", fake_pt(3), True, {"num_classes": 3}),
         ("detector.pkl", pickle.dumps({"k": 1}), True, {}),
+        # 协议 0/1 的 pickle 首字节不是 0x80（分别是 b'(' / b'}'），老的"魔数"判据会误拒
+        ("detector-p0.pkl", pickle.dumps({"k": 1}, protocol=0), True, {}),
+        ("detector-p1.pkl", pickle.dumps({"k": 1}, protocol=1), True, {}),
         ("notes.txt", b"hello world", False, {}),                     # 后缀不认
         ("fake.pt", b"this is definitely not a torch checkpoint", False, {}),
         ("random.h5", b"\x89HDF\r\n\x1a\n not really hdf5 body", False, {}),
         ("empty.h5", b"", False, {}),
+        # 文本/半截文件不能被当成 pickle 放进来（pickletools 解到底 + 必须 STOP 收尾）
+        ("notes.pkl", b"hello world", False, {}),
+        ("half.pkl", pickle.dumps({"k": 1}, protocol=4)[:12], False, {}),
+        # 层名猜类别数：真输出层叫 fc、另一个二维权重叫 dropout 时，不能取到 dropout 上去
+        ("named.pt", fake_pt_dict({"fc.weight": (10, 8), "dropout.weight": (256, 128)}), True,
+         {"num_classes": 10}),
+        # 本平台 cwt_cnn 的真实形状：fc1(32,3136) 是隐藏层，fc2(10,32) 才是输出层
+        ("cwt.pt", fake_pt_dict({"fc1.weight": (32, 100), "fc2.weight": (10, 32)}), True,
+         {"num_classes": 10}),
     ]
     for filename, blob, expect_ok, expect in cases:
         info = probe_weight(filename, blob)
