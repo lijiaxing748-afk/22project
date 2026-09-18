@@ -41,11 +41,16 @@ from .inference import InvalidInput, predict
 from .registry import abort_artifact, begin_artifact, commit_artifact, delete_artifact, list_artifacts, load_artifact
 from .training import MODEL_META, ALIASES, normalize_model, train
 _ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")          # 训练日志里 Keras 进度条的转义序列
+# /system 页展示依赖版本用。只列**本平台真的会 import** 的包：
+# pyodbc（SQL Server 分支已删）、pywin32、python-docx 全项目零引用，列上去只会让人
+# 以为平台依赖它们（requirements.txt 是 pip freeze 的整体快照，不等于依赖清单）。
 _PACKAGES = ("numpy", "pandas", "scikit-learn", "scipy", "matplotlib", "h5py", "flask",
-             "flask-restful", "pymysql", "pyodbc", "tensorflow", "tf-nightly", "keras",
-             "keras-nightly", "torch", "python-docx", "pywin32")
+             "flask-restful", "pymysql", "tensorflow", "tf-nightly", "keras",
+             "keras-nightly", "torch")
 MAX_EPOCHS = 200          # 防止一条 HTTP 请求把服务占住几小时
 MAX_LIMIT = 500           # 单次 /predict 最多多少窗口
+# .pkl 校验时最多解码多少个 pickle 操作码：解码是纯 Python，畸形大文件的尾巴不能拖住请求
+_PICKLE_MAX_OPS = 20000
 # ---------------- 「这是不是一个模型」探测 ----------------
 # 上传时不再要求用户填输入长度/类别数/类别标签：先按扩展名分类，再**打开文件看内容**，
 # 判断它到底是不是权重文件，并尽量把 input_len / num_classes 猜出来。
@@ -57,8 +62,14 @@ WEIGHT_SUFFIXES = {
 # 上传文件夹时，这些扩展名之外的文件一律忽略（允许带上 scaler/meta/说明文件等附属文件）
 KEEP_SUFFIXES = {".json", ".npz", ".npy", ".txt", ".yaml", ".yml", ".onnx", ".csv",
                  ".h5", ".keras", ".pt", ".pth", ".pt2", ".pkl", ".pickle"}
-# PyTorch 的输出层一般叫这些名字，用来从 state_dict 里认出"最后一层"从而读出类别数
-_HEAD_LAYER_RE = re.compile(r"(fc|classifier|linear|head|dense|out|output)\d*\.weight$")
+# PyTorch 的输出层一般叫这些名字，用来从 state_dict 里认出"最后一层"从而读出类别数。
+# ⚠️ 必须有那个否定环视（`(?<![A-Za-z0-9])`）：没有它时 `re.search` 会把**更长的层名后缀**
+#    也算命中 —— `dropout.weight`、`about.weight`、`readout.weight`、`without.weight`
+#    都会因为结尾的 `out` 而匹配上（实测确认），于是类别数可能取到别的层上去。
+#    环视只挡"字母/数字左边"，`_` 是**故意放行**的：`self._fc` 这类私有属性也要能认出来，
+#    而 `dropout` / `readout` 前面是字母 `p`/`d`，照样被挡。
+#    边界（已知）：`features.0.weight` 这种纯序号命名谁也认不出 —— 走"取最后一个二维权重"兜底。
+_HEAD_LAYER_RE = re.compile(r"(?<![A-Za-z0-9])(?:fc|classifier|linear|head|dense|out|output)\d*\.weight$")
 def _keras_shapes(config: dict) -> tuple[int | None, int | None]:
     """从 Keras 的 model_config（dict）里挖出 input_len 与类别数（最后一个 Dense 的 units）。
 
@@ -155,8 +166,19 @@ def probe_weight(filename: str, blob: bytes) -> dict:
 
       .h5      HDF5，且含 `model_weights` 组或 `model_config` 属性（Keras 存档）
       .keras   zip，且含 config.json / metadata.json（Keras 3 存档）
-      .pt/.pth zip 且含 torch 的 data.pkl；能反序列化就顺手把类别数读出来
-      .pkl     pickle（0x80 开头）——**不反序列化**，免得「上传即执行代码」
+      .pt/.pth/.pt2
+               zip（PK 开头），再看包内条目分三路：
+                 archive/data/weights/ → torch.export 产物   → pytorch-exported（.pt2 推荐路线）
+                 含 "/code/"           → TorchScript         → pytorch-jit
+                 含 data.pkl           → 老式 state_dict     → pytorch
+               ⚠️ 前两种**自包含**（结构随权重一起走，不依赖本项目的架构代码），
+                  第三种没有结构，只能按本项目的 cwt_cnn 架构重建，外部模型会键不匹配。
+      .pkl/.pickle
+               **只解析 pickle 操作码流，绝不反序列化** —— 免得「上传即执行代码」。
+               判据是"操作码流能解到底且以 STOP 收尾"（最多解 `_PICKLE_MAX_OPS` 个操作码）。
+               ⚠️ 判据不是"首字节 0x80"：那是协议 2+ 才写的 PROTO 标记，
+                  协议 0/1 的合法 pickle 以 ASCII 操作码开头，老判据会误拒；
+                  只看"第一个操作码"又会误收 `hello world`、`a,b,c` 这类文本。
     """
     import io
     import zipfile
@@ -165,7 +187,8 @@ def probe_weight(filename: str, blob: bytes) -> dict:
     result = {"ok": False, "framework": framework, "reason": "", "input_len": None, "num_classes": None}
     # 第一关：扩展名。连后缀都不在支持列表里，就没必要打开文件了
     if framework is None:
-        result["reason"] = f"扩展名 {suffix or '(无)'} 不是模型权重（支持 .h5/.keras/.pt/.pth/.pkl/.pickle）"
+        result["reason"] = (f"扩展名 {suffix or '(无)'} 不是模型权重"
+                            f"（支持 .h5/.keras/.pt/.pth/.pt2/.pkl/.pickle）")
         return result
     if not blob:
         result["reason"] = "文件是空的（0 字节）"
@@ -275,11 +298,31 @@ def probe_weight(filename: str, blob: bytes) -> dict:
                                  f"注意：这种格式没有结构，推理时按本项目的 cwt_cnn 架构重建，"
                                  f"外部模型若结构不同请改用 torch.export）")
             return result
-        # ---------------- .pkl：只验 pickle 魔数，**绝不反序列化** ----------------
-        # 反序列化 pickle = 执行文件里的任意代码，而这是"上传"来的文件；
-        # 判断"是不是 pickle"只需要看头 1 个字节（协议 2+ 都以 0x80 开头）就够了。
-        if blob[:1] != b"\x80":
-            result["reason"] = f"不是 pickle 文件（.pkl 应以 0x80 开头，实际 {blob[:2]!r}）"
+        # ---------------- .pkl：只解析操作码，**绝不反序列化** ----------------
+        # 反序列化 pickle = 执行文件里的任意代码，而这是"上传"来的文件，所以只能验"像不像 pickle"。
+        # ⚠️ 判据不能用"首字节是不是 0x80"：0x80 是 **PROTO 标记**，只有**协议 2+** 才写；
+        #    协议 0/1 的合法 pickle 分别以 `(` / `}` 这类 ASCII 操作码开头（实测：proto=0 →
+        #    b'(d'、proto=1 → b'}q'），老判据会把它们判成"不是 pickle 文件"并反过来指责用户。
+        # ⚠️ 也不能只看"第一个操作码能不能解码"：实测 `hello world`、`a,b,c` 这类文本的
+        #    首字节恰好是合法操作码，只看一个就放过（真跑过：纯文本 first=True）。所以：
+        #    把操作码流**解到底**，并要求最后一个操作码是 STOP（合法 pickle 必以 STOP 收尾，
+        #    pickle.loads 也必须有它）—— 实测这一步能挡掉文本/JSON/半截文件，同时协议 0~5 全通过。
+        # ⚠️ 代价上限：解码是纯 Python，实测 610 个操作码的真 adtk 产物 0.37ms，
+        #    但极端情况（200k 个小键的 dict，2.7MB）要 60 万个操作码 / 358ms —— 会拖住工作线程。
+        #    因此设操作码上限，超限就只当"前缀合法"放过（宁可宽松，也不为畸形大文件卡住请求）。
+        import pickletools
+        last, seen = None, 0                       # genops 是惰性生成器，不执行任何字节码
+        try:
+            for last in pickletools.genops(blob):
+                seen += 1
+                if seen >= _PICKLE_MAX_OPS:
+                    break
+        except Exception:
+            last = None                            # 操作码流解不开：不是合法 pickle
+        is_pickle = last is not None and (seen >= _PICKLE_MAX_OPS or last[0].name == "STOP")
+        if not is_pickle:
+            result["reason"] = (f"不是 pickle 文件（开头 {blob[:2]!r} 解不出合法的 pickle 操作码流，"
+                                f"或结尾没有 STOP）")
             return result
         result.update(ok=True, reason="pickle 序列化对象（adtk 检测器/传统模型；为安全起见不做反序列化校验）")
         return result
@@ -1009,7 +1052,8 @@ class ModelUpload(Resource):
             files, KEEP_SUFFIXES, WEIGHT_SUFFIXES, self.MAX_MB)
         # 2) 判断"这是不是一个模型"：候选逐个做内容探测，第一个通过的当权重
         if not candidates:
-            return {"error": "上传的内容里没有权重文件，不算模型（支持 .h5/.keras/.pt/.pth/.pkl/.pickle）",
+            return {"error": "上传的内容里没有权重文件，不算模型"
+                             "（支持 .h5/.keras/.pt/.pth/.pt2/.pkl/.pickle）",
                     "received": sorted(blobs), "skipped": skipped}, 400
         probed: list[dict] = []
         for filename, framework in candidates:
@@ -1029,7 +1073,8 @@ class ModelUpload(Resource):
             return {"error": "上传的内容不是一个模型：没有任何文件通过权重校验",
                     "detail": probed, "skipped": skipped,
                     "hint": "支持 Keras 的 .h5/.keras（需含 model_weights 组或 config.json）、"
-                            "PyTorch 的 .pt/.pth（torch 的 zip 检查点）、pickle 的 .pkl"}, 400
+                            "PyTorch 的 .pt/.pth/.pt2（torch 的 zip 检查点；.pt2/TorchScript 自带结构，"
+                            "推荐用 torch.export 导出）、pickle 的 .pkl"}, 400
         # 2) 产物目录：一个模型一份，**重新上传 = 直接替换旧产物**（没有版本号可选）。
         #    先写进暂存目录，写完整了才换上去 —— 否则一次失败的上传会把上一份好产物毁掉。
         root, stage = begin_artifact(safe)

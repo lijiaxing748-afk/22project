@@ -423,13 +423,13 @@
 			<el-form-item label="说明"><el-input v-model="uploadForm.description" placeholder="可选" /></el-form-item>
 		</el-form>
 		<div class="hint">
-			权重文件必须有：<code>.h5 .keras .pt .pth .pkl</code>；<code>scaler.npz</code>、<code>meta.json</code> 可选。
+			权重文件必须有：<code>.h5 .keras .pt .pth .pt2 .pkl</code>；<code>scaler.npz</code>、<code>meta.json</code> 可选。
 			服务端会先<strong>判断这是不是一个模型</strong>（看文件内容，不只看后缀），再自动读出输入长度与类别数。
 			同一个模型名再次上传会<strong>直接替换</strong>旧产物（后端会在结果里提示"已替换旧产物"）。
 		</div>
 		<div class="mt" style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap">
 			<input ref="folderInput" type="file" webkitdirectory directory multiple style="display: none" @change="onPick" />
-			<input ref="fileInput" type="file" multiple accept=".h5,.keras,.pt,.pth,.pkl,.pickle,.npz,.json" style="display: none" @change="onPick" />
+			<input ref="fileInput" type="file" multiple accept=".h5,.keras,.pt,.pth,.pt2,.pkl,.pickle,.npz,.json" style="display: none" @change="onPick" />
 			<el-button size="small" @click="pickFolder">选择整个文件夹</el-button>
 			<el-button size="small" @click="pickFiles">选择模型文件（可多选）</el-button>
 			<el-button v-if="picked.length" size="small" text @click="clearPicked">清空</el-button>
@@ -693,7 +693,7 @@ const picked = ref<{ name: string; size_kb: number; kind: string }[]>([]);
 const uploading = ref(false);
 const uploadMsg = ref('');
 const pickKind = (n: string) =>
-	/\.(h5|keras|pt|pth|pkl|pickle)$/i.test(n) ? '权重'
+	/\.(h5|keras|pt|pth|pt2|pkl|pickle)$/i.test(n) ? '权重'
 		: n === 'scaler.npz' ? 'scaler' : n === 'meta.json' ? 'meta' : '其他';
 /** 两个隐藏的原生 input（浏览器没有"文件夹 + 文件"合一的入口），由两个按钮分别去点 */
 const pickFolder = () => folderInput.value?.click();
@@ -708,7 +708,7 @@ const onPick = () => {
 		name: f.name, size_kb: Number((f.size / 1024).toFixed(1)), kind: pickKind(f.name),
 	}));
 	uploadMsg.value = picked.value.some((f) => f.kind === '权重')
-		? '' : '⚠ 没识别到权重文件（.h5/.keras/.pt/.pth/.pkl），服务端会判定「不是一个模型」并拒绝';
+		? '' : '⚠ 没识别到权重文件（.h5/.keras/.pt/.pth/.pt2/.pkl），服务端会判定「不是一个模型」并拒绝';
 };
 const clearPicked = () => {
 	if (folderInput.value) folderInput.value.value = '';
