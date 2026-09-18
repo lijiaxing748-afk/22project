@@ -24,6 +24,31 @@ from flask_restful import Api                                       # noqa: E402
 from model_service.api import probe_weight, register_api            # noqa: E402
 from model_service.config import config as CONF                     # noqa: E402
 from model_service.db import database                               # noqa: E402
+from model_service.dvadmin import register_dvadmin                   # noqa: E402
+
+
+def login_admin(client) -> dict:
+    """建种子账号（幂等）并用 admin 登录，返回可直接合并进 environ_base 的鉴权头。
+
+    ⚠️ 为什么必须有这一步：2026-09-18 并入工厂线（发布 / 鉴权）之后，业务写接口
+    全部加了 `@require_perm` —— 不带令牌一律回 `{"error": "请先登录"}`，
+    于是本脚本的 HTTP 部分会整片变红。但它要测的是上传/改名链路，不是鉴权，
+    所以这里拿一个**真令牌**（而不是把鉴权关掉），顺带把"登录接口可用"也验了一遍。
+
+    种子账号是幂等的：Users 表非空时 bootstrap_users() 直接返回 0，不会重复建号。
+    """
+    from model_service import auth
+    from model_service.db import database as _db
+    try:
+        _db.bootstrap_users(auth.hash_password("Admin@2026"), with_samples=True)
+    except Exception as exc:                                         # noqa: BLE001
+        print(f"  （种子账号跳过：{type(exc).__name__}: {exc}）")
+    body = client.post("/api/login/",
+                       json={"username": "admin", "password": "Admin@2026"}).get_json() or {}
+    token = (body.get("data") or {}).get("access") or ""
+    if not token:
+        raise SystemExit(f"admin 登录失败，后续 HTTP 用例无法继续：{body}")
+    return {"HTTP_AUTHORIZATION": f"Bearer {token}"}
 
 TEST_NAMES = ("SELFTEST-H5", "SELFTEST-PT", "SELFTEST-BAD", "SELFTEST-TXT", "SELFTEST-H5-RENAMED")
 
@@ -137,8 +162,12 @@ def main() -> int:
 
     print("\n=== 2) POST /models/upload：不填 input_len 也能落盘 ===")
     app = Flask(__name__)
+    # ⚠️ 注册顺序照 main.py：兼容层（含 /api/login/ 与 404 兜底）必须在业务接口之前
+    register_dvadmin(app)
     register_api(Api(app))
     client = app.test_client()
+    # environ_base 对每个请求都生效，所以不必给 8 处调用各自加 headers=
+    client.environ_base.update(login_admin(client))
     created: list[str] = []
 
     def upload(name: str, files: list[tuple[str, bytes]]):

@@ -24,6 +24,24 @@ WORKSPACE = r"D:\22project"
 FAULT = "testRestfulProject/1DCNN/0HP/48k_Drive_End_IR007_0_109.mat"
 fails = []
 
+# ⚠️ 2026-09-18 并入工厂线（发布 / 鉴权）之后，写接口全部加了 @require_perm：
+#    不带令牌一律回 {"error": "请先登录"}。这里用 admin 拿一个真令牌，
+#    再塞进 environ_base —— 它对**每个**请求都生效，下面 8 处调用不用各自加 headers。
+#    种子账号是幂等的（Users 表非空时什么都不做），不会重复建号。
+from model_service import auth as _auth                                # noqa: E402
+from model_service.db import database as _db                           # noqa: E402
+
+try:
+    _db.bootstrap_users(_auth.hash_password("Admin@2026"), with_samples=True)
+except Exception as _exc:                                              # noqa: BLE001
+    print(f"（种子账号跳过：{type(_exc).__name__}: {_exc}）")
+_login = client.post("/api/login/",
+                     json={"username": "admin", "password": "Admin@2026"}).get_json() or {}
+_TOKEN = (_login.get("data") or {}).get("access") or ""
+if not _TOKEN:
+    sys.exit(f"admin 登录失败，后续用例无法继续：{_login}")
+client.environ_base["HTTP_AUTHORIZATION"] = f"Bearer {_TOKEN}"
+
 
 def check(label, cond, detail=""):
     print(f"  {'ok  ' if cond else 'FAIL'} {label}{('  — ' + str(detail)) if detail else ''}")
