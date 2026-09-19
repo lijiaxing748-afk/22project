@@ -104,6 +104,29 @@ VALUES
  ('operator', '现场操作员', '只能浏览模型与产物、发起推理；不能训练/发布/删除',     1, CURRENT_TIMESTAMP(6));
 
 
+/* ---------------- 增量：Users.PwdChangeCount（初次登录强制改密） ----------------
+   用途：0 = 还没改过初始口令 → 该用户登录后会被要求改成自己的口令；1 = 已改过/不要求。
+
+   ⚠️ 为什么单列一条：建表脚本是 `CREATE TABLE IF NOT EXISTS`，**表已存在时一个字都不改**，
+      所以给老库补列只能靠 ALTER。后端启动时 db._ensure_user_columns() 也会自动补一次
+      （带 5 秒锁等待上限），**正常情况下不需要你手工跑这条**。
+
+   ⚠️ 什么时候需要手工跑：如果启动日志/行为显示这列一直没补上，多半是有别的会话
+      （另一个长跑的后端、或数据库客户端窗口）开着事务占着元数据锁，ALTER 拿不到锁就放弃了。
+      此时先关掉那个会话，再跑本脚本即可。默认值 1 是关键：老账号一律"不要求改密"。
+      新账号由程序显式写 0（db.create_user 的 pwd_change_count 参数）。 */
+SET @col_exists := (
+    SELECT COUNT(*) FROM information_schema.COLUMNS
+     WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'Users'
+       AND COLUMN_NAME = 'PwdChangeCount');
+SET @ddl := IF(@col_exists = 0,
+    'ALTER TABLE `Users` ADD COLUMN `PwdChangeCount` INT NOT NULL DEFAULT 1',
+    'SELECT ''Users.PwdChangeCount 已存在，跳过'' AS note');
+PREPARE stmt FROM @ddl;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+
+
 /* ---------------- 自检 ---------------- */
 /* 跑完可以执行这条确认三张表都在（应返回 3 行）： */
 -- SELECT TABLE_NAME FROM information_schema.TABLES

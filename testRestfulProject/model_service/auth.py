@@ -377,6 +377,13 @@ def login_payload(user: dict) -> dict:
     以前那个"恒定超管"的假身份就是在这个位置，现在换成实打实查库的结果。
     """
     role_key = user.get("RoleKey") or ROLE_OPERATOR
+    # 「初次登录强制改密」的依据：0 = 还没改过初始口令（前端 index.vue 据此切到 changePwd 页签）。
+    # ⚠️ 列缺失（旧库还没跑增量迁移）或值为 NULL 时**必须退化成 1**，绝不能退化成 0 ——
+    #    那会把所有人（包括管理员自己）拦在"初次登录修改密码"页上。
+    # 改造前这个值是在 dvadmin.login() 里**硬编码 1** 的，于是前端那条链路永远进不去（死代码）；
+    # 现在改成返回库里的真实值，新账号（create_user 默认 0）首次登录才会被要求改密。
+    raw_pwd_count = user.get("PwdChangeCount")
+    pwd_change_count = 1 if raw_pwd_count is None else int(raw_pwd_count)
     return {
         "id": user.get("UserID"),
         "username": user.get("Username"),
@@ -394,6 +401,10 @@ def login_payload(user: dict) -> dict:
         "permissions": perms_of(role_key),
         "role_key": role_key,
         "role_name": role_name_of(role_key),
+        # 前端 stores/userInfo.ts 会 setPwdChangeCount(res.data.pwd_change_count)，
+        # 少了这个键会变成 undefined —— account.vue 的 `=== 0` 与 `> 0` 两个分支都不成立，
+        # 表现就是"登录成功但页面不跳转"。所以它必须在 login / user_info 两条路径里都存在。
+        "pwd_change_count": pwd_change_count,
     }
 
 

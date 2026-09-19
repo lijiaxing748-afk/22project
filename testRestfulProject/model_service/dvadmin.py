@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """Django-Vue3-Admin（dvadmin）兼容层 —— 让 frontend/22project 直接跑在本服务上。
 
 ⚠️ 这个模块存在的全部理由：
@@ -17,12 +17,13 @@ frontend/22project 启动时会打一组 Django 接口；这里用 Flask 把**�
     GET  /api/system/menu/web_router/              动态菜单（后端控制路由，五个模块在这里）
     GET  /api/init/dictionary/?dictionary_key=all  字典（data 必须是数组）
     GET  /api/system/message_center/get_newest_msg/ 站内消息（空数组即可）
-    GET  /api/captcha/                             验证码（返回 captcha_state=false，登录页不显示）
+    GET  /api/captcha/                             验证码（默认关闭，配 MODEL_CAPTCHA=1 打开）
     POST /api/logout/                              退出
 
 说明：
-  * 登录只做形式校验（任意非空账号口令都通过）：这是一个局域网内的演示平台，
-    没有用户体系；真要接权限，把这里换成真实的鉴权即可。
+  * 登录**查库校验密码哈希**（pbkdf2:sha256），成功后签发自签令牌；账号体系在 Users 表，
+    角色权限写死在 auth._ROLE_PERMS。历史上这里曾经"任意非空口令都通过且恒定返回超管"，
+    那等于没有登录，已在"交付工厂"改造中修掉。
   * 同时装上 CORS 头：前端 dev server 在 8080、本服务在 5000，属于跨域。
   * ⚠️ 这里的返回值字段名是**照着前端源码反推**出来的，不是照着 Django 后端文档写的；
     少一个字段前端往往会静默走错分支（页面空白/不跳转），改动前先看对应的前端文件。
@@ -31,6 +32,7 @@ from __future__ import annotations
 import uuid
 from flask import Blueprint, g, jsonify, request
 from . import auth
+from . import captcha
 from .db import DBError, _bit, database
 # 五个模块（后端控制路由：前端的 dynamicRoutes[0].children 会被这份数据替换）
 def _menu_payload() -> list[dict]:
@@ -95,6 +97,16 @@ def build_blueprint() -> Blueprint:
         if not username or not password:
             return jsonify({"code": 4000, "data": None, "msg": "用户名和密码都不能为空"}), 200
 
+        # 验证码：只有 config.captcha_enabled（MODEL_CAPTCHA=1）且画得出图时才校验。
+        # ⚠️ 一定要放在**查库校验密码之前**：它的作用就是把"在线猜口令"的成本抬上去，
+        #    放到密码校验之后等于没挡。前端那个"验证码必填"的规则同样只在开关打开时生效，
+        #    两边都读 captcha.active()，不会出现"前端要求填、后端不校验"的错配。
+        if captcha.active():
+            ok, why = captcha.verify(body)
+            if not ok:
+                auth.log_operation("login", target=username, result="失败", message=why)
+                return jsonify({"code": 4000, "data": None, "msg": why}), 200
+
         try:
             row = database.user_by_username(username)
         except DBError as exc:
@@ -113,15 +125,16 @@ def build_blueprint() -> Blueprint:
             return jsonify({"code": 4000, "data": None,
                             "msg": "该账号已被停用，请联系管理员"}), 200
 
-        # ⚠️ 登录响应必须带上 pwd_change_count，且要比 0 大。
-        # 前端的登录成功分支是：
-        #   if (data.pwd_change_count == 0) return router.push('/login');   // 强制改密码
-        #   ... loginSuccess() 里 if (pwd_change_count > 0) 才会 router.push('/home')
+        # ⚠️ 登录响应必须带上 pwd_change_count。前端的两个分支都依赖它：
+        #   account.vue:  if (data.pwd_change_count == 0) return router.push('/login');  // 切到"初次登录改密码"
+        #   loginSuccess(): if (pwd_change_count > 0) 才 router.push('/')
         # 少了这个字段（undefined）两边都进不去，表现就是"登录后页面不跳转"。
+        # 它由 auth.login_payload() 从 Users.PwdChangeCount 带出来（0 = 还没改过初始口令）。
+        # ⚠️ 改造前这里写死成 1，等于把"初次登录强制改密"整条链路做成了死代码；
+        #    现在新账号（create_user 默认 0）首次登录真的会被要求改密，改完 set_user_password 置 1。
         data = auth.login_payload(row)
         data.update({"access": auth.issue_token(row),
-                     "refresh": auth.issue_token(row),      # 无状态令牌，续期就是重签一个
-                     "pwd_change_count": 1})
+                     "refresh": auth.issue_token(row)})     # 无状态令牌，续期就是重签一个
         database.touch_login(row["UserID"])
         # 记日志要在 g.current_user 设好之前——login 是匿名接口，
         # 直接用刚查到的 row 把身份传进去，否则日志里会是空的操作人。
@@ -181,12 +194,16 @@ def build_blueprint() -> Blueprint:
     @bp.put("/api/system/user/change_password/")
     @bp.post("/api/system/user/login_change_password/")
     def change_password():
-        """改密码：三个路由都指向这里。
+        """改密码：三个路由都指向这里（含"初次登录强制改密"的 login_change_password）。
 
         ⚠️ 原先这里直接回"本地演示环境不需要改密码"——等于改密码是假的。
-        现在真落库，并且 set_user_password 会把 TokenVersion +1，
-        **改完密码旧令牌立即失效**，需要重新登录（这是应有行为，
-        否则改密码就防不住已经泄露的令牌）。
+        现在真落库：set_user_password 把 TokenVersion +1（**旧令牌立即失效**）并把
+        PwdChangeCount 置 1（这条链路只会走一次）。
+
+        ⚠️ 改完必须回一个**新令牌**，否则"初次登录强制改密"会变成死循环：
+            改密时旧令牌被作废 → 前端拿旧令牌进首页 → 每个请求都"登录已失效" → 弹回登录页。
+            前端 changePwd.vue 会把这里的 `data.access` 覆盖写回 Session，衔接上。
+            对"个人中心改密"那种场景，前端不读新令牌也没有副作用（行为与改造前一致）。
         """
         user = auth.authenticate()
         if not user:
@@ -212,7 +229,11 @@ def build_blueprint() -> Blueprint:
             return _ok(None, "新密码至少 6 位")
         database.set_user_password(user["UserID"], auth.hash_password(new_pwd))
         auth.log_operation("change_password", target=user.get("Username"))
-        return _ok(None, "密码已修改，请重新登录")
+        # 重新取一次用户行：PwdChangeCount / TokenVersion 都已变，新令牌要按新状态签
+        fresh = database.user_by_id(user["UserID"]) or user
+        return _ok({"access": auth.issue_token(fresh),
+                    "pwd_change_count": auth.login_payload(fresh)["pwd_change_count"]},
+                   "密码已修改")
     @bp.post("/api/system/file/")
     def upload_file():
         """文件/头像上传（前端 `personal/api.ts` 的 uploadAvatar 打的就是这里）。
@@ -270,7 +291,8 @@ def build_blueprint() -> Blueprint:
         ⚠️ 返回的是**平铺的 key-value**，不是列表：前端拿它当 map 下标取值，
         给成数组会让 `systemConfig['base.captcha_state']` 恒为 undefined（登录页验证码又冒出来）。
         """
-        return _ok({"base.captcha_state": False, "base.site_name": "模型管理平台",
+        return _ok({"base.captcha_state": bool(captcha.active()),
+                    "base.site_name": "模型管理平台",
                     "base.login_title": "模型管理平台",
                     # 登录页大标题/副标题：前端优先读这两个 key（见 views/system/login/index.vue），
                     # 缺省才会回落到 themeConfig.globalViceTitle。
@@ -289,17 +311,34 @@ def build_blueprint() -> Blueprint:
         """站内消息：两个路由合并，固定回空数组。"""
         return _ok([], "无消息")
     @bp.get("/api/captcha/")
-    def captcha():
-        """验证码：captcha_state=false 时登录页不显示验证码框（本地演示不需要人机校验）。
+    def captcha_view():
+        """验证码图片 + 签名 key。开关关闭时 `captcha_state=false`，前端不显示输入框。
 
-        ⚠️ 三个字段都要给全：前端读 `data.captcha_state`，为假才隐藏输入框；
-        key/image_base64 给 None 是让"显示验证码"的分支即使被走到也不会拿 undefined 去渲染 img。
+        ⚠️ 字段名必须叫 **`image_base`**：前端 `account.vue` 读的就是
+        `ret.data.image_base`（它把值直接塞进 `<img :src>`）。改造前后端返回的是
+        `image_base64` —— 名字对不上，一打开开关图就是空白，用户看不到码也就登不进来。
+        这里返回 `image_base`（前端口径），另外保留 `image_base64` 作为别名，
+        免得别处（部署脚本/老 bundle）按旧名字取值时拿到 undefined。
+
+        ⚠️ `captcha_state` 由**后端**决定（= config.captcha_enabled 且画得出图），
+        前端只是读它决定显隐；两边的开关是同一个来源，不会各说各话。
         """
-        return _ok({"captcha_state": False, "key": None, "image_base64": None})
+        if not captcha.active():
+            return _ok({"captcha_state": False, "key": None,
+                        "image_base": None, "image_base64": None})
+        try:
+            _code, image_base, key = captcha.new_challenge()
+        except Exception as exc:                     # 画图失败：降级成"不校验"，别把人锁在门外
+            return _ok({"captcha_state": False, "key": None,
+                        "image_base": None, "image_base64": None,
+                        "warning": f"验证码生成失败，本次不校验：{type(exc).__name__}"})
+        return _ok({"captcha_state": True, "key": key,
+                    "image_base": image_base, "image_base64": image_base})
     @bp.get("/api/system/system_config/get_table_data/")
     def system_config():
         """系统配置表（另一条取配置的路径，与 /api/init/settings/ 给同样的值）。"""
-        return _ok({"base.captcha_state": False, "base.site_name": "模型管理平台"})
+        return _ok({"base.captcha_state": bool(captcha.active()),
+                    "base.site_name": "模型管理平台"})
     @bp.get("/api/system/dept/all_dept/")
     @bp.get("/api/system/dept/dept_all/")
     def all_dept():

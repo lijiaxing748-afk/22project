@@ -163,6 +163,13 @@ export default defineComponent({
 					// 后端拿"MD5(新密码)"和"明文(重复新密码)"去比对，直接判定两次输入不一致。
 					loginApi.loginChangePwd({ ...state.ruleForm }).then((res: any) => {
 						if (res.code === 2000) {
+							// ⚠️ 改密码会让**旧令牌立即失效**（后端 TokenVersion+1），所以后端
+							// 在响应里回了一个新令牌，这里必须覆盖写回 Session —— 否则下面
+							// 一跳首页，每个请求都"登录已失效"，人又被弹回登录页，白改一次。
+							if (res.data && res.data.access) {
+								Session.set('token', res.data.access);
+							}
+							useUserInfo().setPwdChangeCount(1);
 							if (!themeConfig.value.isRequestRoutes) {
 								// 前端控制路由，2、请注意执行顺序
 								initFrontEndControlRoutes();

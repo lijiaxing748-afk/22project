@@ -164,6 +164,12 @@ class Config:
         # 缺省管理员口令：**首次启动**用来生成种子账号，生成完就写进库、此后不再读它。
         # 空值 = 不生成种子账号（部署方自己 inser 用户，或已经有账号了）。
         self.bootstrap_admin_password = _env("MODEL_BOOTSTRAP_ADMIN_PASSWORD", "")
+        # 登录页验证码（人机校验）。默认**关闭**，配 MODEL_CAPTCHA=1 打开。
+        # ⚠️ 打开前请确认登录页能正常显示图片：前端读的是 `image_base`，后端返回的字段名
+        #    必须一致（见 captcha.py 与 dvadmin.captcha()）—— 反过来说，前端那个"必填"规则
+        #    只有在开关打开时才该生效，所以两边的开关都读这一个配置，不会各说各话。
+        # 为什么要它：没有验证码时，弱口令可以在线慢慢爆破（登录接口没有失败计数）。
+        self.captcha_enabled = (_env("MODEL_CAPTCHA", "") or "").strip().lower() in ("1", "true", "yes", "on")
         # ⚠️ 这里原来还有一个 self.defaults 字典（三套模型的默认超参速查表），已删除：
         #    它全项目零引用（只有本行赋值），运行时真正生效的默认值写在 training.py 里，
         #    形式是 `opts.get("epochs", 10)` 这类内联字面量。**改默认超参请改 training.py。**

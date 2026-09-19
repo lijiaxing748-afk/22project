@@ -45,6 +45,15 @@ _TABLES = ("Datasets", "Models", "Trainings", "ModelInvocations",
 def _now() -> str:
     """统一时间戳格式：MySQL 能解析的字符串（截断到毫秒）。"""
     return datetime.now().isoformat(sep=" ", timespec="milliseconds")
+def _pymysql():
+    """懒引入 pymysql 模块本身（`_connect_new` 里另有带提示的引入，见那段注释）。
+
+    为什么在这里要模块对象而不是 `from pymysql.err import IntegrityError`：
+    驱动没装时要在**连接那一刻**给出"pip install pymysql"这种可执行提示，
+    而不是让 import 期就炸；所以驱动相关的捕获也得走同一个懒引入口。
+    """
+    import pymysql
+    return pymysql
 def _dump_json(value):
     """落 LONGTEXT 前的 JSON 文本；None 保持 SQL NULL（**不**写成字符串 "null"）。
 
@@ -117,6 +126,9 @@ class Database:
         self.last_bootstrap = None      # 记录「顺便建了库/表」的事实，供 /health 展示
         self._local = threading.local()  # 每线程复用一个连接（之前是每个请求都新建连接）
         self._counts_cache = {"at": 0.0, "data": None}
+        # Users.PwdChangeCount 是否存在（None = 还没查过）。见 _has_pwd_change_column：
+        # 老库补不上列时，INSERT/UPDATE 会自动退化成不带该列的写法，而不是报 1054。
+        self._pwd_change_col: bool | None = None
     # ------------------------------------------------------------------ 连接
     @property
     def placeholder(self) -> str:
@@ -262,6 +274,9 @@ class Database:
                 if self._tables_present(conn):
                     # 表已经齐全：一条语句都不用跑。服务每次重启、每个线程的首次调用都会走到这里，
                     # 白白跑一遍脚本既慢、又会去抢 INSERT IGNORE 的锁，没必要。
+                    # ⚠️ 但**加列**这类增量迁移必须在这里做：建表脚本用 CREATE TABLE IF NOT EXISTS，
+                    #    对已存在的表一个字都不会改，"表都齐了"的库永远等不到新列（见 _ensure_user_columns）。
+                    self._ensure_user_columns(conn)
                     self._schema_ready = True
                     return
                 sql = (self.cfg.sql_dir / "schema_mysql.sql").read_text(encoding="utf-8")
@@ -272,6 +287,7 @@ class Database:
                     conn.commit()
                 finally:
                     cur.close()
+                self._ensure_user_columns(conn)
             finally:
                 # ⚠️ 关掉的是 _connect() 返回的**线程本地复用连接**，所以必须把缓存一起清掉，
                 #    否则 self._local.conn 会指向一条已关闭的连接，下次 _connect 得先 ping 失败
@@ -283,6 +299,77 @@ class Database:
                     if getattr(self._local, "conn", None) is conn:
                         self._local.conn = None
             self._schema_ready = True
+    def _has_pwd_change_column(self) -> bool:
+        """Users 上到底有没有 PwdChangeCount 列（进程内缓存一次）。
+
+        ⚠️ 为什么必须判断而不是"假定已迁移"：老库可能**一直补不上列**（有别的会话占着元数据锁，
+        见 _ensure_user_columns）。而 create_user 的 INSERT、set_user_password 的 UPDATE 都写了
+        这个列 —— 列不存在时 MySQL 会直接报 1054 Unknown column：
+        前者让"新建用户"整个功能 500，后者让"改密码"失效。按列是否存在动态拼 SQL 最稳。
+        """
+        if self._pwd_change_col is None:
+            try:
+                with self.cursor() as cur:
+                    cur.execute(
+                        "SELECT COUNT(*) FROM information_schema.COLUMNS "
+                        "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'Users' "
+                        "AND COLUMN_NAME = 'PwdChangeCount'")
+                    row = cur.fetchone()
+                self._pwd_change_col = bool(row and int(row[0]))
+            except Exception:
+                self._pwd_change_col = False
+        return bool(self._pwd_change_col)
+
+    def _ensure_user_columns(self, conn) -> None:
+        """给**已存在的旧库**补 Users 上的增量列（目前只有 PwdChangeCount）。
+
+        为什么必须单独做：`ensure_schema()` 跑的是 `CREATE TABLE IF NOT EXISTS` 建表脚本，
+        表已存在时一个字都不会改；而它的"表都齐了就一条语句都不跑"快路径更是直接返回。
+        所以**加列**永远不会自动生效，必须在这里用 information_schema 判一下再 ALTER。
+
+        ⚠️ 默认值取 1（= 不要求改密码）而不是 0：老库里的账号都是已经在用的账号，
+        给 0 会让所有人（包括管理员自己）在下次登录时被拦到"初次登录修改密码"页上。
+        新库/新账号由 create_user(pwd_change_count=0) 显式给 0。
+
+        ⚠️ 任何失败都**不能**让服务起不来：补列失败时登录仍可进行，只是 pwd_change_count
+        退化成 1（不做强制改密）—— 这是可用性优先的取舍，失败原因由 DBError 之外的异常静默吞掉。
+        """
+        try:
+            cur = conn.cursor()
+            try:
+                cur.execute(
+                    "SELECT COUNT(*) FROM information_schema.COLUMNS "
+                    "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'Users' "
+                    "AND COLUMN_NAME = 'PwdChangeCount'")
+                row = cur.fetchone()
+                if row and int(row[0]):
+                    self._pwd_change_col = True
+                    return                                   # 列已存在（绝大多数启动都走这里）
+                # ⚠️ 必须给个**短的锁等待上限**，否则这一步会把整个启动挂死：
+                #    MySQL 8 里 ALTER 要拿排他元数据锁，而"开着事务的空闲连接"（长跑着的
+                #    另一个后端、或某个数据库客户端窗口）会一直占着共享锁不放 —— 实测遇到过
+                #    一个空闲 14 小时的会话把 ALTER 卡住，连带后面所有访问 Users 的请求
+                #    （包括登录）一起排队等锁。5 秒拿不到就放弃，退回"不强制改密"。
+                cur.execute("SET SESSION lock_wait_timeout = 5")
+                cur.execute("ALTER TABLE Users ADD COLUMN PwdChangeCount INT NOT NULL DEFAULT 1")
+                conn.commit()
+                self._pwd_change_col = True
+                self.last_bootstrap = ("Users.PwdChangeCount 列由 _ensure_user_columns 补上"
+                                       "（旧库增量迁移，默认 1 = 不强制改密）")
+            finally:
+                try:
+                    cur.close()
+                except Exception:
+                    pass
+        except Exception:
+            # 拿不到锁 / 权限不足 / 别的会话正开着事务：都只是"这次不补列"，服务照常起。
+            # 没这列时 pwd_change_count 退化成 1（= 不要求改密码），登录与权限完全不受影响；
+            # create_user / set_user_password 也会按"列不存在"的动态 SQL 走（见 _has_pwd_change_column）。
+            self._pwd_change_col = False
+            try:
+                conn.rollback()
+            except Exception:
+                pass
     def ping(self) -> dict:
         """体检：顺便建表 + 取行数，**永远返回 dict 不抛异常**（/health 靠它保持可用）。"""
         try:
@@ -930,35 +1017,59 @@ class Database:
 
     def create_user(self, username: str, password_hash: str, role_key: str, *,
                     display_name: str | None = None, dept_name: str | None = None,
-                    email: str | None = None, mobile: str | None = None) -> int:
+                    email: str | None = None, mobile: str | None = None,
+                    pwd_change_count: int = 0) -> int:
         """新建用户，返回 UserID。用户名重复会抛 DBError（唯一键冲突）。
 
         ⚠️ 只收**已经哈希好**的密码：本层不做哈希，免得多一条"有人绕过哈希
         直接传明文"的路径。调用方必须用 auth.hash_password()。
+
+        ⚠️ 唯一键冲突必须在这里翻译成人话。原来没翻译，`cursor()` 又是"回滚后原样抛出"，
+        于是 `pymysql.err.IntegrityError: (1062, ...)` 一路穿透到全局兜底，前端看到的是
+        **HTTP 500 + traceback**，而不是"用户名已存在"。（docstring 早就写着"会抛 DBError"，
+        实现没做到 —— 现在做到了。）
+
+        `pwd_change_count`：0 = 还没改过初始口令（前端会切到"初次登录修改密码"页签），
+        1 = 正常。**种子账号必须传 1**，否则升级后连着你自己一起被要求改密码。
         """
         self.ensure_schema()
-        with self.cursor(commit=True) as cur:
-            cur.execute(
-                f"INSERT INTO Users (Username, PasswordHash, DisplayName, RoleKey, DeptName, "
-                f"Email, Mobile, IsActive, TokenVersion, CreatedDate) VALUES "
-                f"({self.placeholder}, {self.placeholder}, {self.placeholder}, {self.placeholder}, "
-                f"{self.placeholder}, {self.placeholder}, {self.placeholder}, 1, 0, {self.placeholder})",
-                (username, password_hash, display_name or username, role_key, dept_name,
-                 email, mobile, _now()))
-            return int(cur.lastrowid)
+        # ⚠️ 列可能不存在（老库没迁移成功）：那就退回不带这一列的 INSERT，
+        #    让"新建用户"照常可用 —— 代价只是新账号不会被要求首次改密，而不是整个功能报 500。
+        has_col = self._has_pwd_change_column()
+        cols = ("Username", "PasswordHash", "DisplayName", "RoleKey", "DeptName",
+                "Email", "Mobile", "IsActive", "TokenVersion", "CreatedDate")
+        values = (username, password_hash, display_name or username, role_key, dept_name,
+                  email, mobile, 1, 0, _now())
+        if has_col:
+            cols = cols[:-1] + ("PwdChangeCount", "CreatedDate")
+            values = values[:-1] + (int(pwd_change_count), _now())
+        placeholders = ", ".join([self.placeholder] * len(cols))
+        try:
+            with self.cursor(commit=True) as cur:
+                cur.execute(
+                    f"INSERT INTO Users ({', '.join(cols)}) VALUES ({placeholders})", values)
+                return int(cur.lastrowid)
+        except _pymysql().err.IntegrityError as exc:
+            if exc.args and exc.args[0] == 1062:          # Duplicate entry
+                raise DBError(f"用户名 {username} 已存在，换一个") from exc
+            raise
 
     def set_user_password(self, user_id: int, password_hash: str) -> None:
-        """改密码，并把 TokenVersion +1（让旧令牌立刻失效）。
+        """改密码，并把 TokenVersion +1（让旧令牌立刻失效），同时把 PwdChangeCount 置 1。
 
-        ⚠️ 两件事必须在**同一个 UPDATE** 里做。分开写的话，中间崩溃就会出现
+        ⚠️ 三件事必须在**同一个 UPDATE** 里做。分开写的话，中间崩溃就会出现
         "密码改了但令牌没失效"，或者反过来"令牌失效了但密码没改成"——
         前者是安全问题（旧令牌还能用），后者是可用性问题（用户被锁在外面）。
+        PwdChangeCount 一起置 1 是为了让"初次登录强制改密"只出现一次：改过就 1。
         """
         self.ensure_schema()
+        # PwdChangeCount 置 1 让"初次登录强制改密"只出现一次；列不存在时（老库）就不写它。
+        extra = ", PwdChangeCount = 1" if self._has_pwd_change_column() else ""
         with self.cursor(commit=True) as cur:
             cur.execute(
                 f"UPDATE Users SET PasswordHash = {self.placeholder}, "
-                f"TokenVersion = COALESCE(TokenVersion, 0) + 1, UpdatedDate = {self.placeholder} "
+                f"TokenVersion = COALESCE(TokenVersion, 0) + 1{extra}, "
+                f"UpdatedDate = {self.placeholder} "
                 f"WHERE UserID = {self.placeholder}",
                 (password_hash, _now(), user_id))
 
@@ -1043,7 +1154,11 @@ class Database:
         for username, pwd_hash, role_key, display in seeded:
             try:
                 self.create_user(username, pwd_hash, role_key,
-                                 display_name=display, dept_name="模型管理平台")
+                                 display_name=display, dept_name="模型管理平台",
+                                 # ⚠️ 种子账号一律 1 = **不要求**改密码。
+                                 #    给 0 的话，升级后第一次启动就会把 admin 自己拦到
+                                 #    "初次登录修改密码"页上 —— 现场会以为系统坏了。
+                                 pwd_change_count=1)
                 n += 1
             except Exception:
                 # 并发启动时另一个线程可能已经插进去了（唯一键冲突），忽略继续

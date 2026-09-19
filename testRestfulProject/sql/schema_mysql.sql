@@ -282,6 +282,11 @@ CREATE TABLE IF NOT EXISTS `Users` (
        能被令牌携带、也能被服务端比对的计数器来实现"改密码即踢下线"。
        没这个字段的话，改完密码旧令牌照样能用满 12 小时。 */
     `TokenVersion` INT           NULL DEFAULT 0,
+    /* 是否还没改过初始口令：0 = 还没改（登录后前端切到"初次登录修改密码"页签），1 = 已改。
+       ⚠️ 默认给 1 是刻意的：老库补列时（db._ensure_user_columns 的 ALTER）会把**已有账号**
+       全部置 1，否则升级后所有人——包括管理员自己——都会被拦在改密页上。
+       新账号由 db.create_user(pwd_change_count=0) 显式给 0，种子账号给 1。 */
+    `PwdChangeCount` INT         NOT NULL DEFAULT 1,
     `CreatedDate`  DATETIME(6)   NULL DEFAULT CURRENT_TIMESTAMP(6),
     `UpdatedDate`  DATETIME(6)   NULL,
     PRIMARY KEY (`UserID`),
