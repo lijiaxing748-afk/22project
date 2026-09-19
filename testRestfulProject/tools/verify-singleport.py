@@ -80,9 +80,28 @@ for p in ("/health", "/models", "/datasets", "/api"):
 
 print()
 print("=== 3b. 接口清单已挪到 /api（/ 让给前端首页）===")
+# ⚠️ 2026-09-19 起 /api 收紧：**匿名只回一句"需要登录"，不回清单本身**
+#    （清单是"接口目录"：28 条路径 + 每条一句自描述，挂在公网/LAN 上等于把后端盘一遍）。
+#    所以这里两头都要验：匿名必须拿不到清单，登录后必须拿得到完整清单。
 r = c.get("/api")
 idx = r.get_json() or {}
-ck("/api 是接口索引", "endpoints" in idx, f"-> keys={list(idx)[:4]}")
+ck("匿名访问 /api 仍是 JSON（键还在，但清单为空）",
+   "endpoints" in idx and not idx.get("endpoints"), f"-> keys={list(idx)[:4]}")
+ck("匿名时给了「要登录」的说明", bool(idx.get("note")), str(idx.get("note"))[:40])
+
+# 登录拿令牌，再验"登录后看得到完整清单"
+from model_service import auth as _auth  # noqa: E402
+from model_service.db import database as _db  # noqa: E402
+
+try:
+    _db.bootstrap_users(_auth.hash_password("Admin@2026"), with_samples=True)
+except Exception:  # noqa: BLE001
+    pass
+_tok = (((c.post("/api/login/", json={"username": "admin", "password": "Admin@2026"}).get_json() or {})
+         .get("data") or {}).get("access")) or ""
+_authed = c.get("/api", headers={"Authorization": f"Bearer {_tok}"}).get_json() or {}
+ck("登录后 /api 给出完整清单", len(_authed.get("endpoints") or {}) > 0,
+   f"-> {len(_authed.get('endpoints') or {})} 条")
 ck("路由表里 / 只剩一条（前端首页）",
    sum(1 for rl in app.url_map.iter_rules() if str(rl) == "/") == 1)
 ck("/ 与 /api 是不同 endpoint",

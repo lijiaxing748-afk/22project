@@ -37,7 +37,7 @@ from flask_restful import Resource
 from . import datasets as ds
 from . import exporter
 from . import tabular
-from .auth import log_operation, require_login, require_perm
+from .auth import authenticate, log_operation, require_login, require_perm
 from .config import config
 from .db import DBError, database
 from .figures import FIG_DIR, clear_figures, list_figures
@@ -398,6 +398,22 @@ class ApiIndex(Resource):
     def get(self):
         # endpoints 由 _route_index() 从**注册表**生成，不再手抄：手抄那份已经漂过两次
         # （索引里留着早已删除的 /todos，同时漏掉 4 条真实存在的路由）。
+        #
+        # ⚠️ 2026-09-19 收紧：**未登录只回一句"需要登录"，不回清单本身**。
+        #    这份清单是"接口目录"：28 条路径 + 每条一句自描述（不少还写着内部实现细节，
+        #    例如"新增一条 Models 表登记（不训练，只是登记/占位）""需要 train:run 权限"）。
+        #    它挂在 /api 上，**默认不需要任何凭据**，于是同一局域网里随便谁打开
+        #    http://<服务器IP>:5000/api 就能把整个后端接口盘一遍 —— 这正是要少暴露的东西。
+        #    前端「系统管理 → 接口索引」页是带令牌请求的，登录后照旧能看到完整清单。
+        #    `endpoints` 这个**键仍然保留**（值为空对象）：既有工具用 `"endpoints" in idx`
+        #    判断"这是不是索引"，键没了会把它们判成"接口坏了"。
+        user = authenticate()
+        if user is None:
+            return {
+                "service": "model_service",
+                "endpoints": {},
+                "note": "接口清单与各接口说明需要登录后查看（登录后访问 /api，或看「系统管理 → 接口索引」页）",
+            }
         return {
             "service": "model_service",
             "flow": "Web访问 → 算法模型 → 训练 → 数据集 → 模型产物 → 推理 → (边缘设备)",
@@ -410,11 +426,32 @@ class Health(Resource):
 
     刻意**不抛异常**：数据库连不上也算"服务还活着"，只在 database.ok 里标失败，
     否则顶栏会显示成"服务不可用"，让人误以为整个进程挂了。
+
+    ⚠️ 2026-09-19 收紧：**未登录只回"最小存活信息"**，路径与库名一律不给。
+        原来匿名请求 /health 能拿到 config 全文：项目目录、产物目录、临时目录、
+        db.env 是否生效、数据库主机/端口/库名、内置数据集的真实磁盘路径
+        （`testRestfulProject\\1DCNN\\0HP` 这种）、上传/导出目录、产物清单……
+        等于把整个项目的目录结构贴在网上。而它对**运维探活没有任何必要**：
+        离线部署脚本只判断 HTTP 200（见 docs/离线部署/部署脚本/04-start-system.ps1）。
+        前端顶栏是带令牌轮询的，登录后仍拿到完整信息（含 auth 摘要，交付前自检要用）。
     """
     def get(self):
         # 探测数据库用 ping()：它内部把异常吞成 {ok: False, error: ...}，
         # 所以库挂了这里也照样能返回 200，前端只需看 database.ok
         db_state = database.ping()
+        if authenticate() is None:
+            # 匿名：只留"活着/库通不通/鉴权开没开"，其余（路径、库名、产物清单、图库目录）都不给。
+            # ⚠️ config.auth 这一小块**保留**：交付前自检脚本 tools/verify-auth.py 靠它确认
+            #    "鉴权到底开没开、密钥换没换"，它不含任何路径信息。
+            return {
+                "service": "ok",
+                "config": {"auth": config.describe()["auth"]},
+                "database": {"ok": db_state.get("ok"), "dialect": db_state.get("dialect")},
+                "note": "未登录：已隐藏路径、库名与产物清单；登录后可见完整体检",
+                "warnings": [
+                    "本服务不做训练/推理排队，/train 是同步阻塞的（开发服务器已开 threaded）。",
+                ],
+            }
         artifacts = list_artifacts()
         return {
             "service": "ok",
