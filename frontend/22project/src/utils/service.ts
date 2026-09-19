@@ -96,6 +96,26 @@ function createService() {
 						}
 						return dataAxios;
 					case 4000:
+						// ⚠️ 2026-09-19 修：dvadmin 层把"登录失效"也塞在 **code=4000 + HTTP 200** 的
+						//    信封里（见后端 dvadmin.user_info/login：`{"code":4000,"msg":"登录已失效，请重新登录"}`）。
+						//    而上面那个 case 401 只认信封里的 401 —— 后端从不发它，所以以前
+						//    "后端一重启（换了令牌密钥）页面就停在原地"：这里只弹一句 toast，
+						//    既不删令牌也不跳登录页；路由守卫又只判断"令牌存不存在"（还在，
+						//    只是无效），于是刷新也回不到登录页，只能手动清缓存。
+						// 这里按**文案**把这类鉴权失败与业务失败区分开：只有真的"登录没了"
+						// 才清缓存回登录页；"没有查看用户列表的权限""两次输入的新密码不一致"
+						// 这类业务性 4000 必须留在原地（他还是有效用户）。
+						if (/登录已失效|请先登录|登录认证失败|令牌无效|重新登录/.test(String(dataAxios.msg || ''))) {
+							Session.clear();
+							ElMessageBox.alert(dataAxios.msg, '提示', { confirmButtonText: 'OK' })
+								.then(() => {
+									window.location.href = '/';
+								})
+								.catch(() => {
+									window.location.href = '/';
+								});
+							break;
+						}
 						errorCreate(`${dataAxios.msg}: ${response.config.url}`);
 						break;
 					default:
