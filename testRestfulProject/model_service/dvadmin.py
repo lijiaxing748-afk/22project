@@ -77,6 +77,10 @@ def _menu_payload(role_key: str | None = None) -> list[dict]:
         #    隐藏菜单只是体验优化，真正的拦截在后端 /api/system/user/** 的 user:manage 校验；
         #    直接手输地址访问页面也拿不到数据（接口会回"没有查看用户列表的权限"）。
         (107, "用户管理", "ele-User", "/platform/user", "platformUser", "platform/user/index", False, ("admin",)),
+        # ⚠️ 操作日志也**按角色隐藏**：只有 admin 的角色权限集里有 log:read
+        #    （见 auth.py 的 _ROLE_PERMS）。工程师/操作员即便手输地址，
+        #    /api/system/operation_log/ 也会回"没有查看操作日志的权限"。
+        (108, "操作日志", "ele-Document", "/platform/log", "platformLog", "platform/log/index", False, ("admin",)),
     ]
     return [{
         "id": mid, "parent": None, "title": title, "icon": icon,
