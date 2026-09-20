@@ -30,6 +30,22 @@ data/figures/
 # data/models/ 下的**当前**产物仍然入库，保证克隆下来就有可用的模型。
 testRestfulProject/data/archive/
 
+# ---- 验证脚本造出来的临时"模型"目录 ----
+# ⚠️ 为什么只挡前缀、不挡整个 data/models/：
+#    1dcnn / adtk / cwt_cnn 三个**真实模型**是刻意入库的，克隆下来就能跑训练/推理；
+#    把整个目录忽略掉会让新克隆的仓库缺模型、系统开不起来。
+#
+# 这些 verify* 目录是 tools/verify-*.py 跑端到端验证时上传的假模型
+# （见 verify-operation-logs.py：name=f"verifylog_{tag}"），一次跑完就留下一个，
+# 既不是项目资产、又白白占体积（每个约 1.2 MB 的 model.keras）。
+# 它们是**运行产出的测试垃圾**，和 data/logs/ 、data/figures/ 同性质。
+testRestfulProject/data/models/verifylog_*/
+testRestfulProject/data/models/verify_*/
+testRestfulProject/data/models/e2e_test_*/
+testRestfulProject/data/models/_selftest_*/
+testRestfulProject/data/models/_probe_*/
+testRestfulProject/data/models/_tmp_*/
+
 # ---------------- 暂时挪走的 dvadmin 无用代码 ----------------
 # 见 项目技术详解.md §8：想恢复就把它移回 frontend/22project/src/
 _unused_dvadmin/
