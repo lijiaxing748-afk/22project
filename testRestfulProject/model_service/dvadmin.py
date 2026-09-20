@@ -33,12 +33,39 @@ from flask import Blueprint, g, jsonify, request
 from . import auth
 from .db import DBError, _bit, database
 # 五个模块（后端控制路由：前端的 dynamicRoutes[0].children 会被这份数据替换）
-def _menu_payload() -> list[dict]:
+def _menu_visible_to(role_key: str | None, allow_roles) -> bool:
+    """菜单项是否对当前角色可见。
+
+    ⚠️ 这只是**体验优化**：把没权限的人不该看到的菜单藏起来，不让它显眼地摆在那儿。
+    真正的拦截永远在接口上（例如用户管理接口要 `user:manage`）。
+    藏菜单能防"误点"，防不了"故意手输地址"——所以两者必须同时做。
+
+    ⚠️ allow_roles 的**形状取决于调用方怎么解包**：
+    模块元组写成 `(..., False, ("admin",))` 时，`*_rest` 收集到的是 `[("admin",)]`
+    ——一个**装着元组的列表**，不是元组本身。这里把两种形状都归一化，
+    免得以后有人改成 `[(...)]` 或直接写字符串时这里静默失效（那会导致
+    "菜单该藏没藏"，属于权限外漏，必须防）。
+    """
+    if not allow_roles:
+        return True
+    # 归一化：['admin'] 或 [('admin',)] 或 ('admin',) 都能处理
+    allowed = allow_roles
+    while isinstance(allowed, (list, tuple)) and len(allowed) == 1 and isinstance(allowed[0], (list, tuple)):
+        allowed = allowed[0]
+    if isinstance(allowed, str):
+        allowed = (allowed,)
+    return (role_key or "").strip() in tuple(allowed)
+
+
+def _menu_payload(role_key: str | None = None) -> list[dict]:
     """下发侧边栏菜单（真正的"后端控制路由"）。
 
     这里**不要**再放"首页"。模板里 stores/frontendMenu.ts 已经写死了一个 /home
     （已改为指向本平台的 platform/home/index），两边都下发就会出现"两个首页"。
     路由守卫登录成功后 next('/home')、dynamicRoutes[0].redirect 也是 /home，与它一致。
+
+    role_key 用于按角色过滤菜单项（见 `_menu_visible_to`）。不传则按"无限制"处理，
+    兼容老调用方；web_router() 会传当前登录用户的真实角色。
     """
     modules = [
         (106, "模型发布", "ele-Upload", "/platform/publish", "platformPublish", "platform/publish/index", False),
@@ -46,6 +73,10 @@ def _menu_payload() -> list[dict]:
         (103, "数据集管理", "ele-Coin", "/platform/dataset", "platformDataset", "platform/dataset/index", False),
         (104, "数据展示", "ele-DataLine", "/platform/visual", "platformVisual", "platform/visual/index", False),
         (105, "系统管理", "ele-Setting", "/platform/system", "platformSystem", "platform/system/index", False),
+        # ⚠️ 用户管理**按角色隐藏**（最后那个参数）：只对 admin 下发。
+        #    隐藏菜单只是体验优化，真正的拦截在后端 /api/system/user/** 的 user:manage 校验；
+        #    直接手输地址访问页面也拿不到数据（接口会回"没有查看用户列表的权限"）。
+        (107, "用户管理", "ele-User", "/platform/user", "platformUser", "platform/user/index", False, ("admin",)),
     ]
     return [{
         "id": mid, "parent": None, "title": title, "icon": icon,
@@ -55,7 +86,8 @@ def _menu_payload() -> list[dict]:
         # 一旦首次加载失败（或后端重启过）就会一直显示空，必须先刷新浏览器。
         "visible": True, "cache": False, "is_affix": affix, "is_iframe": False,
         "is_catalog": False, "is_link": False, "link_url": "",
-    } for mid, title, icon, path, comp_name, component, affix in modules]
+    } for mid, title, icon, path, comp_name, component, affix, *_rest in modules
+      if _menu_visible_to(role_key, _rest)]
 def _ok(data=None, msg: str = "success"):
     """dvadmin 信封：{code, data, msg}，code=2000 表示成功（前端 axios 拦截器按这个判断）。
 
@@ -64,6 +96,27 @@ def _ok(data=None, msg: str = "success"):
     否则前端的错误提示分支拿不到 msg。所以别按 REST 习惯去改这里的状态码。
     """
     return jsonify({"code": 2000, "data": data, "msg": msg})
+
+
+# 业务失败用的 code。沿用 dvadmin 模板的 4000（"参数/业务错误"），
+# 与登录失效（4000 也用于令牌过期）保持同一套约定。
+FAIL_CODE = 4000
+
+
+def _fail(msg: str, data=None):
+    """**业务失败**统一出口：HTTP 200 + code=4000。
+
+    ⚠️ 这个函数是必须的，别再用 `_ok(None, "...")` 表达失败：
+    `_ok` 恒回 code=2000，而前端的成功分支就是按 2000 判断的。
+    用 `_ok` 报错会让前端弹出**绿色的"操作成功"**、然后刷新一个毫无变化的列表
+    ——用户以为成功了，实际什么都没发生（"空密码被拒"曾经就是这个表现）。
+
+    什么时候用哪个：
+      * `_ok(data)`    —— 真的成功了（含"幂等成功，无数据返回"）
+      * `_fail(msg)`   —— 参数不合法、唯一键冲突、越权之外的所有业务拒绝
+    HTTP 状态码两边都是 200，差异只在 body 里的 code。
+    """
+    return jsonify({"code": FAIL_CODE, "data": data, "msg": msg})
 def _user_payload() -> dict:
     """**已废弃**：原先返回写死的演示账号（恒定超管）。
 
@@ -173,7 +226,7 @@ def build_blueprint() -> Blueprint:
             try:
                 database.update_user(user["UserID"], fields)
             except DBError as exc:
-                return _ok(None, f"保存失败：{exc}")
+                return _fail(f"保存失败：{exc}")
         fresh = database.user_by_id(user["UserID"]) or user
         return _ok(auth.login_payload(fresh), "已更新")
 
@@ -200,16 +253,16 @@ def build_blueprint() -> Blueprint:
         # 但那是**客户端**校验、可以绕过（直接构造请求就行），所以服务端也留一道。
         regain = body.get("password_regain")
         if not new_pwd:
-            return _ok(None, "未提交新密码")
+            return _fail("未提交新密码")
         if regain is not None and regain != new_pwd:
-            return _ok(None, "两次输入的新密码不一致")
+            return _fail("两次输入的新密码不一致")
         full = database.user_by_id(user["UserID"]) or user
         # 带了旧密码就必须对；没带（前端表单只有新密码那一栏）则要求已登录即可 ——
         # 已登录本身已经验过令牌，这里做的是一次纵深校验，不强制前端改表单。
         if old_pwd and not auth.verify_password(full.get("PasswordHash"), old_pwd):
-            return _ok(None, "原密码不正确")
+            return _fail("原密码不正确")
         if len(new_pwd) < 6:
-            return _ok(None, "新密码至少 6 位")
+            return _fail("新密码至少 6 位")
         database.set_user_password(user["UserID"], auth.hash_password(new_pwd))
         auth.log_operation("change_password", target=user.get("Username"))
         return _ok(None, "密码已修改，请重新登录")
@@ -245,8 +298,15 @@ def build_blueprint() -> Blueprint:
                     "file_name": stored, "size": (target_dir / stored).stat().st_size})
     @bp.get("/api/system/menu/web_router/")
     def web_router():
-        """动态菜单：后端控制路由的入口。"""
-        return _ok(_menu_payload())
+        """动态菜单：后端控制路由的入口。
+
+        ⚠️ 必须传**当前登录用户的角色**：用户管理菜单只对 admin 下发。
+        取不到用户（令牌过期）时按"最小可见"处理（client_role=None），
+        宁可少给菜单，也不要因为读不到角色就把管理员菜单发给所有人。
+        """
+        user = auth.authenticate()
+        client_role = user.get("RoleKey") if user else None
+        return _ok(_menu_payload(client_role))
     @bp.get("/sse/")
     def sse_stub():
         """dvadmin 的站内消息推送（前端用 EventSource 连 /sse/?token=...）。
@@ -396,11 +456,11 @@ def build_blueprint() -> Blueprint:
         password = (body.get("password") or "").strip()
         role_key = (body.get("role_key") or body.get("role") or "").strip()
         if not username or not password:
-            return _ok(None, "用户名和密码都不能为空")
+            return _fail("用户名和密码都不能为空")
         if len(password) < 6:
-            return _ok(None, "密码至少 6 位")
+            return _fail("密码至少 6 位")
         if role_key not in auth._ROLE_PERMS:
-            return _ok(None, f"角色不合法：{role_key or '（空）'}")
+            return _fail(f"角色不合法：{role_key or '（空）'}")
         try:
             uid = database.create_user(
                 username, auth.hash_password(password), role_key,
@@ -409,7 +469,7 @@ def build_blueprint() -> Blueprint:
                 email=(body.get("email") or "").strip() or None,
                 mobile=(body.get("mobile") or "").strip() or None)
         except DBError as exc:
-            return _ok(None, f"新建失败：{exc}")
+            return _fail(f"新建失败：{exc}")
         auth.log_operation("create_user", target=username,
                             detail={"role": role_key})
         return _ok({"id": uid}, "已新建")
@@ -435,23 +495,23 @@ def build_blueprint() -> Blueprint:
         if "role_key" in body or "role" in body:
             role_key = (body.get("role_key") or body.get("role") or "").strip()
             if role_key not in auth._ROLE_PERMS:
-                return _ok(None, f"角色不合法：{role_key or '（空）'}")
+                return _fail(f"角色不合法：{role_key or '（空）'}")
             if user_id == user["UserID"] and role_key != user.get("RoleKey"):
-                return _ok(None, "不能修改自己的角色（避免把自己降权后无法恢复）")
+                return _fail("不能修改自己的角色（避免把自己降权后无法恢复）")
             fields["RoleKey"] = role_key
         if "is_active" in body:
             if user_id == user["UserID"] and not body.get("is_active"):
-                return _ok(None, "不能停用自己")
+                return _fail("不能停用自己")
             fields["IsActive"] = _bit(body.get("is_active"))
         for src, dst in (("name", "DisplayName"), ("email", "Email"), ("mobile", "Mobile")):
             if src in body:
                 fields[dst] = (body.get(src) or "").strip() or None
         if not fields:
-            return _ok(None, "没有要修改的内容")
+            return _fail("没有要修改的内容")
         try:
             n = database.update_user(user_id, fields)
         except DBError as exc:
-            return _ok(None, f"保存失败：{exc}")
+            return _fail(f"保存失败：{exc}")
         auth.log_operation("update_user", target=str(user_id), detail=fields)
         return _ok({"updated": n}, "已保存")
 
@@ -471,14 +531,14 @@ def build_blueprint() -> Blueprint:
         body = request.get_json(silent=True) or {}
         new_pwd = (body.get("password") or "").strip()
         if len(new_pwd) < 6:
-            return _ok(None, "新密码至少 6 位")
+            return _fail("新密码至少 6 位")
         try:
             target = database.user_by_id(user_id)
             if not target:
-                return _ok(None, "用户不存在")
+                return _fail("用户不存在")
             database.set_user_password(user_id, auth.hash_password(new_pwd))
         except DBError as exc:
-            return _ok(None, f"重置失败：{exc}")
+            return _fail(f"重置失败：{exc}")
         auth.log_operation("reset_password", target=target.get("Username"))
         return _ok(None, "密码已重置，该用户的登录会立即失效")
 

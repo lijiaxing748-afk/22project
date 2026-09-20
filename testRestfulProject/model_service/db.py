@@ -29,6 +29,18 @@ from contextlib import contextmanager
 from datetime import date, datetime
 from decimal import Decimal
 from .config import config
+
+# pymysql 的异常类型：驱动缺失时也要能 import 本模块（首次启动可能还没装），
+# 所以这里做软导入，缺了就退化成"永远不会匹配"的占位类型。
+# ⚠️ 用元组形式给 except 使用；不要在多处写 `import pymysql`，
+#    否则异常类型来自不同导入点，`except` 可能匹配不上。
+try:
+    from pymysql.err import IntegrityError as _IntegrityError
+except Exception:                                    # pragma: no cover - 驱动缺失的兜底
+    class _IntegrityError(Exception):                # type: ignore[no-redef]
+        """pymysql 缺失时的占位：没有任何异常会是它，等价于"不捕获"。"""
+
+
 class DBError(RuntimeError):
     """数据库层通用错误。"""
 class DBUnavailable(DBError):
@@ -173,10 +185,22 @@ class Database:
     def cursor(self, commit: bool = False):
         """借出一个游标；块内正常结束才按 commit 决定提交，异常回滚并把原异常抛出去。
 
-        commit=False 是只读默认值：不提交也无所谓，下次复用同一条连接接着读即可；
-        commit=True 时整块当**一个事务**看——要么全落、要么全不落。
+        commit=False 是只读默认值；commit=True 时整块当**一个事务**看——要么全落、要么全不落。
         异常必须先 rollback：不退事务的连接会停在"事务开着、InnoDB 行锁没放"的状态，
         一直挂到连接断开，后面同线程的操作会互相等锁。
+
+        ⚠️⚠️ 只读块也**必须结束事务**（rollback），这是实测复现过的**脏快照 bug**：
+        本项目连接是 `autocommit=0` + MySQL 默认的 `REPEATABLE-READ`。只读块不提交也不回滚，
+        连接就一直停在"事务开着"的状态 —— 于是这条连接**后续所有读**看到的都是
+        事务启动那一刻的旧快照，在 REPEATABLE-READ 下永远不会推进。
+
+        具体症状（用户管理页实测）：管理员「新建用户」成功（INSERT 已提交），
+        紧接着刷新列表，**新用户就是不出来**，列表里永远只有建号那一刻之前的那些账号。
+        更隐蔽的是：换个浏览器/重启服务就好了（换连接 = 换新快照），所以极易被当成前端缓存问题。
+        同类症状还会出现在"新建的数据集/模型刷新后不显示"等任何 write-then-read 流程上。
+
+        修法：只读路径也走 rollback 结束事务，下一次读就会开一个新快照。
+        rollback 对纯读事务没有语义损失（本来就没有要保留的修改）。
 
         finally 里**只关游标、不关连接**：连接是按线程复用的资源，生命周期归 _connect/_ping 管；
         在这里 close 掉，等于把复用的连接又降级回"每请求新建"，白付一次握手认证成本。
@@ -188,6 +212,9 @@ class Database:
             yield cur
             if commit:
                 conn.commit()
+            else:
+                # 只读块：也必须退出事务，否则 REPEATABLE-READ 的旧快照会一直粘在这条连接上
+                conn.rollback()
         except Exception:
             try:
                 conn.rollback()
@@ -935,17 +962,30 @@ class Database:
 
         ⚠️ 只收**已经哈希好**的密码：本层不做哈希，免得多一条"有人绕过哈希
         直接传明文"的路径。调用方必须用 auth.hash_password()。
+
+        ⚠️ 必须在这里把 `pymysql.err.IntegrityError` 转成 DBError：
+        Users 表有唯一键 UQ_Users_Username，重复插会抛 IntegrityError。
+        而调用方 `dvadmin.user_create()` 只 `except DBError` —— 不转换的话
+        异常会穿到顶层变成 **HTTP 500**，前端拿不到任何提示，
+        用户看到的就是"点了新建什么反应都没有"。这类"约束冲突"是**预期内的业务失败**，
+        必须以可读消息回给用户，而不是当成服务端故障。
         """
         self.ensure_schema()
-        with self.cursor(commit=True) as cur:
-            cur.execute(
-                f"INSERT INTO Users (Username, PasswordHash, DisplayName, RoleKey, DeptName, "
-                f"Email, Mobile, IsActive, TokenVersion, CreatedDate) VALUES "
-                f"({self.placeholder}, {self.placeholder}, {self.placeholder}, {self.placeholder}, "
-                f"{self.placeholder}, {self.placeholder}, {self.placeholder}, 1, 0, {self.placeholder})",
-                (username, password_hash, display_name or username, role_key, dept_name,
-                 email, mobile, _now()))
-            return int(cur.lastrowid)
+        try:
+            with self.cursor(commit=True) as cur:
+                cur.execute(
+                    f"INSERT INTO Users (Username, PasswordHash, DisplayName, RoleKey, DeptName, "
+                    f"Email, Mobile, IsActive, TokenVersion, CreatedDate) VALUES "
+                    f"({self.placeholder}, {self.placeholder}, {self.placeholder}, {self.placeholder}, "
+                    f"{self.placeholder}, {self.placeholder}, {self.placeholder}, 1, 0, {self.placeholder})",
+                    (username, password_hash, display_name or username, role_key, dept_name,
+                     email, mobile, _now()))
+                return int(cur.lastrowid)
+        except _IntegrityError as exc:
+            # 1062 = Duplicate entry。Users 表上唯一的唯一约束就是用户名
+            if getattr(exc, "args", [None])[:1] == (1062,):
+                raise DBError(f"用户名已存在：{username}") from exc
+            raise DBError(f"新建用户失败：{exc}") from exc
 
     def set_user_password(self, user_id: int, password_hash: str) -> None:
         """改密码，并把 TokenVersion +1（让旧令牌立刻失效）。
@@ -1084,9 +1124,18 @@ class Database:
             pass
 
     def recent_logs(self, limit: int = 100) -> list[dict]:
-        """最近的操作日志（新的在前）。"""
+        """最近的操作日志（新的在前）。
+
+        ⚠️ `Detail` **必须在列清单里**。它曾经被漏掉：写入侧（log_operation 的 detail=…）
+        一直在正常落库，但查询侧不 SELECT 这一列，于是「谁把模型删了、覆盖上传换掉了什么」
+        这些关键信息**查得到日志、看不到内容**——审计等于白记。
+        前端日志页要展示操作对象详情，也依赖这一列。
+        Detail 是 _dump_json() 存进去的 JSON **字符串**，不是对象；读出来就是 str，
+        调用方要自己 json.loads()（保留字符串是刻意的：列类型是 LONGTEXT，
+        直接回原串可以避免 db 层因为一段坏 JSON 把整个日志列表打成 500）。
+        """
         return self._select_limited(
-            "LogID, Username, RoleKey, Action, Target, ClientIP, Result, Message, CreatedDate",
+            "LogID, Username, RoleKey, Action, Target, Detail, ClientIP, Result, Message, CreatedDate",
             "FROM OperationLogs ORDER BY LogID DESC",
             limit)
 

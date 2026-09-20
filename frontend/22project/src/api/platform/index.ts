@@ -90,6 +90,21 @@ export const platformApi = {
 	logFile: (name: string, tail = 300) =>
 		request({ url: `/system/logs/${encodeURIComponent(name)}?tail=${tail}`, method: 'get' }),
 	maintenance: (target: string) => request({ url: '/system/maintenance', method: 'post', data: { target } }),
+
+	// ---------- 用户与角色（「系统管理 → 用户管理」页用）----------
+	// ⚠️ 这一组走的是 dvadmin.py 的**信封接口**（{code, data, msg}），不是裸 JSON。
+	//    platformRequest 的响应拦截器直接放行 response.data，所以这里拿到的是整个信封，
+	//    调用方必须读 `.data.results`。判断成败看 `code === 2000`——**后端失败也回 200**，
+	//    不能靠 HTTP 状态码判断（这是 dvadmin 模板的约定，见 dvadmin.py 里的 _ok）。
+	userList: () => request({ url: '/api/system/user/', method: 'get' }),
+	roleList: () => request({ url: '/api/system/role/', method: 'get' }),
+	createUser: (data: any) => request({ url: '/api/system/user/create/', method: 'post', data }),
+	updateUser: (id: number, data: any) =>
+		request({ url: `/api/system/user/${id}/`, method: 'put', data }),
+	// 重置密码：后端会 TokenVersion+1，被重置的人**当前登录立即失效**
+	resetUserPassword: (id: number, password: string) =>
+		request({ url: `/api/system/user/${id}/reset_password/`, method: 'post', data: { password } }),
+	operationLogs: (limit = 200) => request({ url: `/api/system/operation_log/?limit=${limit}`, method: 'get' }),
 };
 
 /**

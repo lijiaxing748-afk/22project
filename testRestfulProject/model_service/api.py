@@ -300,6 +300,39 @@ def _body() -> dict:
     """
     data = request.get_json(silent=True)
     return data if isinstance(data, dict) else {}
+
+
+def _log_train_result(name: str, result: dict) -> None:
+    """把一次训练的结果记进操作日志。
+
+    ⚠️ 训练**失败也必须记**（result=失败），和"只在成功时记录"的常规做法相反：
+    训练是这个平台最重的操作，失败往往意味着数据/参数配错，恰恰是最需要追溯的情形。
+    但失败不是"谁干了坏事"，所以 result 字段如实写"失败"，不写进 detail 的错误堆栈
+    （异常详情已经在 Trainings 表和日志文件里了，重复塞一遍只会让日志表变胖）。
+
+    整个函数不抛异常：log_operation 自己已经吞异常，这里再把取字段的部分包一层，
+    防止 result 形状意外变化（比如 db 层改成返回非 dict）把训练接口打成 500。
+    """
+    try:
+        status = str(result.get("status") or "")
+        db = result.get("db") or {}
+        detail = {
+            "status": status,
+            "epochs": result.get("epochs"),
+            "duration_s": result.get("duration_s") or result.get("elapsed_s"),
+            "db_written": db.get("written"),
+            "warning": result.get("warning"),
+        }
+        # 训练失败时 result 里会有 error；截断后放进 message（db 层会再 _clip 到 500）
+        message = str(result.get("error") or "")[:300] or None
+        log_operation("run_training", target=name,
+                      detail={k: v for k, v in detail.items() if v is not None},
+                      result="成功" if status == "成功" else "失败",
+                      message=message)
+    except Exception:
+        pass
+
+
 def _int(value, default=None, name="参数"):
     """取整数参数：None 用默认值，转不动就抛 InvalidInput（接口据此回 400）。
 
@@ -501,6 +534,15 @@ class DatasetUpload(Resource):
             listing = tabular.describe_directory(target)
         except Exception as exc:
             listing = {"error": str(exc)}
+        # ⚠️ 只在**有文件真的存下来**时记日志（saved 非空 = 返回 200）。
+        #    全部被跳过时接口回 400、什么都没写，记一条"上传成功"是假账。
+        #    overwritten 一定要进 detail：本平台约定"一个文件=一个类别"，覆盖等于换掉该类全部数据。
+        if saved:
+            log_operation("upload_dataset", target=safe_name,
+                          detail={"files": [s["filename"] for s in saved],
+                                  "size_kb": round(sum(s["size_kb"] for s in saved), 1),
+                                  "overwritten": overwritten,
+                                  "skipped": len(skipped)})
         return {"dataset": safe_name, "directory": str(target), "saved": saved,
                 "skipped": skipped, "overwritten": overwritten,
                 "hint": ("同名文件已被覆盖：本平台约定「一个文件 = 一个类别、文件名即标签」，"
@@ -597,6 +639,11 @@ class Train(Resource):
         if (result.get("db") or {}).get("written") is False:
             # 产物可能已经落盘、但库里没有 Trainings 行 —— 调用方必须知道，别只看 status
             result["warning"] = ("训练结果未写入数据库：" + str((result.get("db") or {}).get("error")))
+        # ⚠️ POST /train 是**同步阻塞**的（创建即启动，训练完才返回），所以计划里
+        #    "创建训练任务"和"启动训练"两行其实是**同一个接口**，不能记成两条日志，
+        #    否则一次训练会产生两条几乎相同的记录，把日志表刷成两倍。
+        # 这里按"训练完成"这个真实语义记一条，result（含准确率/耗时）落在 detail 里。
+        _log_train_result(name, result)
         return result, http
 class TrainingList(Resource):
     """GET /trainings?limit=N —— 最近训练记录（读库）。"""
@@ -895,12 +942,12 @@ class ArtifactDetail(Resource):
             scope = (request.args.get("scope") or "").strip()
             if scope == "artifact":
                 result = delete_artifact(_artifact_key(model_name))
-                log_operation("delete_artifact", target=model_name, detail=result)
+                log_operation("delete_model", target=model_name, detail=result)
                 return result, 200
             if scope == "record":
                 force = request.args.get("force") in ("1", "true", "True")
                 result = database.delete_model(_db_model_name(model_name), force=force)
-                log_operation("delete_model", target=model_name,
+                log_operation("delete_model_record", target=model_name,
                               detail={"force": force, **{k: v for k, v in result.items()
                                                          if k != "error"}})
                 return result, 200
@@ -950,6 +997,11 @@ class ArtifactDetail(Resource):
             return {"error": str(exc)}, 400
         if rename:
             result["rename"] = rename
+        # 改名要同时记下"从什么改成了什么"——只记新名字的话，拿旧名字反查日志会查不到。
+        log_operation("update_model", target=new_name or old,
+                      detail={"old_name": old, "new_name": new_name or None,
+                              "renamed": bool(rename),
+                              "fields": sorted(k for k in body if k not in ("NewModelName", "new_name"))})
         return result, 200
 class ModelOverview(Resource):
     """一个模型的完整档案：登记信息 + 产物参数(meta) + 最近训练 + 引用统计。
@@ -1091,6 +1143,12 @@ class ModelUpload(Resource):
                             "想固定长度就在产物目录的 meta.json 里补一个 input_len")
         if meta.get("weights_file") and meta["weights_file"] != weights[0]:
             warnings.append(f"meta.json 声明的权重是 {meta['weights_file']}，探测选中的是 {weights[0]}（以 meta 为准）")
+        # 记在 return 之前、**且只在成功路径上**（上面所有 4xx/5xx 分支都已 return 走了）。
+        # replaced=True 说明这次上传覆盖了旧产物，写进 detail 便于事后追溯"谁把线上模型换掉了"。
+        log_operation("upload_model", target=safe,
+                      detail={"replaced": bool(replaced), "framework": meta.get("framework"),
+                              "files": sorted(blobs), "size_kb": round(sum(len(v) for v in blobs.values()) / 1024, 1),
+                              "db_written": db_error is None})
         return {
             "model": safe, "directory": str(root),
             "framework": meta.get("framework"), "weights": meta.get("weights_file") or weights[0],
@@ -1105,6 +1163,8 @@ class ModelUpload(Resource):
             "db": {"written": db_error is None, "ModelID": model_id, "ModelName": safe, "error": db_error},
             "hint": f"现在可以在「推理」里选 {safe}（输入长度 {meta.get('input_len') or '默认 784'}）",
         }, 201
+
+
 def _uploaded_files():
     """multipart 里的文件列表：`file` 是主字段名，`files` 是同义旧写法（两个上传接口共用）。
 
@@ -1501,7 +1561,7 @@ class ModelExport(Resource):
         if training_warning:
             payload["warnings"].append(training_warning)
         payload["hint"] = "下载后解压，先看 README.md；example_infer.py 可直接运行验证"
-        log_operation("export", target=name,
+        log_operation("publish_model", target=name,
                       detail={"package": result.package.name, "version": version,
                               "training_id": source_training_id,
                               "size_kb": payload.get("size_kb")})
@@ -1571,6 +1631,8 @@ class ModelExportPackage(Resource):
             # 文件已经删了，这一步只是标记失败——如实回报，但不改状态码
             result["records_marked"] = 0
             result["db_error"] = str(exc)
+        log_operation("unpublish_model", target=_db_model_name(model_name),
+                      detail={"package": package, "records_marked": result.get("records_marked")})
         return result, 200
 
 
@@ -1658,6 +1720,13 @@ class DatasetDb(Resource):
         except DBError as exc:
             return {"error": str(exc), "dialect": database.dialect}, 503
         result["dialect"] = database.dialect
+        # 登记是幂等的（同名复用已有行），两种成功要区分开：already_existed=True 说明
+        # 这次并没有真的新建，日志里记成"登记"而不是"新建"，免得审计时以为多了一个数据集。
+        log_operation("register_dataset", target=name,
+                      detail={"already_existed": bool(result.get("already_existed")),
+                              "class_count": body.get("class_count"),
+                              "sample_count": body.get("sample_count"),
+                              "source": body.get("source")})
         return result, 200 if result["already_existed"] else 201
 class DatasetSignal(Resource):
     """取一段原始信号（降采样成数值数组），供「数据展示」画波形。
