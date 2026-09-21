@@ -5,8 +5,6 @@
 				<img :src="siteLogo" />
 				<div class="login-left-logo-text">
 					<span>{{ getSystemConfig['login.site_title'] || getThemeConfig.globalViceTitle }}</span>
-					<span class="login-left-logo-text-msg" style="margin-top: 5px;">{{
-						getSystemConfig['login.site_name'] || getThemeConfig.globalViceTitleMsg }}</span>
 				</div>
 			</div>
 		</div>
@@ -45,23 +43,6 @@
 				</div>
 			</div>
 		</div>
-
-		<div class="login-authorization z-10">
-			<p>Copyright © {{ getSystemConfig['login.copyright'] || '2021-2025 django-vue-admin.com' }} 版权所有</p>
-			<p class="la-other" style="margin-top: 5px;">
-				<a href="https://beian.miit.gov.cn" target="_blank">{{ getSystemConfig['login.keep_record'] ||
-					'晋ICP备18005113号-3' }}</a>
-				|
-				<a :href="getSystemConfig['login.help_url'] ? getSystemConfig['login.help_url'] : '#'"
-					target="_blank">帮助</a>
-				|
-				<a
-					:href="getSystemConfig['login.privacy_url'] ? getBaseURL(getSystemConfig['login.privacy_url']) : '#'">隐私</a>
-				|
-				<a
-					:href="getSystemConfig['login.clause_url'] ? getBaseURL(getSystemConfig['login.clause_url']) : '#'">条款</a>
-			</p>
-		</div>
 	</div>
 	<div v-if="loginBg">
 		<img :src="loginBg" class="loginBg fixed inset-0 z-1 w-full h-full" />
@@ -77,7 +58,6 @@ import logoMini from '/@/assets/logo-mini.svg';
 import loginMain from '/@/assets/login-main.svg';
 import loginBg from '/@/assets/login-bg.png';
 import { SystemConfigStore } from '/@/stores/systemConfig'
-import { getBaseURL } from "/@/utils/baseUrl";
 // 引入组件
 const Account = defineAsyncComponent(() => import('/@/views/system/login/component/account.vue'));
 const Mobile = defineAsyncComponent(() => import('/@/views/system/login/component/mobile.vue'));
@@ -169,11 +149,6 @@ onMounted(() => {
 				span {
 					margin-left: 10px;
 					font-size: 16px;
-					color: var(--el-color-primary);
-				}
-
-				.login-left-logo-text-msg {
-					font-size: 12px;
 					color: var(--el-color-primary);
 				}
 			}
@@ -336,24 +311,6 @@ onMounted(() => {
 					}
 				}
 			}
-		}
-	}
-
-	.login-authorization {
-		position: absolute;
-		bottom: 30px;
-		left: 0;
-		right: 0;
-		text-align: center;
-
-		p {
-			font-size: 14px;
-			color: rgba(0, 0, 0, 0.5);
-		}
-
-		a {
-			color: var(--el-color-primary);
-			margin: 0 5px;
 		}
 	}
 }

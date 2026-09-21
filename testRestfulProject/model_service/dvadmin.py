@@ -339,7 +339,7 @@ def build_blueprint() -> Blueprint:
                     # 登录页大标题/副标题：前端优先读这两个 key（见 views/system/login/index.vue），
                     # 缺省才会回落到 themeConfig.globalViceTitle。
                     "login.site_title": "模型管理平台",
-                    "login.site_name": "轴承故障诊断模型管理平台"})
+                    "login.site_name": ""})
     @bp.get("/api/system/menu_button/menu_button_all_permission/")
     def menu_button_all_permission():
         """按钮级权限清单：本地演示不做权限，回空数组。
