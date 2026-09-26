@@ -1,0 +1,73 @@
+# =====================================================================
+#  行尾策略（.gitattributes）
+#
+#  ⚠️ 为什么必须有这个文件：
+#     本机 `git config core.autocrlf` 是 `true`，git 会在**检出时**
+#     把所有文本文件的行尾从 LF 转成 CRLF。
+#
+#     对 Windows 脚本无所谓，但 **Linux 的 .sh 脚本会被这一步毁掉**：
+#     CRLF 行尾的 shell 脚本在 Linux 上执行会报
+#         bash: ./install-service.sh: /bin/bash^M: bad interpreter
+#     那个 ^M 就是残留的 \r。更麻烦的是**脚本内容看起来完全正常**，
+#     打开编辑器也看不出任何问题，现场极难排查。
+#
+#     所以这里用 `eol=lf` 强制以下文件在**仓库中和检出后都保持 LF**，
+#     不受 core.autocrlf 影响。
+# =====================================================================
+
+# ---- shell 脚本：必须 LF ----
+*.sh        text eol=lf
+*.bash      text eol=lf
+
+# ---- systemd 单元、容器与服务配置：必须 LF ----
+*.service   text eol=lf
+Dockerfile  text eol=lf
+*.conf      text eol=lf
+Makefile    text eol=lf
+
+# ---- 其它 Unix 侧文本配置 ----
+*.env       text eol=lf
+*.properties text eol=lf
+
+# ---- Python：统一 LF，避免同一文件在不同机器上产生无意义的整文件 diff ----
+*.py        text eol=lf
+
+# ---- Windows 专属脚本：保持 CRLF（PowerShell/cmd 对 LF 的兼容性略差）----
+*.ps1       text eol=crlf
+*.bat       text eol=crlf
+*.cmd       text eol=crlf
+
+# ---- 二进制文件：禁止任何行尾转换 ----
+#    ⚠️ 若不显式声明，git 可能把二进制当文本处理，导致文件损坏。
+#    模型权重、图片、字体这些一旦被改坏，症状是"文件能打开但内容不对"。
+*.exe       binary
+*.dll       binary
+*.so        binary
+*.iso       binary
+*.zip       binary
+*.7z        binary
+*.gz        binary
+*.mat       binary
+*.h5        binary
+*.keras     binary
+*.pt        binary
+*.pth       binary
+*.pkl       binary
+*.joblib    binary
+*.png       binary
+*.jpg       binary
+*.jpeg      binary
+*.gif       binary
+*.ico       binary
+*.woff      binary
+*.woff2     binary
+*.ttf       binary
+*.eot       binary
+*.pdf       binary
+*.docx      binary
+*.xlsx      binary
+
+# ---- 虚拟机磁盘 ----
+*.vmdk      binary
+*.vmem      binary
+*.vmsn      binary
