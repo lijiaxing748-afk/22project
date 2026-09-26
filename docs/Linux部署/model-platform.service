@@ -1,0 +1,74 @@
+# =====================================================================
+#  模型管理平台 · systemd 服务单元
+#
+#  作用：替代 Windows 版由 nssm 承担的全部职责
+#        （后台运行 / 开机自启 / 崩溃自动重启 / 日志落盘并由系统轮转）
+#
+#  安装位置：/etc/systemd/system/model-platform.service
+#  安装方式：见同目录 install-service.sh（会替换下面的占位变量后写入）
+#
+#  ⚠️ 下面用 __XXX__ 形式的是占位符，由 install-service.sh 在安装时替换成
+#     实际路径与用户。**不要手工复制本文件到 /etc/systemd/system/**，
+#     否则占位符不会生效，服务会因找不到路径而启动失败。
+# =====================================================================
+
+[Unit]
+Description=模型管理平台（Flask + waitress，前端由后端同端口托管）
+Documentation=file://__APP_DIR__/README.md
+# 等网络就绪后再启动：服务监听 0.0.0.0，启动时若网络未就绪，
+# 虽然通常不影响 bind，但让 network-online 先完成更稳。
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=__RUN_USER__
+Group=__RUN_GROUP__
+WorkingDirectory=__APP_DIR__
+
+# ⚠️ 工作目录必须是项目根：serve.py 里虽把项目根插进了 sys.path，
+#    但 db.env 是按**相对路径**找的，cwd 不对就读不到配置。
+#    这与 Windows 版 nssm 的 AppDirectory 是同一个原因。
+
+# ⚠️ 用 python 可执行文件的**绝对路径**，不用 `python` 这个名字：
+#    systemd 的 PATH 极简，靠 PATH 查找会直接启动失败。
+ExecStart=__VENV_PY__ serve.py --host 0.0.0.0 --port __PORT__ --threads __THREADS__
+
+# 崩溃自动重启。always 覆盖"被信号杀死"和"非零退出"两种情况。
+# 训练/推理把内存吃爆时进程会被 OOM killer 干掉，这里能自动拉回来。
+Restart=always
+RestartSec=15
+
+# 优雅退出：正在跑的推理/训练请求不该被立刻砍断。
+# 与 Windows 版 nssm 的 AppStopMethodConsole 10000（10 秒）保持一致。
+KillSignal=SIGTERM
+TimeoutStopSec=30
+
+# ---- 日志 ----
+# 交给 journald 统一管理（自带按大小/时间轮转），
+# 无需像 Windows 版那样手工配置日志轮转与 10MB 切割。
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=model-platform
+
+# ---- 环境变量 ----
+# 让 Python 输出**立即刷新**而非缓冲：否则 journalctl 里长时间看不到日志，
+# 排查"服务起来了但没反应"时非常被动。
+Environment=PYTHONUNBUFFERED=1
+# 中文环境，避免日志与文件名出现乱码。
+Environment=LANG=zh_CN.UTF-8
+Environment=LC_ALL=zh_CN.UTF-8
+# 让 matplotlib 用无界面后端：服务里没有 DISPLAY，
+# 默认后端会在出图时报错（这个坑与 Windows 上一样存在）。
+Environment=MPLBACKEND=Agg
+
+# ---- 资源限制 ----
+# TensorFlow / PyTorch 会打开较多文件描述符，默认 1024 偏小。
+LimitNOFILE=65535
+
+# 说明：这里**不设** MemoryMax。训练任务本身很吃内存，
+# 设了上限会让"正常训练"被 OOM killer 杀掉，表现为"训练莫名其妙失败"。
+# 若确实要限制，建议在确认单次训练峰值后再设，且不要低于 4G。
+
+[Install]
+WantedBy=multi-user.target
