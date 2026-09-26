@@ -33,7 +33,7 @@ from pathlib import Path
 
 from flask import Blueprint, current_app, send_from_directory
 
-from .config import DIST_DIR, WEB_DIR
+from . import config
 
 # ⚠️ 这些前缀下的 404 必须**如实回 404**，不能被 SPA 兜底吃掉。见模块顶部说明。
 #
@@ -75,16 +75,29 @@ _LONG_CACHE = (".js", ".css", ".png", ".jpg", ".jpeg", ".gif", ".svg", ".ico",
 def _dist_dir() -> Path | None:
     """找到可用的前端产物目录；没有就返回 None（服务照常跑，只是不托管前端）。
 
-    查两个位置：
-      1. frontend/22project/dist  —— 开发机上直接 `npm run build` 的默认产物
-      2. data/web                 —— 部署时把产物拷到这里，与代码分离
+    候选位置定义在 config.dist_candidates（**不要在这里另写一份**），依次是：
+      1. frontend/22project/dist  —— 源码仓库里 `npm run build` 的默认产物
+      2. frontend/dist            —— 打包分发时的布局（目录被压平）
+      3. data/web                 —— 部署时把产物拷到这里，与代码分离
+
     两个都没有时**不报错**：后端本来就是独立可用的（/health、/api 都在），
     只是访问 / 会看到一个说明页。这样"只部署后端"也是合法状态。
     """
-    for d in (DIST_DIR, WEB_DIR):
+    for d in config.dist_candidates:
         if d and Path(d).is_dir() and (Path(d) / "index.html").is_file():
             return Path(d)
     return None
+
+
+def _describe_dist_probe() -> str:
+    """把"找过哪些位置"列出来，用于没找到前端时的提示。
+
+    ⚠️ 只在找不到时才调用。以前这里只写死一句"未找到 frontend/22project/dist 或
+    data/web"，候选位置一变就和实际不符，照着提示去查会白费功夫 —— 现在直接从
+    config.dist_candidates 生成，提示和代码天然同步。
+    """
+    return "；".join(f"{d}（{'有' if Path(d).is_dir() else '无'}此目录）"
+                     for d in config.dist_candidates)
 
 
 def _make_not_found_page() -> str:
@@ -107,9 +120,10 @@ code{background:#f5f7fa;padding:2px 6px;border-radius:4px;font-size:13px}
 <p>后端没找到打包好的前端产物（<code>index.html</code>）。
 这通常意味着前端还没构建，或者构建产物没放到指定位置。</p>
 <p><b>怎么解决：</b></p>
-<p>在 <code>frontend/22project</code> 目录下执行：</p>
-<p><code>npm run build</code></p>
-<p>构建完成后重启后端即可。也可以直接访问下面的接口确认后端状态：</p>
+<p>在 <code>frontend/22project</code> 目录下执行 <code>npm run build</code>，
+或把已构建好的 <code>dist</code> 整个拷到 <code>&lt;后端目录&gt;/data/web</code>。
+构建完成后重启后端即可。</p>
+<p>也可以直接访问下面的接口确认后端状态：</p>
 <p><a href="/health">/health</a> · <a href="/api">/api</a> · <a href="/models">/models</a></p>
 </div>
 </body></html>"""
@@ -140,8 +154,8 @@ def register_frontend(app, dist: Path | None = None) -> None:
         @app.get("/")
         def _no_frontend():
             return _make_not_found_page(), 200
-        print("[前端] 未找到打包产物（frontend/22project/dist 或 data/web），"
-              "只提供后端接口；浏览器访问 / 会看到提示页")
+        print(f"[前端] 未找到打包产物，只提供后端接口；浏览器访问 / 会看到提示页")
+        print(f"[前端] 已查找：{_describe_dist_probe()}")
         return
 
     # ⚠️⚠️ 下面这段是"把 / 从业务层手里拿回来"，踩了三个坑才写对，别再简化它：

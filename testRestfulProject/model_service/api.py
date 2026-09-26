@@ -362,7 +362,7 @@ def _resolve_workspace_path(raw: str) -> Path:
     startswith** —— 否则 `D:\\22project_evil\\x` 这类同前缀目录会绕过检查（历史上真踩过）。
     最终找不到就抛 InvalidInput(400)，而不是把原始路径回显出去让人猜。
     """
-    candidate = Path(raw)
+    candidate = Path(config.normalize_user_path(raw))
     # 绝对路径只有一次机会；相对路径两个基准各试一次（工作区优先）
     tries = [candidate] if candidate.is_absolute() else \
         [config.workspace_dir / candidate, config.project_dir / candidate]
@@ -609,7 +609,9 @@ class Train(Resource):
                 if body.get(key) is not None:
                     options[key] = body[key]
             if body.get("dataset_dir"):
-                candidate = Path(body["dataset_dir"])
+                # 同样先归一化：前端给的可能是 "testRestfulProject\\1DCNN\\0HP" 这种
+                # Windows 分隔符写法，Linux 下不归一化会变成"一个名字带反斜杠的目录"。
+                candidate = Path(config.normalize_user_path(body["dataset_dir"]))
                 if candidate.is_absolute():
                     resolved = candidate.resolve()
                 else:

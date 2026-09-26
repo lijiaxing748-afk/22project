@@ -203,6 +203,10 @@
 				<el-col :xs="24" :md="12">
 					<el-card shadow="never">
 						<template #header><span>训练结果</span></template>
+						<!-- ⚠️ 失败提示要在"还没有训练结果"之前显示：否则失败后用户看到的
+						     仍是"还没有训练结果"，会以为按钮没生效、反复点。 -->
+						<el-alert v-if="trainError" type="error" :closable="true" class="mb"
+							title="上次训练失败" :description="trainError" show-icon @close="trainError = ''" />
 						<div v-if="!trainResult" class="empty">还没有训练结果</div>
 						<template v-else>
 							<!-- 结果卡按任务类型分两套：分类（有监督）看准确率/loss/混淆矩阵；
@@ -284,7 +288,8 @@
 								</el-select>
 							</el-form-item>
 							<el-form-item label="输入文件">
-								<el-select v-model="pred.path" filterable style="width: 100%">
+								<el-select v-model="pred.path" filterable clearable style="width: 100%"
+									placeholder="必须选一个文件（不选无法推理）">
 									<el-option v-for="f in fileOptions" :key="f.value" :label="f.label" :value="f.value" />
 								</el-select>
 							</el-form-item>
@@ -303,6 +308,9 @@
 				<el-col :xs="24" :md="14">
 					<el-card shadow="never">
 						<template #header><span>推理结果</span></template>
+						<!-- 同训练结果：失败提示优先于"还没有推理结果"，否则用户会反复点。 -->
+						<el-alert v-if="predictError" type="error" :closable="true" class="mb"
+							title="上次推理失败" :description="predictError" show-icon @close="predictError = ''" />
 						<div v-if="!predResult" class="empty">还没有推理结果</div>
 						<template v-else>
 							<el-descriptions :column="1" border size="small">
@@ -665,6 +673,10 @@ const predicting = ref(false);
 const elapsed = ref(0);
 const trainResult = ref<any>(null);
 const predResult = ref<any>(null);
+/** 上一次训练/推理的失败原因（空串 = 没失败过）。除了弹 ElMessage，还要留在页面上，
+ *  因为 ElMessage 几秒后自动消失，用户回头看时已经不知道刚才为什么失败了。 */
+const trainError = ref('');
+const predictError = ref('');
 
 /** 模型清单 = Models 表登记信息 与 产物参数 合并成一行（1dcnn ↔ 1DCNN 用忽略大小写匹配） */
 const mergedRows = computed(() => {
@@ -999,6 +1011,7 @@ const showTask = async (id: number) => {
 
 const doTrain = async () => {
 	training.value = true;
+	trainError.value = '';
 	elapsed.value = 0;
 	const timer = setInterval(() => (elapsed.value += 1), 1000);
 	try {
@@ -1007,6 +1020,14 @@ const doTrain = async () => {
 		if (!payload.signal_column) delete payload.signal_column;
 		trainResult.value = await platformApi.train(payload);
 		await Promise.all([loadModels(), loadTrainings()]);
+	} catch (e: any) {
+		// 同 doPredict：以前只有 finally，训练失败时界面毫无反应。
+		// 训练要跑几分钟，用户更容易把"失败"误当成"还在跑"，所以提示必须给。
+		const d = e?.response?.data;
+		const msg = d?.error || e?.message || String(e);
+		trainError.value = msg;
+		ElMessage.error('训练失败：' + msg);
+		if (d?.traceback) console.error('[训练失败] 后端 traceback：', d.traceback);
 	} finally {
 		clearInterval(timer);
 		training.value = false;
@@ -1015,11 +1036,28 @@ const doTrain = async () => {
 
 const doPredict = async () => {
 	predicting.value = true;
+	predictError.value = '';
 	try {
 		const payload: any = { ...pred };
 		if (!payload.column) delete payload.column;
+		// ⚠️ 空 path 必须删掉再发：后端把"提供了 path"当作"用户指定了文件"，
+		//    传空串会让它跳过"用默认数据集"的兜底，直接报"必须提供 samples 或 path"。
+		//    （只删 column 不删 path 是历史遗漏，症状是"没选文件就点推理 → 报一个
+		//      看起来像后端 bug 的 400"。）
+		if (!payload.path) delete payload.path;
 		predResult.value = await platformApi.predict(payload);
 		await loadTasks();
+	} catch (e: any) {
+		// ⚠️ 这里以前只有 finally、没有 catch —— 推理失败时**用户看不到任何提示**，
+		//    只看到按钮"转了一下就恢复"，既不知道失败了也不知道为什么。
+		//    交付现场最怕这种"没反应"，排查时也因为没有线索而白费功夫。
+		const d = e?.response?.data;
+		const msg = d?.error || e?.message || String(e);
+		// 后端 500 时会带 traceback（见 api.Predict.post），一并显示便于定位
+		const tip = d?.traceback ? `\n${String(d.traceback).slice(-500)}` : '';
+		predError.value = msg;
+		ElMessage.error('推理失败：' + msg);
+		if (tip) console.error('[推理失败] 后端 traceback：', d.traceback);
 	} finally {
 		predicting.value = false;
 	}

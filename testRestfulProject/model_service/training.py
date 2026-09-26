@@ -128,7 +128,8 @@ def resolve_source(opts: dict) -> tuple[str, Path, str]:
     #    没给就用内置的 CWRU-0HP。目录不存在就直接报错，不做"退回到默认目录"这种事。
     raw_dir = opts.get("dataset_dir")
     if raw_dir:
-        directory = Path(raw_dir)
+        # 归一化 Windows 分隔符：前端给的是 "1DCNN\\0HP" 这种写法，Linux 上不处理会找不到目录。
+        directory = Path(config.normalize_user_path(raw_dir))
         if not directory.is_absolute():
             directory = config.project_dir / directory
     else:

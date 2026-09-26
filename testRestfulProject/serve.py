@@ -68,7 +68,11 @@ def main() -> int:
         from waitress import serve
     except ImportError:
         print("[错误] 没装 waitress。请先执行：")
-        print("       venv\\Scripts\\pip.exe install waitress")
+        # ⚠️ 路径按平台给：Windows 是 venv\Scripts\，Linux/macOS 是 venv/bin/
+        if os.name == "nt":
+            print(r"       venv\Scripts\pip.exe install waitress")
+        else:
+            print("       ./venv/bin/pip install waitress")
         print("       （离线机器上用离线包里的 wheels 装，见离线部署手册）")
         return 2
 
@@ -90,7 +94,13 @@ def main() -> int:
     print(f"  鉴权       : {'已关闭（MODEL_AUTH_DISABLED）' if config.auth_disabled else '开启'}")
     print(f"  令牌密钥   : {'已固定' if not config.auth_key_is_default else '⚠️ 未配置，重启会掉线'}")
     print("=" * 64)
-    print("  按 Ctrl+C 停止。作为 Windows 服务运行时无需手动启动（见 服务安装脚本）。")
+    # ⚠️ 这行按平台给不同提示：Windows 用 nssm 装服务，Linux 用 systemd。
+    #    以前写死"作为 Windows 服务"，在 Linux 上跑会给出错误的运维指引。
+    if os.name == "nt":
+        print("  按 Ctrl+C 停止。作为 Windows 服务运行时无需手动启动（见 安装服务脚本）。")
+    else:
+        print("  按 Ctrl+C 停止。作为 systemd 服务运行时无需手动启动"
+              "（systemctl start model-platform）。")
     print()
 
     # ⚠️ channel_timeout 调大：/train 是**同步阻塞**的（可能要几分钟），

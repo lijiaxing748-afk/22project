@@ -29,7 +29,10 @@ class InvalidInput(ValueError):
 # ------------------------------------------------------------------ 取输入
 def _guard_path(raw_path: str) -> Path:
     """只允许读工作区（D:\\22project）内的文件，挡掉路径穿越。"""
-    p = Path(raw_path)
+    # ⚠️ 先归一化再解析：前端/脚本拼出来的是 Windows 风格的 `a\\b.csv`，
+    #    在 Linux 上 `\\` 不是分隔符，直接 Path() 会得到"一个名字含反斜杠的文件"，
+    #    于是明明存在的文件被报成"不存在"。详见 config.normalize_user_path 的说明。
+    p = Path(config.normalize_user_path(raw_path))
     if not p.is_absolute():
         # 相对路径口径与 api.Train.post / _resolve_workspace_path 一致：先按工作区试，存在就用，
         # 否则再按项目目录试。两个基准都要试 —— /datasets 响应脱敏后前端拿到的是"相对工作区"
