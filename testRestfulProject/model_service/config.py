@@ -25,6 +25,26 @@ import tempfile
 from pathlib import Path
 
 
+def match_dir_case_insensitive(base: Path, name: str) -> Path | None:
+    """在 `base` 下找**名字大小写不敏感**相等的目录；找不到（或目录读不了）返回 None。
+
+    为什么需要它：Windows 文件系统不区分大小写，所以"目录名 = 用户输入的名字"（`MyModel`）与
+    "调用方一律用小写产物键来找"（`mymodel`）在 Windows 上能凑合跑；换到 **Linux（大小写敏感）**
+    就变成"模型 / 图库 / 发布包明明在，却报找不到或看起来是空的"。
+    现在**写入侧**已统一用小写键（见 `api._artifact_dir_name`），这个函数是给**历史数据**兜底：
+    只在精确路径不存在时才做一次只读匹配。
+    ⚠️ 只读查找、不建目录、不覆盖：找到谁就用谁。
+    """
+    lower = str(name).lower()
+    try:
+        for entry in base.iterdir():
+            if entry.is_dir() and entry.name.lower() == lower:
+                return entry
+    except OSError:
+        return None                              # 目录不存在/无权限 → 交给调用方走原来的路径
+    return None
+
+
 def normalize_user_path(raw: str | os.PathLike | None) -> str:
     """把"用户/前端给的路径"归一化成当前平台能解析的形式。
 

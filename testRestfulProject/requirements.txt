@@ -179,3 +179,13 @@ pywin32==312; sys_platform == "win32"
 #   该报错信息隐晦，容易被误判为"密码错误"或"网络不通"，故在此明示。
 #   Windows 上装了也无害（本机 MySQL 用旧插件时用不到而已）。
 cryptography==46.0.3
+
+# ---------------------------------------------------------------
+# ⚠️ 下面这几个包**当前代码零引用**（全项目 `import` 搜不到），属模板/历史遗留：
+#      SQLAlchemy、greenlet（本平台用裸 PyMySQL，不走 ORM）
+#      flask-cors（CORS 响应头是 dvadmin.py 里手工加的）
+#      python-dotenv（db.env 的解析在 model_service/config.py 里自己实现）
+#    留着不影响运行，但**离线打包时会多装几个没用的 wheel**。
+#    要不要删由打包人决定 —— 删了之后请重新生成 02-Python离线依赖 目录，
+#    并在目标机上跑一次 `python tools/check-requirements.py`（它有一份关键包清单，
+#    改这里也要同步改）。

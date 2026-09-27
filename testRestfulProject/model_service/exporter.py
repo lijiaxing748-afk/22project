@@ -32,7 +32,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
-from .config import config
+from .config import config, match_dir_case_insensitive
 from .registry import Artifact
 
 # 各框架需要额外附带的"结构/说明"文件。
@@ -181,8 +181,16 @@ def next_version(model: str, existing: int) -> str:
 
 
 def export_dir(model: str) -> Path:
-    """某个模型的发布包目录 data/exports/<模型名>/（不存在则建）。"""
+    """某个模型的发布包目录 data/exports/<模型名>/（不存在则建）。
+
+    ⚠️ 先做一次**大小写不敏感**匹配再决定是否新建：历史数据里可能有 `Legacy` 这种大小写混合的目录，
+    而调用方一律用小写键来找；不匹配就直接 mkdir 的话，会在 Linux 上凭空多出一个空的 `legacy/`，
+    旧发布包"看起来消失了"（实际还在另一个目录里）。只读匹配找到就沿用，不做任何覆盖。
+    """
     safe = _safe_component(model)
+    existing = match_dir_case_insensitive(config.export_dir, safe)
+    if existing is not None:
+        return existing
     directory = config.export_dir / safe
     directory.mkdir(parents=True, exist_ok=True)
     return directory

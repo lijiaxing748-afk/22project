@@ -1,4 +1,4 @@
-﻿# =====================================================================
+# =====================================================================
 #  02 - 初始化 MySQL 数据库（建库 + 建表）
 #
 #  前提：MySQL 服务已启动；账号密码与 testRestfulProject\db.env 一致
@@ -69,14 +69,18 @@ $defUser = 'root'
 $defPass = '1006'
 $defHost = '127.0.0.1'
 $defPort = '3306'
+$defDb   = 'model_management'
 if (Test-Path $DbEnv) {
     Get-Content $DbEnv | ForEach-Object {
-        if ($_ -match '^\s*MODEL_DB_USER\s*=\s*(.+?)\s*$')     { $defUser = $Matches[1] }
-        if ($_ -match '^\s*MODEL_DB_PASSWORD\s*=\s*(.+?)\s*$') { $defPass = $Matches[1] }
-        if ($_ -match '^\s*MODEL_DB_HOST\s*=\s*(.+?)\s*$')     { $defHost = $Matches[1] }
-        if ($_ -match '^\s*MODEL_DB_PORT\s*=\s*(.+?)\s*$')     { $defPort = $Matches[1] }
+        # ⚠️ 去掉值两边的引号：db.env 里写成 MODEL_DB_PASSWORD = '123456' 是常见写法，
+        #    不去引号就会拿 "'123456'" 去连库，报一个看不出原因的认证失败。
+        if ($_ -match '^\s*MODEL_DB_USER\s*=\s*(.+?)\s*$')     { $defUser = $Matches[1].Trim().Trim("'").Trim('"') }
+        if ($_ -match '^\s*MODEL_DB_PASSWORD\s*=\s*(.+?)\s*$') { $defPass = $Matches[1].Trim().Trim("'").Trim('"') }
+        if ($_ -match '^\s*MODEL_DB_HOST\s*=\s*(.+?)\s*$')     { $defHost = $Matches[1].Trim().Trim("'").Trim('"') }
+        if ($_ -match '^\s*MODEL_DB_PORT\s*=\s*(.+?)\s*$')     { $defPort = $Matches[1].Trim().Trim("'").Trim('"') }
+        if ($_ -match '^\s*MODEL_DB_NAME\s*=\s*(.+?)\s*$')     { $defDb   = $Matches[1].Trim().Trim("'").Trim('"') }
     }
-    Say "   已从 db.env 读到默认连接信息（主机 $defHost : $defPort，账号 $defUser）"
+    Say "   已从 db.env 读到默认连接信息（主机 $defHost : $defPort，账号 $defUser，库 $defDb）"
 }
 Say ""
 
@@ -93,6 +97,9 @@ if ([string]::IsNullOrWhiteSpace($inHost)) { $inHost = $defHost }
 
 $inPort = Read-Host "   端口 [$defPort]"
 if ([string]::IsNullOrWhiteSpace($inPort)) { $inPort = $defPort }
+
+$inDb = Read-Host "   数据库名 [$defDb]"
+if ([string]::IsNullOrWhiteSpace($inDb)) { $inDb = $defDb }
 Say ""
 
 # ---------------------------------------------------------------- 测试连通性
@@ -125,6 +132,13 @@ $execArgs = @(
     "--default-character-set=utf8mb4", "--ssl-mode=DISABLED"
 )
 $sqlText = Get-Content $SqlFile -Raw -Encoding UTF8
+# ⚠️ 建表脚本里的库名是**写死**的 `model_management`（SQL 读不到环境变量）。这里按上面确认的库名
+#    做一次文本替换再喂给 mysql —— 否则改了 MODEL_DB_NAME 就会出现"表建到 model_management、
+#    服务却连另一个库"的不一致（下面第 5 步的校验也会整片落空）。
+if ($inDb -ne 'model_management') {
+    Say "    库名按配置替换：model_management → $inDb"
+    $sqlText = $sqlText.Replace('`model_management`', ('`' + $inDb + '`'))
+}
 $sqlText | & $mysqlExe @execArgs 2>&1 | ForEach-Object {
     if ($_ -match 'ERROR') { Err $_ } else { Say "   $_" }
 }
@@ -140,17 +154,24 @@ Say ""
 Say "[5] 校验表结构 ..."
 $showArgs = @(
     "-h", $inHost, "-P", $inPort, "-u", $inUser, "-p$inPass",
-    "--ssl-mode=DISABLED", "-e", "USE model_management; SHOW TABLES;"
+    "--ssl-mode=DISABLED", "-e", "USE $inDb; SHOW TABLES;"
 )
 $tables = & $mysqlExe @showArgs 2>&1
 $tables | ForEach-Object { Say "   $_" }
 
+# ⚠️ 必须与 testRestfulProject/sql/schema_mysql.sql 建的 **11 张表**完全一致：
+#    少列一张（例如鉴权用的 Roles / Users / OperationLogs），建表失败时这里照样报"全部就位"，
+#    装完才会发现登不进去。改建表脚本时**两处必须同步改**。
 $expect = @('Datasets','Models','EdgeDevices','Trainings','ModelInvocations',
-            'ModelDeployments','InferenceTasks','InferenceResults')
-$missing = $expect | Where-Object { $tables -notcontains $_ }
+            'ModelDeployments','InferenceTasks','InferenceResults',
+            'Roles','Users','OperationLogs')
+# ⚠️ 比较要**忽略大小写**：MySQL 的 lower_case_table_names=1（Windows 默认）时 SHOW TABLES 回的是全小写，
+#    直接 -notcontains 会把 11 张表全判成"缺失"，运维会以为建库失败（实测踩过）。
+$haveNames = @($tables | ForEach-Object { $_.ToString().Trim().ToLower() })
+$missing = $expect | Where-Object { $haveNames -notcontains $_.ToLower() }
 Say ""
 if ($missing.Count -eq 0) {
-    Ok "8 张表全部就位"
+    Ok "$($expect.Count) 张表全部就位（库：$inDb）"
     Say ""
     Say "============================================================"
     Say "  步骤 2 完成。接下来运行：03-检查配置.ps1" -ForegroundColor Green

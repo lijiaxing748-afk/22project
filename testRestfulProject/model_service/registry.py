@@ -26,7 +26,7 @@ import shutil
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from .config import config
+from .config import config, match_dir_case_insensitive
 _WEIGHT_NAMES = ("model.keras", "model.pt", "detector.pkl", "model.h5")
 # 模型名允许的字符：中英文、数字、下划线、点、横线（见 _model_dir 的安全说明）
 _MODEL_NAME_RE = re.compile(r"^[\w\u4e00-\u9fa5.\-]+$")
@@ -75,7 +75,16 @@ def _model_dir(name: str) -> Path:
     if clean.startswith("."):
         # 以点开头会和暂存目录 `.staging-*` 撞名，也会藏成隐藏目录
         raise ValueError(f"非法的模型名 {name!r}：不能以点开头")
-    return config.model_dir / clean
+    target = config.model_dir / clean
+    if target.exists():
+        return target
+    # ⚠️ 兼容历史数据 + Linux 迁移：早期上传接口把**用户输入的名字**直接当目录名（如 `MyModel`），
+    #    而调用方一律用小写产物键来找（`mymodel`）。Windows 文件系统不区分大小写所以一直没暴露，
+    #    换到 Linux 就是"模型明明在、却报找不到"。
+    #    这里做一次**只读的**大小写不敏感匹配（只在精确路径不存在时才扫，正常路径零开销）；
+    #    找到就沿用那个老目录（写操作写进它，改名时才会被规范化成小写）。
+    legacy = match_dir_case_insensitive(config.model_dir, clean)
+    return legacy if legacy is not None else target
 def _read_meta(directory: Path) -> dict:
     """读 meta.json；缺失或内容坏掉都返回空 dict，让调用方走默认分支而不是崩掉。"""
     meta_path = directory / "meta.json"

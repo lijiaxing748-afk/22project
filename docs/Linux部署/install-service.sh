@@ -95,14 +95,22 @@ fi
        请先复制 db.env.example 为 db.env 并填好数据库连接信息。"
 ok "找到 db.env"
 
-if [[ -f "$SRV_DIR/frontend_dist_check" ]]; then :; fi
-DIST_DIR="$APP_DIR/frontend/22project/dist"
-if [[ -f "$DIST_DIR/index.html" ]]; then
+# ⚠️ dist 的位置有两种合法布局，且后端是按"项目根（APP_DIR 的上一级）"去找的
+#    （见 model_service/config.py 的候选顺序）：
+#      · 源码仓库布局： <项目根>/frontend/22project/dist
+#      · Linux 部署包： <项目根>/frontend/dist
+#    原先这里只检查第一种、且是相对 APP_DIR 拼的 → 用 Linux 部署包时永远提示"没找到前端产物"，
+#    而服务其实能正常托管（实测被指出过）。这里把四个候选都探一遍，与后端保持一致。
+DIST_DIR=""
+for cand in "$APP_DIR/frontend/22project/dist" "$APP_DIR/../frontend/dist" "$APP_DIR/frontend/dist" "$APP_DIR/data/web"; do
+    if [[ -f "$cand/index.html" ]]; then DIST_DIR="$cand"; break; fi
+done
+if [[ -n "$DIST_DIR" ]]; then
     ok "找到前端产物：$DIST_DIR"
 else
-    warn "没找到前端产物（$DIST_DIR/index.html）。"
+    warn "没找到前端产物（已探测 4 个候选位置，均无 index.html）。"
     warn "服务能起来，但浏览器访问会看到「后端已启动，还没有前端页面」。"
-    warn "请把构建好的 dist 目录放到位，或在此机器上执行 npm run build:singleport。"
+    warn "请把构建好的 dist 放到 <项目根>/frontend/dist，或在此机器上执行 npm run build:singleport。"
 fi
 say ""
 

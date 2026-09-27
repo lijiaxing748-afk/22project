@@ -1005,6 +1005,17 @@ def _artifact_key(raw: str) -> str:
     """
     name = _db_model_name(raw)
     return next((k for k, v in MODEL_META.items() if v["db_name"].lower() == name.lower()), name.lower())
+def _artifact_dir_name(name: str) -> str:
+    """模型名 → **磁盘目录名**（一律小写产物键）。
+
+    ⚠️ 为什么要单独抽一个函数：Windows 文件系统**不区分大小写**，所以"目录名 = 用户输入的名字"
+    （如上传 `MyModel` 就建 `data/models/MyModel`）与"查找用的键 = 小写"（`mymodel`）在 Windows 上
+    能凑合跑通；换到 **Linux（大小写敏感）就变成找不到产物目录** —— 模型打不开，图库/发布包目录
+    也一并找不到。实测复现过一次（上传名带大写 → 在 Linux 上 `load_artifact` 直接 FileNotFound）。
+    本项目统一约定：**磁盘目录一律用小写产物键**，`Models.ModelName` 保留用户输入的写法。
+    凡是要拼 `data/{models,figures,exports}/<名>` 的地方都从这里取，别再直接用用户输入的名字。
+    """
+    return _artifact_key(name)
 def _safe_model_name(name: str) -> str:
     """模型名 → **磁盘安全形式**，非法字符**直接拒绝**而不是替换（改名用）。
 
@@ -1108,13 +1119,14 @@ def _rename_model(old: str, new: str) -> dict:
     而 update_model 要走网络+SQL（查重、外键、方言差异）。把易失败的放后面，失败时才有东西可回滚；
     反过来先改库的话，改库成功、搬目录失败，库里全是新路径、磁盘还是老目录，之后所有推理训练都 FileNotFoundError。
     """
-    key = _artifact_key(old)                     # 真实目录名（1DCNN → 1dcnn）
-    safe = _safe_model_name(new)
-    models_dir = config.model_dir / safe
+    key = _artifact_key(old)                     # 老目录名（小写产物键，1DCNN → 1dcnn）
+    safe = _safe_model_name(new)                 # 新**名字**：保留用户写法，写进 Models.ModelName 与 meta.model
+    new_key = _artifact_dir_name(safe)           # 新**目录名**：一律小写键（见该函数说明，Linux 大小写敏感）
+    models_dir = config.model_dir / new_key
     # 三棵树：产物 / 图库 / 发布包。某个模型没图、没发过包时对应目录不存在 → 跳过，不算失败
     plan = ((config.model_dir / key, models_dir, "产物"),
-            (FIG_DIR / key, FIG_DIR / safe, "图库"),
-            (config.export_dir / key, config.export_dir / safe, "发布包"))
+            (FIG_DIR / key, FIG_DIR / new_key, "图库"),
+            (config.export_dir / key, config.export_dir / new_key, "发布包"))
     moved: list[tuple[Path, Path]] = []
     for src, dst, label in plan:
         if not src.exists():
@@ -1124,7 +1136,7 @@ def _rename_model(old: str, new: str) -> dict:
         if dst.exists():
             # 半路失败要把**已经搬走的**搬回去再抛，别留下"产物搬了、图库没搬"的中间态
             _rollback_moves(moved)
-            raise InvalidInput(f"{label}目录 data/{dst.parent.name}/{safe} 已存在，先删掉它或换个名字")
+            raise InvalidInput(f"{label}目录 data/{dst.parent.name}/{new_key} 已存在，先删掉它或换个名字")
         try:
             src.rename(dst)                      # 同一磁盘上的重命名，秒完成
         except OSError as exc:
@@ -1142,14 +1154,15 @@ def _rename_model(old: str, new: str) -> dict:
     if moved:
         _rewrite_meta_model(models_dir, safe)
     try:
-        paths = database.rename_model_paths(_rename_path_pairs(key, safe, old, new))   # 库里的路径前缀
+        paths = database.rename_model_paths(_rename_path_pairs(key, new_key, old, new))   # 库里的路径前缀
     except DBError:
         # 改库失败 → 把三棵目录原样搬回去、meta 写回老名，宁可整体失败成一个"没改过名"的干净状态，
         # 也不能留下"库说新名、磁盘是老名"（或"目录=旧名、meta=新名"）的脱钩。
         # ⚠️ meta 必须一起回滚：原先只搬回产物目录、meta 没回滚，而 rename 又还没赋值给调用方，
         #    调用方的 `if rename: _undo_rename()` 根本不会执行 → 中间态就一直留在磁盘上（已修）。
         _rollback_moves(moved)
-        _rewrite_meta_model(config.model_dir / key, key)
+        # meta 写回**老的名字**（不是小写键）：meta.model 是给人看的名字，回滚就该回到改动前的写法
+        _rewrite_meta_model(config.model_dir / key, old)
         raise
     # 返回值原样带在 PUT 响应里（改名与否、搬了哪几棵目录、路径改了几行），供前端提示与排错。
     # ⚠️ artifact_dir_moved 只表示**产物目录**搬没搬（前端文案是"产物目录已搬到…"），
@@ -1174,20 +1187,21 @@ def _undo_rename(old: str, new: str) -> None:
     # 所以这里用不抛异常的 _sanitize_name（而不是会 raise 的 _safe_model_name），
     # 清洗不出来就退回原文照搬。
     safe = _sanitize_name(new, new)
-    if safe == key:
-        return                                   # 名字没变过，没什么可回滚的
-    # 三棵目录都搬回老名。_safe_rename 在"老目录已被别人占用"时原地不动（避免覆盖掉人家的目录）。
+    new_key = _artifact_dir_name(safe)           # 新目录名（小写键）—— 与 _rename_model 对称
+    if new_key == key:
+        return                                   # 目录名没变过，没什么可回滚的
+    # 三棵目录都搬回老键。_safe_rename 在"老目录已被别人占用"时原地不动（避免覆盖掉人家的目录）。
     # ⚠️ 这里**不能**像原先那样"搬不动就 return"：路径前缀的复原与目录能不能搬回是两件独立的事，
     #    提前 return 会把库里的新前缀留在原地（库说新名、目录还是老名），正是要避免的那种脱钩。
     for tree in (config.model_dir, FIG_DIR, config.export_dir):
-        _safe_rename(tree / safe, tree / key)
-    # 与 _rename_model 对称：目录搬回老名后，meta 里的 model 也要写回老名（读不到文件就静默跳过）
-    _rewrite_meta_model(config.model_dir / key, key)
+        _safe_rename(tree / new_key, tree / key)
+    # 与 _rename_model 对称：目录搬回老名后，meta 里的 model 也要写回**老的名字**（读不到文件就静默跳过）
+    _rewrite_meta_model(config.model_dir / key, old)
     # 路径前缀反向改回（REPLACE 前缀，反向调用即可复原）。
     # ⚠️ 能走到本函数，就说明 _rename_model 已经完整跑完（它内部的 rename_model_paths 已经把库里路径
     #    改成新前缀了，否则会抛 DBError 而不是走到这），所以即使目录搬不回去，路径前缀也必须改回去。
     try:
-        database.rename_model_paths(_rename_path_pairs(safe, key, new, old))
+        database.rename_model_paths(_rename_path_pairs(new_key, key, new, old))
     except DBError:
         pass                                     # 回滚里的失败只能吞掉，别再抛出去盖住原始异常
 class ArtifactDetail(Resource):
@@ -1361,7 +1375,8 @@ class ModelUpload(Resource):
             return {"error": "name（模型名）必填"}, 400
         if not files:
             return {"error": "没有收到文件（表单字段名用 file，可多选/整个文件夹）"}, 400
-        safe = _sanitize_name(name, "model")
+        safe = _sanitize_name(name, "model")     # 展示/登记用的名字：保留用户输入的写法
+        key = _artifact_dir_name(safe)           # 磁盘目录名：一律小写产物键（见该函数说明，Linux 大小写敏感）
         # 1) 先把文件读进内存并分类，避免半途落盘
         blobs, skipped, candidates, scaler, meta_blob = _upload_blobs(
             files, KEEP_SUFFIXES, WEIGHT_SUFFIXES, self.MAX_MB)
@@ -1393,7 +1408,7 @@ class ModelUpload(Resource):
         # 2) 产物目录：一个模型一份，**重新上传 = 直接替换旧产物**（没有版本号可选）。
         #    先写进暂存目录，写完整了才换上去 —— 否则一次失败的上传会把上一份好产物毁掉。
         try:
-            root, stage = begin_artifact(safe)
+            root, stage = begin_artifact(key)     # ⚠️ 用 key（小写）而不是 safe（用户写法），见 _artifact_dir_name
         except ValueError as exc:
             # ⚠️ registry._model_dir() 会拒绝含 `..`、以点开头、带路径分隔符之类的名字（防目录穿越）。
             #    这一行原先在 try 之外：名字不合法时冒成未捕获的 ValueError → **HTTP 500**。

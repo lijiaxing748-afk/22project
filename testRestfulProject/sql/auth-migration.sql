@@ -8,6 +8,11 @@
      InferenceResults）。不同步这三张新表，更新代码后**登录会直接报错**
      （dvadmin.login() 一查 Users 表就 Table doesn't exist）。
 
+   ⚠️ 库名在本脚本里是**写死**的（见下面第 26 行 `USE model_management;`）。要用别的库名，
+      请让安装脚本执行 —— Windows: docs/离线部署/部署脚本/02-init-database.ps1、
+      Linux: docs/Linux部署/init-database.sh 都会按 db.env 的 MODEL_DB_NAME 自动替换；
+      手工执行的话请自己改这一行。
+
    与 sql/schema_mysql.sql 的关系：
      那份是**全量**建库脚本（11 张表 + 所有种子数据），新装机用它；
      这份是**增量**脚本，只补鉴权相关的部分，给已经跑起来的旧库用。

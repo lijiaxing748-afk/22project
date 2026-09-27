@@ -47,6 +47,17 @@ from . import config
 #    （前端报错难看但一眼能看出是打错接口）；多列一个，前端整页打不开。
 #    真正必须挡住的是 `/api/...`：前端绝不会用这个前缀做页面路由
 #    （前端自己的请求都走它），而且它是 dvadmin 兼容层的命名空间。
+#
+# ⚠️ 更正（2026-09-27 实测）：上面说的"把 system 摘掉"**并没有真正生效**。
+#    `_api_segments()` 是**动态**取自 api.py 的 `_ROUTES`，而 `/system` 是真实的业务接口
+#    （SystemInfo），所以 `system` 依然在拦截集合里。实测：
+#        web._api_segments() == {'api','datasets','exports','figures','health','inference-tasks',
+#                                'models','predict','system','train','trainings'}
+#    今天不出问题，纯粹是因为当前前端页面路由只有 `/home`、`/login`、`/platform/*`，
+#    没有以这 11 个词开头的页面。
+#    ⚠️ 对后来者的约束：**新增页面路由时，首段不要用这 11 个词**（尤其别用 `/system/...`），
+#       否则那个页面会 404 成 JSON。要支持这种路由，得把这里的"首段前缀"判断改成
+#       "完整路径是否命中已注册的 API 规则"，那是改路由逻辑的事，别只改这个列表。
 _API_PREFIXES = ("api/", "assets/")
 
 

@@ -65,7 +65,9 @@ Copy-Tree -From (Join-Path $SrcRoot 'model_service') -To (Join-Path $StageDir 'b
 # 建库 SQL
 Copy-Tree -From (Join-Path $SrcRoot 'sql')           -To (Join-Path $StageDir 'backend/sql')
 # 运维脚本（重置口令等）
-Copy-Tree -From (Join-Path $SrcRoot 'tools')         -To (Join-Path $StageDir 'backend/tools') -ExcludeDirs @('__pycache__')
+# ⚠️ 两个 Windows 专用的检查脚本不打进 Linux 包：它们硬编码 venv/Lib/site-packages（Windows 布局）
+#    并用 ctypes.WinDLL / PE 解析，在 Linux 上必然报错，留在包里只会让人以为"包里的脚本坏了"。
+Copy-Tree -From (Join-Path $SrcRoot 'tools')         -To (Join-Path $StageDir 'backend/tools') -ExcludeDirs @('__pycache__') -ExcludeFiles @('check-vcruntime.py','check-dll-deps.py')
 
 # 入口文件
 foreach ($f in @('serve.py','main.py','requirements.txt','db.env.example')) {
@@ -91,11 +93,15 @@ Write-Host "  [OK] data（已排除 logs / .cache）"
 
 # 前端产物
 $Dist = Join-Path $RepoRoot 'frontend\22project\dist'
-if (Test-Path $Dist) {
+if (Test-Path (Join-Path $Dist 'index.html')) {
     Copy-Tree -From $Dist -To (Join-Path $StageDir 'frontend/dist')
     Write-Host "  [OK] frontend/dist"
 } else {
-    Write-Host "  [缺失] frontend/dist —— 请先执行 npm run build"
+    # ⚠️ 这里原先只打印"[缺失]"然后继续打包 —— 结果产出一个"没有前端"的包，装完访问只有说明页，
+    #    而打包日志看起来是"完成"。缺前端就不该产出可交付的包，直接失败让人先构建。
+    Write-Host "  [错误] 找不到前端产物：$Dist\index.html"
+    Write-Host "         请先在 frontend\22project 下执行：npm run build:singleport（或 npm run build）"
+    throw "打包中止：前端产物缺失（缺了它部署后访问首页只会看到说明页）"
 }
 
 # Linux 部署脚本与文档
@@ -145,20 +151,28 @@ $Readme = @'
   5. 注册开机自启服务：
        sudo bash docs/Linux部署/install-service.sh
 
-  6. 浏览器访问：http://<本机IP>:5000
+  6. 浏览器访问：http://<本机IP>:8080
+       （单端口：后端同时托管接口与前端。端口由 serve.py 的 --port / MODEL_PORT 决定，默认 8080）
 
 初始账号
 --------
-  Users 表为空时，首次启动自动创建三个账号：
-    admin    / Admin@2026      全部权限
-    engineer / Engineer@2026   训练、推理
-    operator / Operator@2026   只读
-  **交付现场前请至少修改 admin 口令。**
+  Users 表为空时，首次启动自动创建**两个**账号（只有两种身份：管理员 / 普通用户）：
+    admin / Admin@2026      管理员（多两项权限：用户管理、查看操作日志）
+    user  / User@2026       普通用户
+  ⚠️ 早期的 engineer / operator 已废弃并归一到 user；老库里若还有这两个角色键，
+     启动时会由 migrate_legacy_roles() 自动迁移。
+  **交付现场前请至少修改 admin 口令**（或用 MODEL_BOOTSTRAP_ADMIN_PASSWORD 指定）。
 
 注意
 ----
-  * 本包**不含 venv**，Linux 依赖由 install-backend.sh 现装。
+  * 本包**不含 venv**：依赖由 install-backend.sh 现装。
+  * ⚠️ install-backend.sh 走的是**联网 pip**（torch 还需 download.pytorch.org）。纯离线目标机
+    请自备 wheel 目录并改用 `pip install --no-index --find-links=<wheel目录> -r requirements.txt`
+    （详见 docs/Linux部署/ 与 docs/离线部署/ 的说明）。
   * 本包**不含 db.env**（真实口令不进包），请从 db.env.example 复制。
+  * 建库脚本里的库名写死为 `model_management`；若要用别的库名，请让
+    docs/Linux部署/init-database.sh 执行（它会按 db.env 的 MODEL_DB_NAME 替换），
+    或手工把 sql/schema_mysql.sql、sql/auth-migration.sql 里的库名改掉。
   * 前端已构建，无需在 Linux 上装 Node.js。
 '@
 Set-Content -Path (Join-Path $StageDir 'README-部署包说明.txt') -Value $Readme -Encoding UTF8

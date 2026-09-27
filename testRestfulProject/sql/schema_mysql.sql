@@ -2,6 +2,14 @@
    模型管理库 · MySQL 版 建表脚本
    ----------------------------------------------------------------
    目标数据库: model_management
+   ----------------------------------------------------------------
+   ⚠️ 库名在本脚本里是**写死**的（SQL 读不到环境变量）：下面的 CREATE DATABASE / USE 都是
+      `model_management`。要用别的库名，二选一：
+        a) 用安装脚本执行（会按 db.env 的 MODEL_DB_NAME 自动替换后再执行）：
+           Windows: docs/离线部署/部署脚本/02-init-database.ps1
+           Linux  : docs/Linux部署/init-database.sh
+        b) 手工把本文件里 `model_management` 全部改成你的库名，再执行。
+      否则会出现"表建到 model_management、服务却连另一个库"的不一致。
    字符集: utf8mb4 / utf8mb4_unicode_ci
    引擎: InnoDB
    表清单:

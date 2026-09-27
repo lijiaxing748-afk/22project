@@ -14,7 +14,10 @@
 
 [Unit]
 Description=模型管理平台（Flask + waitress，前端由后端同端口托管）
-Documentation=file://__APP_DIR__/README.md
+# ⚠️ 原先这里指向 __APP_DIR__/README.md，而包里根本没有那个文件（tar 包里 backend/ 下
+#    只有 serve.py/main.py/requirements.txt 等）→ systemctl status 里的文档链接一直是死的。
+#    改指部署文档（Linux 部署包与源码仓库两种布局下都存在这个相对路径）。
+Documentation=file://__APP_DIR__/../docs/Linux部署/README-Linux部署.md
 # 等网络就绪后再启动：服务监听 0.0.0.0，启动时若网络未就绪，
 # 虽然通常不影响 bind，但让 network-online 先完成更稳。
 After=network-online.target

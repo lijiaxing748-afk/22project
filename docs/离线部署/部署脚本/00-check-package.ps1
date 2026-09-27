@@ -1,4 +1,4 @@
-﻿# =====================================================================
+# =====================================================================
 #  00 - 打包完整性自检
 #
 #  在"有网的电脑"上、准备把优盘送去实验室之前运行。
@@ -48,12 +48,29 @@ $scripts = @(
     '05-install-service.ps1'      # 装成 Windows 服务（生产模式）
     '06-uninstall-service.ps1'
     'elevate.ps1'                 # 05/06 的提权辅助
-    '90-build-update-package.ps1' # 打代码更新包
-    '91-apply-update.ps1'         # 应用代码更新包
+    # ⚠️ 更新包的两个脚本在**仓库根目录的 tools\** 下（本机开发目录结构），
+    #    不在 06-部署脚本\ 里。原先这里写 90-build-update-package.ps1 / 91-apply-update.ps1，
+    #    在当前仓库结构下**必然报 2 项缺失**，把"自检"变成了狼来了。
+    #    这里改成按"两处任一存在即通过"检查，并在缺失时给出正确路径提示。
     'run.bat'
 )
 foreach ($s in $scripts) {
     if (Test-Path (Join-Path $Pkg "06-部署脚本\$s")) { Ok $s } else { Miss "06-部署脚本\$s"; $problem++ }
+}
+# 更新包的打包/应用脚本：可能在 tools\（开发目录）或 06-部署脚本\（部署包）
+$updateTools = @{
+    'make-update-package.ps1' = '打代码更新包'
+    'apply-update.ps1'        = '应用代码更新包'
+}
+foreach ($name in $updateTools.Keys) {
+    $hit = @(
+        (Join-Path $Pkg "tools\$name"),
+        (Join-Path $Pkg "06-部署脚本\$name"),
+        (Join-Path $Pkg "06-部署脚本\90-build-update-package.ps1"),
+        (Join-Path $Pkg "06-部署脚本\91-apply-update.ps1")
+    ) | Where-Object { Test-Path $_ } | Select-Object -First 1
+    if ($hit) { Ok "$name（$($updateTools[$name])）" }
+    else { Miss "找不到 $name（$($updateTools[$name])，应在 tools\ 下）"; $problem++ }
 }
 Say ""
 

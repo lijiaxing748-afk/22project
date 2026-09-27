@@ -126,7 +126,20 @@ if [[ ! -f "$SCHEMA" ]]; then
     die "找不到建表脚本：$SCHEMA"
 fi
 
-if mysql "${MYSQL_ARGS[@]}" < "$SCHEMA"; then
+# ⚠️ 建表脚本里的库名是**写死**的 `model_management`（SQL 读不到环境变量）。这里按 db.env 的
+#    MODEL_DB_NAME 替换后再喂给 mysql —— 否则改了库名会出现"表建到 model_management、
+#    服务却连另一个库"，后面的表就位校验也会整片落空（Windows 侧同样处理）。
+apply_sql() {
+    local f="$1"
+    if [[ "$DB_NAME" == "model_management" ]]; then
+        mysql "${MYSQL_ARGS[@]}" < "$f"
+    else
+        say "   库名按配置替换：model_management -> $DB_NAME"
+        sed "s/\`model_management\`/\`$DB_NAME\`/g" "$f" | mysql "${MYSQL_ARGS[@]}"
+    fi
+}
+
+if apply_sql "$SCHEMA"; then
     ok "表结构已应用"
 else
     die "表结构应用失败。请检查上面的报错。"
@@ -138,7 +151,7 @@ say ""
 say "[4/5] 应用鉴权表（auth-migration.sql）"
 AUTH_SQL="$SRV_DIR/sql/auth-migration.sql"
 if [[ -f "$AUTH_SQL" ]]; then
-    if mysql "${MYSQL_ARGS[@]}" < "$AUTH_SQL" 2>/dev/null; then
+    if apply_sql "$AUTH_SQL" 2>/dev/null; then
         ok "鉴权表已应用"
     else
         # 该脚本用 CREATE TABLE IF NOT EXISTS，重复执行是安全的；

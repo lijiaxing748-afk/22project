@@ -1,4 +1,4 @@
-﻿# =====================================================================
+# =====================================================================
 #  应用代码更新（在**实验室电脑**上运行）
 #
 #  配合 tools\make-update-package.ps1 使用：
@@ -69,19 +69,44 @@ Say ""
 
 # ---------------------------------------------------------------- 2 检查服务
 Say "[2] 检查服务是否已停止"
+# ⚠️ 两种启动方式都要认：
+#    · 生产模式 = Windows 服务 ModelPlatform（05-install-service.ps1 注册的，端口 8080）
+#    · 开发模式 = 两个 PowerShell 窗口（main.py:5000 + vite:8080）
+#    只探端口、不认服务的话，服务模式下会提示用户"去关那两个 PowerShell 窗口"（根本没有那两个窗口），
+#    运维就卡在第一步（实测被指出过）。这里先处理服务，再兜底看端口。
+$svcName = 'ModelPlatform'
+$svc = Get-Service -Name $svcName -ErrorAction SilentlyContinue
+$restartService = $false
+if ($svc) {
+    if ($svc.Status -ne 'Stopped') {
+        Warn "检测到 Windows 服务 $svcName 正在运行（$($svc.Status)）。"
+        $go = Read-Host "   现在停掉它并继续更新？输入 y 停止服务并继续，其他键退出"
+        if ($go -ne 'y') { exit 0 }
+        Stop-Service -Name $svcName -Force -ErrorAction SilentlyContinue
+        try { (Get-Service $svcName).WaitForStatus('Stopped', '00:00:30') } catch { }
+        Ok "服务 $svcName 已停止"
+    } else {
+        Ok "服务 $svcName 已停止"
+    }
+    # 更新完要把它拉起来（原来没有这一步，服务模式下更新完系统是停着的）
+    $restartService = $true
+} else {
+    Say "   （本机没有注册 $svcName 服务 → 按开发模式处理）"
+}
+
 $busy = @()
 foreach ($p in @(5000, 8080)) {
     $c = Get-NetTCPConnection -State Listen -LocalPort $p -ErrorAction SilentlyContinue
     if ($c) { $busy += $p }
 }
 if ($busy.Count -gt 0) {
-    Warn "端口 $($busy -join ', ') 还在监听 —— 说明后端/前端还在运行。"
-    Warn "请先关掉那两个 PowerShell 窗口，然后重新运行本脚本。"
+    Warn "端口 $($busy -join ', ') 还在监听 —— 还有进程在跑（开发模式下就是那两个 PowerShell 窗口）。"
+    Warn "请先关掉它们，然后重新运行本脚本。"
     Say ""
     $go = Read-Host "   已经关了？输入 y 继续，其他键退出"
     if ($go -ne 'y') { exit 0 }
 } else {
-    Ok "5000 / 8080 都没在监听，可以安全更新"
+    Ok "5000 / 8080 都没在监听"
 }
 Say ""
 
@@ -126,8 +151,21 @@ function Backup-Dir {
 
 $n1 = Backup-Dir -From (Join-Path $target 'testRestfulProject') -To (Join-Path $backup 'testRestfulProject')
 $n2 = Backup-Dir -From (Join-Path $target 'frontend\22project\src') -To (Join-Path $backup 'frontend-src')
-Ok "已备份 $($n1 + $n2) 个文件到:"
+# ⚠️ dist 也必须备份：更新会**覆盖** dist（见下面 Apply-Dir），而它由构建机产出、
+#    目标机上没装 Node 重建 —— 不备份就等于"前端出问题回不去"，而脚本结尾却承诺可以回滚（实测被指出过）。
+$n3 = Backup-Dir -From (Join-Path $target 'frontend\22project\dist') -To (Join-Path $backup 'frontend-dist')
+Ok "已备份 $($n1 + $n2 + $n3) 个文件到:"
 Say "       $backup"
+Say ""
+
+# ⚠️ 备份不再无限累积：每次更新都会新建一个 _backup-<时间戳>，目标机跑几次就堆一大堆。
+#    保留最近 5 份（含刚建这份），更早的删掉并打印出来，别让磁盘悄悄被吃满。
+$bakRoot = [System.IO.Path]::GetFullPath((Join-Path $target '..'))
+$oldBaks = Get-ChildItem $bakRoot -Directory -Filter '_backup-*' -ErrorAction SilentlyContinue |
+           Sort-Object Name -Descending | Select-Object -Skip 5
+foreach ($b in $oldBaks) {
+    try { Remove-Item $b.FullName -Recurse -Force; Say "   已清理旧备份：$($b.Name)" } catch { Warn "旧备份清理失败（可手工删）：$($b.FullName)" }
+}
 Say ""
 
 # ---------------------------------------------------------------- 4 覆盖
@@ -225,13 +263,21 @@ Say "============================================================"
 if ($problems -eq 0) {
     Say "  更新完成！" -ForegroundColor Green
     Say ""
-    Say "  下一步：运行 06-部署脚本\run.bat 04 重新启动系统"
+    if ($restartService) {
+        Say "  正在重新启动服务 $svcName ..."
+        try { Start-Service -Name $svcName; Ok "服务 $svcName 已启动" }
+        catch { Warn "服务启动失败，请手工执行：net start $svcName" }
+    } else {
+        Say "  下一步：运行 06-部署脚本\run.bat 04 重新启动系统（单端口模式用 run.bat 05 的服务）"
+    }
     Say ""
-    Say "  如果代码改动后行为异常，可以回滚："
-    Say "    把 $backup"
-    Say "    里的内容覆盖回 $target"
+    Say "  如果代码改动后行为异常，可以回滚（备份目录：$backup）："
+    Say "    testRestfulProject\  → 覆盖回 $target\testRestfulProject"
+    Say "    frontend-src\        → 覆盖回 $target\frontend\22project\src"
+    Say "    frontend-dist\       → 覆盖回 $target\frontend\22project\dist"
 } else {
     Say "  更新过程中发现 $problems 个问题，请看上面的 [错误]。" -ForegroundColor Red
+    Say "  回滚：把 $backup 下的三个目录按上面列的一一对应覆盖回 $target。"
 }
 Say "============================================================"
 Read-Host "按回车退出"

@@ -28,6 +28,35 @@
 > **装成服务之后，以后开机就是跑着的**，不用再做任何操作。
 > 想手动管理：`net start ModelPlatform` / `net stop ModelPlatform`。
 
+---
+
+## ⚠️ 口径统一表（部署前必读，2026-09-27 更新）
+
+上面那套流程是**对的**，但仓库里另外几份文档（尤其《系统使用说明书》）写的是**更早的一套**，
+端口、服务名、账号数都不同。**以本表为准**，遇到冲突按本表执行：
+
+| 项目 | ✅ 正确值（以本表为准） | ❌ 旧文档里的错值 |
+|---|---|---|
+| 对外端口 | **8080**（`serve.py` 默认，`MODEL_PORT`/`--port` 可改） | 5000 |
+| 生产入口 | `venv\Scripts\python.exe serve.py --host 0.0.0.0 --port 8080 --threads 4` | `main.py`（那是**开发**入口：`debug=True` + 单线程 Werkzeug，**别用**） |
+| Windows 服务名 | **`ModelPlatform`** | `ModelManageService` |
+| 启动方式 | `net start ModelPlatform` / `run.bat 05` | — |
+| 初始账号 | **2 个**：`admin` / `Admin@2026`、`user` / `User@2026`（只有管理员/普通用户两种身份） | 「三个账号 admin/engineer/operator」 |
+| 建表后应有 | **11 张表**（多出 `Roles`/`Users`/`OperationLogs` 三张鉴权表） | 「8 张表」 |
+| `/system` 接口 | **需要登录**（`curl` 匿名会 401） | 「无需登录可直接 curl」 |
+| `/health` | 匿名可访问；但 `artifacts.count` 等字段**登录后**才返回 | 把它们写成匿名顶层字段 |
+| 令牌机制 | 标准 **JWT（HS256）**，自签、零额外依赖 | 「基于 itsdangerous 的签名令牌」 |
+| MySQL 口令 | **以 `testRestfulProject\db.env` 的实际值为准**（脚本里的 `1006` 只是模板默认值） | `1006` / `1234` / `Model@2026` 三套并存 |
+| 前端构建 | `npm run build:singleport`（等价于 `npm run build`；**不要**用 `build:dev`） | `run.bat` 帮助里的裸 `npm run build`（现已等价，但别再改回 dev 模式） |
+| 库名 | 建库脚本里写死 `model_management`；要换库名请用 `02-init-database.ps1`（Windows）/ `init-database.sh`（Linux），它们会按 `db.env` 的 `MODEL_DB_NAME` 自动替换 | 手工改 `db.env` 却没改建库脚本 → 表建到了别的库 |
+| 更新包 | 在 `tools\` 下：`make-update-package.ps1` 出包、`apply-update.ps1` 应用（会识别 `ModelPlatform` 服务、备份含 dist、回滚有据可依） | `00-check-package.ps1` 里写的 `90/91-*.ps1`（那些文件不存在，已修正检查逻辑） |
+
+**已知还需现场决策/未验证的一件事**（不属于上面任何一条，但最要命）：
+本机开发环境的 Python 是 **3.14.7 + nightly 版 TensorFlow/Keras**，而离线包（`02-Python离线依赖`）
+准备的是 **Python 3.12 + 正式版**，且 `data\models\1dcnn\model.keras` 是 nightly 版存出来的 ——
+**"正式版能否加载它"没有验证过**。交付前必须在目标机上把「加载模型 + 训一次 + 推一次」跑通；
+两边版本口径要对齐（见 `testRestfulProject\requirements.txt` 开头的说明）。
+
 **详细步骤、截图说明、以及出问题怎么排查，看 `文档\离线部署手册.md`（或 .docx）。**
 
 ---

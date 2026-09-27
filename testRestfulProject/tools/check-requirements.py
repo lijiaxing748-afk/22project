@@ -3,9 +3,16 @@
 import re
 import sys
 from collections import Counter
+from pathlib import Path
 
-req_path = sys.argv[1]
-freeze_path = sys.argv[2]
+req_path = sys.argv[1] if len(sys.argv) > 1 else str(
+    Path(__file__).resolve().parent.parent / "requirements.txt")
+freeze_path = sys.argv[2] if len(sys.argv) > 2 else None       # 不给就只做静态检查
+
+if not Path(req_path).is_file():
+    print(f"[错误] 找不到 requirements 文件：{req_path}")
+    print("        用法： python tools/check-requirements.py [requirements.txt] [pip freeze 输出]")
+    sys.exit(2)
 
 
 def parse(path):
@@ -16,7 +23,9 @@ def parse(path):
             continue
         m = re.match(r"^([A-Za-z0-9_.\-]+)\s*==\s*(.+)$", line)
         if m:
-            pkgs[m.group(1).lower().replace("_", "-")] = m.group(2).strip()
+            # ⚠️ 剥掉 PEP 508 环境标记：`pywin32==312; sys_platform == "win32"` 的版本号
+            #    不能是 `312; sys_platform == "win32"`，否则和 pip freeze 一比对必然误报。
+            pkgs[m.group(1).lower().replace("_", "-")] = m.group(2).split(";")[0].strip()
     return pkgs
 
 

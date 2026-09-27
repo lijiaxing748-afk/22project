@@ -34,7 +34,7 @@ import traceback
 from collections import Counter
 from datetime import datetime
 from pathlib import Path
-from .config import config
+from .config import config, match_dir_case_insensitive
 # ⚠️ 缓存目录必须在**第一次 import matplotlib 之前**通过环境变量指定（之后改无效）：
 # matplotlib 默认把字体缓存写到用户目录，受限环境（沙箱 / 只读 HOME）下不可写会报警甚至失败；
 # 统一挪到项目内 data/.cache/matplotlib，缓存也就跟着项目一起清理。
@@ -42,6 +42,20 @@ from .config import config
 os.environ.setdefault("MPLCONFIGDIR", str(config.data_dir / ".cache" / "matplotlib"))
 FIG_DIR = config.data_dir / "figures"
 FIG_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def _model_fig_dir(model: str) -> Path:
+    """某个模型的图库目录 `data/figures/<模型键>/`（**只解析，不建目录**）。
+
+    ⚠️ 大小写兜底：见 `config.match_dir_case_insensitive` —— 历史数据里可能存着 `MyModel` 这种
+    大小写混合的目录名，而调用方一律用小写产物键来找；不兜底的话在 Linux 上会"图库看起来是空的"。
+    出图时下层会自己 mkdir，所以这里不需要（也不应该）建目录。
+    """
+    exact = FIG_DIR / model
+    if exact.exists():
+        return exact
+    found = match_dir_case_insensitive(FIG_DIR, model)
+    return found if found is not None else exact
 _CJK_FONTS = ["Microsoft YaHei", "SimHei", "SimSun", "Noto Sans CJK SC", "Source Han Sans SC"]
 _plt = None
 def _pyplot():
@@ -105,7 +119,7 @@ def training_figures(model: str, meta: dict, extra: dict | None = None) -> dict:
     ⚠️ 出图依赖字体、matplotlib、磁盘权限等一堆训练用不到的东西，不该让它们左右结论。
     """
     extra = extra or {}
-    target = FIG_DIR / model
+    target = _model_fig_dir(model)
     figures: list[dict] = []
     try:
         plt = _pyplot()
@@ -186,7 +200,7 @@ def inference_figures(model: str, payload: dict, matrix=None) -> dict:
     落盘目录额外带 `predict-<时间戳>` 一层：同一份模型会被反复推理，
     每次都覆盖同名文件的话，历史留痕就没了。
     """
-    target = FIG_DIR / model / f"predict-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+    target = _model_fig_dir(model) / f"predict-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
     figures: list[dict] = []
     try:
         plt = _pyplot()
