@@ -682,7 +682,7 @@ Roles ─► Users ─► OperationLogs</code></pre>
         <tr><td><code>InferenceTasks</code></td><td>推理任务：锚点训练、数据集、参数、输出目录、进度</td><td>每次 <code>/predict</code></td></tr>
         <tr><td><code>InferenceResults</code></td><td>逐样本结果：窗口标识、预测类别/标签、置信度、异常分数</td><td>每条推理样本</td></tr>
         <tr><td><code>EdgeDevices</code></td><td>边缘设备（预留）：仅一行占位「本地导出」，供发布记录挂外键</td><td>建表脚本种子</td></tr>
-        <tr><td><code>Roles</code></td><td>角色：<code>admin</code> / <code>engineer</code> / <code>operator</code></td><td>首次启动种子</td></tr>
+        <tr><td><code>Roles</code></td><td>身份：<code>admin</code> 管理员 / <code>user</code> 普通用户（只有两种）</td><td>首次启动种子 + 旧角色自动收敛</td></tr>
         <tr><td><code>Users</code></td><td>用户：用户名(唯一)、<code>PasswordHash</code>(pbkdf2)、角色、<code>IsActive</code>、<code>TokenVersion</code></td><td>种子账号 + 用户管理页</td></tr>
         <tr><td><code>OperationLogs</code></td><td>操作审计：谁、什么动作、目标、结果、时间</td><td>各写接口埋点</td></tr>
       </tbody>
@@ -774,7 +774,7 @@ Roles ─► Users ─► OperationLogs</code></pre>
       <thead><tr><th>路径</th><th class="c">认证</th><th>说明</th></tr></thead>
       <tbody>
         <tr><td><code>POST /api/login/</code></td><td class="c"><span class="badge b-mute">匿名</span></td><td><strong>登录本身不做任何权限控制</strong></td></tr>
-        <tr><td><code>POST /api/register/</code></td><td class="c"><span class="badge b-mute">匿名</span></td><td><strong>自助注册</strong>（同样不做权限控制）；角色被服务端强制成 <code>operator</code>，可用 <code>MODEL_ALLOW_REGISTER=0</code> 整体关闭</td></tr>
+        <tr><td><code>POST /api/register/</code></td><td class="c"><span class="badge b-mute">匿名</span></td><td><strong>自助注册</strong>（同样不做权限控制）；身份被服务端强制成普通用户，可用 <code>MODEL_ALLOW_REGISTER=0</code> 整体关闭</td></tr>
         <tr><td><code>GET /api/captcha/</code></td><td class="c"><span class="badge b-mute">匿名</span></td><td>验证码图片（默认关闭；登录前必须可取，否则登不进去）</td></tr>
         <tr><td><code>GET /api/init/dictionary/</code> · <code>/api/init/settings/</code></td><td class="c"><span class="badge b-mute">匿名</span></td><td>字典 / 系统设置桩</td></tr>
         <tr><td><code>GET /api/system/menu_button/menu_button_all_permission/</code></td><td class="c"><span class="badge b-mute">匿名</span></td><td>按钮权限清单</td></tr>
@@ -812,7 +812,7 @@ Roles ─► Users ─► OperationLogs</code></pre>
     <p>
       ① <strong>自助注册</strong>（登录页「注册」页签，见下）；
       ② <strong>首次启动的种子账号</strong>：<code>admin</code>，以及（未配置
-      <code>MODEL_BOOTSTRAP_ADMIN_PASSWORD</code> 时）演示用的 <code>engineer</code> / <code>operator</code>；
+      <code>MODEL_BOOTSTRAP_ADMIN_PASSWORD</code> 时）演示用的 <code>user</code>（普通用户）；
       ③ <strong>管理员在「用户管理」页新建</strong>（<code>POST /api/system/user/create/</code>，需 <code>user:manage</code>）。
     </p>
     <p>
@@ -820,7 +820,7 @@ Roles ─► Users ─► OperationLogs</code></pre>
       它服务的就是"还没有账号的人"。但"匿名"不等于"随便填"，服务端有几条硬规则：
     </p>
     <ul>
-      <li><strong>角色强制 <code>operator</code></strong>：请求里带 <code>role</code>/<code>role_key</code> 会被<strong>直接忽略</strong>。
+      <li><strong>身份强制为普通用户</strong>：请求里带 <code>role</code>/<code>role_key</code> 会被<strong>直接忽略</strong>。
         否则任何人注册时把角色填成 <code>admin</code> 就是一个提权漏洞。要更高权限只能让管理员在「用户管理」页改。</li>
       <li>用户名 3~50 字符、不含空格与斜杠；密码 ≥6 位、两次输入一致。</li>
       <li>重名会被拒（数据库唯一键）。</li>
@@ -853,6 +853,19 @@ Roles ─► Users ─► OperationLogs</code></pre>
       </tbody>
     </table>
   </div>
+
+  <h3>两种身份</h3>
+  <p>
+    平台只有 <strong><code>admin</code>（管理员）</strong> 与 <strong><code>user</code>（普通用户）</strong> 两种身份，
+    差别<strong>只有三项</strong>：<strong>删除模型产物</strong>、<strong>用户管理</strong>、<strong>查看操作日志</strong>。
+    其余日常操作（训练、推理、发布、上传模型与数据集、删除发布包）两种身份都能做。
+  </p>
+  <p>
+    管理员在「用户管理」页可以<strong>把普通用户设为管理员</strong>，也可以<strong>停用 / 启用</strong>账号
+    （停用后该账号立即无法登录，记录保留）。两条自锁保护：<strong>不能改自己的角色、不能停用自己</strong>——
+    否则一键就能把最后一个管理员锁在门外。新建账号与自助注册一律<strong>默认普通用户</strong>，
+    要管理员权限只能由现有管理员去改。
+  </p>
 
   <h3>已登录之后：个人资料与修改密码在哪</h3>
   <p>
@@ -910,7 +923,7 @@ Roles ─► Users ─► OperationLogs</code></pre>
   <div class="warn">
     <b>交付前必做</b>
     <p>
-      ① <strong>删掉或改掉演示账号的口令</strong>（<code>engineer</code> / <code>operator</code> 默认口令在文档里是公开的）；
+      ① <strong>删掉或改掉演示账号的口令</strong>（<code>user</code> / <code>User@2026</code> 是公开的演示口令）；
       ② 把 <code>db.env</code> 里的 <code>MODEL_SECRET_KEY</code> 换成随机值；
       ③ 确认 <code>MODEL_AUTH_DISABLED</code> 没有被打开（打开时 <code>/health</code> 会显式回报 <code>auth_disabled</code>）；
       ④ <strong>决定要不要留自助注册</strong>：正式交付建议 <code>MODEL_ALLOW_REGISTER=0</code>；
@@ -1091,7 +1104,7 @@ venv\Scripts\python.exe serve.py
   <details>
     <summary>注册时提示"该角色不合法"或角色不是我要的</summary>
     <p>
-      注册<strong>只能</strong>拿到 <code>operator</code>，这是服务端写死的（防止注册即提权）。
+      注册<strong>只能</strong>拿到普通用户，这是服务端写死的（防止注册即提权）。
       需要训练/发布/用户管理权限，请让管理员在「用户管理」页改你的角色。
     </p>
   </details>
@@ -1159,7 +1172,7 @@ venv\Scripts\python.exe serve.py
     <div class="card">
       <span class="tag">鉴权</span>
       <h4>自助注册默认是开着的</h4>
-      <p>任何人打开登录页都能自己注册一个 <strong>operator</strong> 账号（角色被服务端锁死，提不了权）。
+      <p>任何人打开登录页都能自己注册一个<strong>普通用户</strong>账号（身份被服务端锁死，提不了权）。
         内网工具这样最省事，但<strong>交付到工厂等正式环境前建议在 <code>db.env</code> 里写
         <code>MODEL_ALLOW_REGISTER=0</code> 关掉</strong>，改由管理员按需开号，账号才可追溯。</p>
     </div>

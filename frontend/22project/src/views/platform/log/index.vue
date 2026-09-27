@@ -212,8 +212,11 @@ const ACTION_TONE: Record<string, string> = {
 
 const ROLE_NAME: Record<string, string> = {
 	admin: '管理员',
-	engineer: '工程师',
-	operator: '操作员',
+	user: '普通用户',
+	// ⚠️ 旧键保留：操作日志是**历史事实**，里面记着当时的角色（三角色时代写的
+	//    engineer / operator），日志行不该被改写；保留映射只是为了显示得可读。
+	engineer: '工程师（旧）',
+	operator: '操作员（旧）',
 };
 
 const actionLabel = (a: string) => ACTION_LABEL[a] || a || '—';

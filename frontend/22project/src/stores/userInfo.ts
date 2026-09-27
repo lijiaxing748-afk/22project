@@ -54,7 +54,8 @@ export const useUserInfo = defineStore('userInfo', {
 			],
 			// 鉴权改造新增：后端下发的**细粒度权限点列表**（auth.py 的 _ROLE_PERMS）。
 			// 用它判断"这个按钮该不该显示"，比只看 is_superuser 精确得多——
-			// engineer 不是超管，但他该能训练、该能发布。
+			// 本平台只有 admin / user 两种身份，但差异不止"超管与否"：
+			// 例如普通用户能训练、能发布，却不能删除模型产物、不能管用户。
 			// ⚠️ 前端只管**显隐**，真正的拦截在后端。藏按钮只是避免用户点出一个
 			//    403 的糟糕体验，它不是安全边界。
 			permissions: [] as string[],

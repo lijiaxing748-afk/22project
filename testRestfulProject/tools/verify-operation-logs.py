@@ -281,11 +281,11 @@ if rows:
     check("日志行含 NewID/Action/Username/CreatedDate",
           all(k in sample for k in ("Action", "Username", "CreatedDate")),
           sorted(sample.keys()))
-# operator 不该能看日志
-op_t = login("operator", "Operator@2026")
+# 普通用户不该能看日志（只有 admin 有 log:read）
+op_t = login("user", "User@2026")
 if op_t:
     st, js = req("GET", "/api/system/operation_log/", op_t)
-    check("operator 拉日志被拒", js.get("code") != 2000, js.get("msg"))
+    check("普通用户拉日志被拒", js.get("code") != 2000, js.get("msg"))
 
 # ================================================================ 汇总
 print()

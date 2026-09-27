@@ -249,11 +249,11 @@ CREATE TABLE IF NOT EXISTS `Roles` (
        RoleName 只是给人看的，改名字不影响逻辑。
        ⚠️ 权限是**写死在代码里**的（见 model_service/auth.py 的 _ROLE_PERMS），
        这张表只负责"有哪些角色、每个角色叫什么、是否启用"，不做通用的权限点配置。
-       理由：本平台角色就三个、变动极少，做成通用 RBAC 权限表属于过度设计，
+       理由：本平台只有两种身份（admin / user）、变动极少，做成通用 RBAC 权限表属于过度设计，
        而且会让"这个角色到底能干什么"变得只能查库才能回答。 */
     `RoleID`      INT           NOT NULL AUTO_INCREMENT,
-    `RoleKey`     VARCHAR(50)   NOT NULL,     -- admin / engineer / operator
-    `RoleName`    VARCHAR(100)  NOT NULL,     -- 超级管理员 / 算法工程师 / 现场操作员
+    `RoleKey`     VARCHAR(50)   NOT NULL,     -- admin / user（只有两种身份）
+    `RoleName`    VARCHAR(100)  NOT NULL,     -- 管理员 / 普通用户
     `Description` VARCHAR(500)  NULL,
     `IsActive`    TINYINT(1)    NULL DEFAULT 1,
     `CreatedDate` DATETIME(6)   NULL DEFAULT CURRENT_TIMESTAMP(6),
@@ -299,11 +299,12 @@ CREATE TABLE IF NOT EXISTS `Users` (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 /* ⚠️ 为什么**不**建 Users_Roles 中间表（多对多）：
-   本项目一人只可能有一个角色——"算法工程师兼现场操作员"这种需求从没出现过，
+   本项目一人只有一个身份（admin 或 user），不存在"兼两个角色"的需求，
    而多对多会立刻带来"取权限时要不要合并、冲突时听谁的"这类问题，
    收益为零、复杂度实打实。真需要一人多角色时再加中间表也不迟（本表 RoleKey 可留作主角色）。
    同理，RoleKey 没有加外键约束指向 Roles.RoleKey：种子数据里 Users 的插入顺序
-   与 Roles 的先后关系会让外键成为负担，而角色键的合法性在代码里已经校验了。 */
+   与 Roles 的先后关系会让外键成为负担，而角色键的合法性在代码里已经校验了。
+   ⚠️ 正因为它没有外键，db.migrate_legacy_roles() 才能安全地删掉废弃的旧角色行。 */
 
 
 /* ---------------- 11. OperationLogs ---------------- */

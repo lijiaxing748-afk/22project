@@ -82,8 +82,9 @@
 								<el-button link type="primary" @click="download(g.model, row.package)">下载</el-button>
 								<el-button link type="primary" @click="showDetail(g.model, row.package)">看内容</el-button>
 								<!-- 删除是危险操作 → 用 danger（红）而不是克制的灰色，避免误点。
-								     只对有 export:delete 的角色显示：admin / engineer 有，operator 没有
-								     （后端 DELETE 挂的是 @require_perm("export:delete")）。 -->
+								     目前 admin 与普通用户都具备 export:delete，所以实际上人人可见；
+								     保留这个 v-if 是为了以后调整权限点时，显隐逻辑不用跟着改。
+								     真正的拦截仍在后端（@require_perm("export:delete")）。 -->
 								<el-button v-if="canExportDelete" link type="danger"
 									@click="removePackage(g.model, row.package)">删除</el-button>
 							</template>

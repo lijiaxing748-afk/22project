@@ -119,7 +119,7 @@ MODEL_SECRET_KEY=用 python3 -c "import secrets;print(secrets.token_hex(32))" �
 ```
 
 > ⚠️ **不要**把 `MODEL_BOOTSTRAP_ADMIN_PASSWORD` 留空交给默认口令。
-> 默认三个账号（admin/engineer/operator）是**公开口令**，交付现场前必须改掉。
+> 默认两个账号（admin/user）是**公开口令**，交付现场前必须改掉。
 
 ### 步骤 3：安装后端依赖
 
@@ -152,7 +152,7 @@ chmod +x *.sh
 2. 应用 `sql/auth-migration.sql`（鉴权表）
 3. 逐张校验表是否就位
 
-> **账号不由 SQL 创建**：admin / engineer / operator 是后端**首次启动**时
+> **账号不由 SQL 创建**：admin / user 是后端**首次启动**时
 > 由 `bootstrap_users()` 自动建立的，口令取自 `db.env`。
 
 ### 步骤 5：安装为系统服务

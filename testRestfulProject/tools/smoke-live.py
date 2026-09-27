@@ -88,8 +88,9 @@ def main() -> int:
             x.status_code == 404 and "application/json" in x.headers.get("Content-Type", ""),
             f"-> {x.status_code} {x.headers.get('Content-Type', '')[:24]}")
 
-    print("\n--- E. 三个种子账号登录 + 权限差异（演示要点）---")
-    accts = (("admin", "Admin@2026"), ("engineer", "Engineer@2026"), ("operator", "Operator@2026"))
+    print("\n--- E. 两个种子账号登录 + 权限差异（演示要点）---")
+    # 本平台只有两种身份：admin 与 user（普通用户）。
+    accts = (("admin", "Admin@2026"), ("user", "User@2026"))
     seen = {}
     for user, pwd in accts:
         lr = requests.post(f"{base}/api/login/", json={"username": user, "password": pwd}, timeout=15)
@@ -103,20 +104,25 @@ def main() -> int:
         ui = requests.get(f"{base}/api/system/user/user_info/",
                           headers={"Authorization": f"Bearer {tok}"}, timeout=10).json()
         chk(f"{user} 可读自身信息", ui.get("code") == 2000, f"-> {ui.get('msg')}")
-        chk(f"{user} 角色正确", ui.get("data", {}).get("role_key") == user,
+        # ⚠️ 这里不能拿 username 去比角色：普通用户的用户名不一定是 "user"
+        #    （从三角色时代升级上来的库里叫 engineer / operator，角色同样已被迁成 user）。
+        chk(f"{user} 角色是 admin 或 user",
+            ui.get("data", {}).get("role_key") in ("admin", "user"),
             f"-> {ui.get('data', {}).get('role_key')} / {ui.get('data', {}).get('role_name')}")
         seen[user] = ui.get("data", {}).get("permissions", [])
         print(f"         权限 {len(seen[user])} 项: {', '.join(seen[user][:6])}{' …' if len(seen[user]) > 6 else ''}")
 
-    print("\n--- F. 权限边界（核心演示：角色不同、能做的事不同）---")
-    if "admin" in seen and "operator" in seen:
-        chk("admin 权限多于 operator", len(seen["admin"]) > len(seen["operator"]),
-            f"-> admin={len(seen['admin'])} operator={len(seen['operator'])}")
-        chk("operator 没有 train:run", "train:run" not in seen["operator"])
-        chk("admin 有 train:run", "train:run" in seen["admin"])
-    if "engineer" in seen:
-        chk("engineer 有 train:run（能训练）", "train:run" in seen["engineer"])
-        chk("engineer 没有 user:manage（不能管用户）", "user:manage" not in seen["engineer"])
+    print("\n--- F. 权限边界（核心演示：身份不同、能做的事不同）---")
+    if "admin" in seen and "user" in seen:
+        chk("admin 权限多于普通用户", len(seen["admin"]) > len(seen["user"]),
+            f"-> admin={len(seen['admin'])} user={len(seen['user'])}")
+        chk("普通用户**没有**用户管理", "user:manage" not in seen["user"])
+        chk("普通用户**没有**查看操作日志", "log:read" not in seen["user"])
+        chk("普通用户**没有**删除模型产物", "model:delete" not in seen["user"])
+        chk("普通用户有 train:run（能训练）", "train:run" in seen["user"])
+        chk("普通用户有 predict:run（能推理）", "predict:run" in seen["user"])
+        chk("admin 三项管理员权限齐全",
+            {"user:manage", "log:read", "model:delete"} <= set(seen["admin"]))
 
     print("\n--- G. 鉴权拦截 ---")
     x = requests.post(f"{base}/train", json={}, timeout=10)

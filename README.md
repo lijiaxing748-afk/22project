@@ -124,12 +124,16 @@ npm run dev        # → http://127.0.0.1:8080
 
 默认账号：`admin` / `Admin@2026`。**登录是真校验的**——`model_service/dvadmin.py::login()`
 会查 `Users` 表、用 `auth.verify_password()` 校验 pbkdf2 哈希、再校验 `IsActive`，通过才签发令牌；
-业务接口另挂角色权限装饰器（如 `train:run`、`model:delete`）。
+业务接口另挂权限装饰器（如 `train:run`、`model:delete`）。
+
+**只有两种身份**：`admin`（管理员）与 `user`（普通用户）。差别只有三项——
+**删除模型产物、用户管理、查看操作日志**；日常干活（训练/推理/发布/上传模型与数据集）两种身份都能做。
+管理员在「用户管理」页可以把普通用户**设为管理员**，也可以**停用**某个账号。
 
 **登录页有三个页签**：账号登录、**注册**（`MODEL_ALLOW_REGISTER` 控制，默认开）、
 **初次登录修改密码**（该账号 `PwdChangeCount=0` 时只显示这一个）。
 
-- **自助注册**：`POST /api/register/`，与登录一样是匿名接口。账号角色被服务端**强制成 `operator`**
+- **自助注册**：`POST /api/register/`，与登录一样是匿名接口。账号角色被服务端**强制成 `user`**
   （请求里带 `role` 会被忽略，防注册即提权），注册成功后自动登录进首页。
   正式交付建议在 `db.env` 里设 `MODEL_ALLOW_REGISTER=0`，改由管理员开号。
 - **修改密码 / 个人资料**：登录后右上角头像下拉菜单里。
@@ -137,8 +141,10 @@ npm run dev        # → http://127.0.0.1:8080
 
 > ⚠️ 本文档此前写的"任意用户名 + 任意密码（兼容层不校验）"是**错的**，那是早期兼容层的桩行为，
 > 早已被真正的鉴权取代（见 `项目技术详解.md` 的 Bug 台账）。
-> 未配 `MODEL_BOOTSTRAP_ADMIN_PASSWORD` 时，首次启动还会连带建 `engineer` / `Engineer@2026`、
-> `operator` / `Operator@2026` 两个演示号——**交付工厂前请删掉它们或改掉口令**。
+> 未配 `MODEL_BOOTSTRAP_ADMIN_PASSWORD` 时，首次启动还会连带建 `user` / `User@2026`
+> 一个演示用的普通账号——**交付工厂前请删掉它或改掉口令**。
+> 早期版本是 `engineer` / `operator` 三个角色，现已收敛为两种身份；老库升级时
+> 这两个账号的角色会被自动迁成 `user`（用户名不变）。
 
 ### 两个地址
 

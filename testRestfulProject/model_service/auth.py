@@ -8,7 +8,7 @@
 设计取向（三条，都影响了下文写法）：
 
 1. **权限写死在代码里，不建通用权限表。**
-   本平台角色就三个（admin / engineer / operator），变动极少。做成
+   本平台只有两种身份（admin / user），变动极少。做成
    "角色表 + 权限表 + 角色权限关联 + 前端按钮权限点"那套通用 RBAC，收益是
    "不用改代码就能加角色"——而这个场景根本没有这个需求；代价是
    "这个角色到底能干什么"变得只能查库才能回答。所以 `_ROLE_PERMS` 直接写在
@@ -38,11 +38,23 @@ from .config import config
 
 # ---------------------------------------------------------------- 角色与权限
 
-# 三个角色。值是**稳定标识**，存在 Users.RoleKey 里，前端也按它判按钮显隐，
+# 两种身份。值是**稳定标识**，存在 Users.RoleKey 里，前端也按它判按钮显隐，
 # 所以不能随便改字面量（改了要同时更新数据库里的存量用户）。
-ROLE_ADMIN = "admin"          # 超级管理员：全部权限，含用户管理
-ROLE_ENGINEER = "engineer"    # 算法工程师：训练/推理/发布/删除模型
-ROLE_OPERATOR = "operator"    # 现场操作员：只能看和跑推理，不能训练、不能发布
+ROLE_ADMIN = "admin"          # 管理员：全部权限，含用户管理与操作日志
+ROLE_USER = "user"            # 普通用户：训练/推理/发布/上传模型与数据集；不含删除模型产物、用户管理、操作日志
+
+# 历史键名（曾经是 admin / engineer / operator 三种角色）统一按"普通用户"处理。
+# ⚠️ 这一层别名**必须保留**：perms_of() 对未知角色返回**空集**（刻意的失败方向），
+#    所以库里的旧行（engineer / operator）一旦没被迁移，那人登进去会**什么权限都没有**——
+#    表现为"能登录但每个按钮都提示没权限"，很难查。有了别名，即使迁移没跑也不会锁死。
+_LEGACY_ROLE_ALIASES = {"engineer": ROLE_USER, "operator": ROLE_USER}
+
+
+def normalize_role(role_key: str | None) -> str:
+    """把历史角色键归一到当前两种身份之一。未知键原样返回（交由 perms_of 判空）。"""
+    key = (role_key or "").strip()
+    return _LEGACY_ROLE_ALIASES.get(key, key)
+
 
 # 权限点 → 中文名。**这是权限的唯一定义处**，加权限就在这里加一行。
 PERM_LABELS = {
@@ -60,24 +72,28 @@ PERM_LABELS = {
 
 # 角色 → 权限集合。用 frozenset 是因为它只做"在不在里面"的判断，且不可变，
 # 避免有人不小心在别处 .add() 改掉全局定义。
+#
+# ⚠️ admin 与 user 的差别**只有三项**：删除模型产物、用户管理、查看操作日志。
+#    这三项都是"会毁东西或涉及别的账号"的操作，普通用户不该有；
+#    其余日常干活（训练/推理/发布/上传/删发布包）两种身份都能做。
 _ROLE_PERMS: dict[str, frozenset[str]] = {
-    ROLE_ADMIN: frozenset(PERM_LABELS),          # 管理员拿全部，含 user:manage
-    ROLE_ENGINEER: frozenset({
-        "model:read", "model:write", "model:delete",
+    ROLE_ADMIN: frozenset(PERM_LABELS),          # 管理员拿全部
+    ROLE_USER: frozenset({
+        "model:read", "model:write",
         "train:run", "predict:run",
         "export:run", "export:delete", "dataset:write",
     }),
-    ROLE_OPERATOR: frozenset({
-        "model:read", "predict:run",
-    }),
 }
+
+# **代码承认的角色清单**（顺序即前端下拉框顺序）。对外一律以它为准：
+# 数据库里残留的旧角色行不会被当成"可选角色"，否则选了也会在 user_create 里被拒。
+KNOWN_ROLES: tuple[str, ...] = (ROLE_ADMIN, ROLE_USER)
 
 # 角色显示名（给前端展示 + 兜底）。数据库 Roles 表里也有一份，
 # 以数据库为准；这里的是"库里查不到时"的兜底，保证界面不会显示空。
 ROLE_NAMES = {
-    ROLE_ADMIN: "超级管理员",
-    ROLE_ENGINEER: "算法工程师",
-    ROLE_OPERATOR: "现场操作员",
+    ROLE_ADMIN: "管理员",
+    ROLE_USER: "普通用户",
 }
 
 
@@ -87,13 +103,16 @@ def perms_of(role_key: str | None) -> list[str]:
     未知角色返回**空集**而不是全部：这是刻意的失败方向。
     如果哪天数据库里出现一个拼错的 RoleKey，宁可让人登进去什么都干不了、
     立刻发现异常，也不要因为兜底给全权限而悄悄提权。
+
+    ⚠️ 历史角色键（engineer / operator）先经 normalize_role() 归一，
+    所以老库没迁移也能正常拿到"普通用户"的权限。
     """
-    return sorted(_ROLE_PERMS.get((role_key or "").strip(), frozenset()))
+    return sorted(_ROLE_PERMS.get(normalize_role(role_key), frozenset()))
 
 
 def role_name_of(role_key: str | None) -> str:
     """角色键 → 中文名，查不到就原样返回（便于发现拼错）。"""
-    key = (role_key or "").strip()
+    key = normalize_role(role_key)
     return ROLE_NAMES.get(key, key or "未知角色")
 
 
@@ -376,7 +395,9 @@ def login_payload(user: dict) -> dict:
     这里把"真实角色"映射进去，是本模块对外的**唯一出口**——
     以前那个"恒定超管"的假身份就是在这个位置，现在换成实打实查库的结果。
     """
-    role_key = user.get("RoleKey") or ROLE_OPERATOR
+    # 归一历史角色键：老库里的 engineer / operator 一律按"普通用户"下发，
+    # 否则前端拿到的 role_key 是代码里已不存在的值，权限列表也会是空。
+    role_key = normalize_role(user.get("RoleKey")) or ROLE_USER
     # 「初次登录强制改密」的依据：0 = 还没改过初始口令（前端 index.vue 据此切到 changePwd 页签）。
     # ⚠️ 列缺失（旧库还没跑增量迁移）或值为 NULL 时**必须退化成 1**，绝不能退化成 0 ——
     #    那会把所有人（包括管理员自己）拦在"初次登录修改密码"页上。

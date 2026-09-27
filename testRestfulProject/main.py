@@ -106,15 +106,28 @@ def _bootstrap_auth():
     from model_service import auth
     from model_service.config import config
     try:
+        # 先把"三角色时代"的存量数据收敛成两种身份（admin / user）。
+        # ⚠️ 必须**在种子账号之前**跑：老库上 Users 非空，bootstrap_users 会直接返回，
+        #    若放到后面，旧角色键就永远没机会被迁走 —— 而 perms_of() 对未知角色返回空集，
+        #    那些用户会"能登录但什么权限都没有"。
+        role_stat = database.migrate_legacy_roles()
+        if role_stat.get("users_to_user") or role_stat.get("roles_removed"):
+            print(f"[鉴权] 角色已收敛为两种身份（admin / user）："
+                  f"{role_stat['users_to_user']} 个用户改为普通用户，"
+                  f"清理 {role_stat['roles_removed']} 条废弃角色行")
+        if role_stat.get("error"):
+            print(f"[鉴权] ⚠️ 角色迁移未完成（{role_stat['error']}）；"
+                  f"旧角色键仍按普通用户处理，不会锁死账号")
+
         n = database.bootstrap_users(
             auth.hash_password(config.bootstrap_admin_password or "Admin@2026"),
-            # 没显式配 MODEL_BOOTSTRAP_ADMIN_PASSWORD 时，连带造两个演示账号，
+            # 没显式配 MODEL_BOOTSTRAP_ADMIN_PASSWORD 时，连带造一个演示用普通账号，
             # 方便"发给老师前先自己试"。真要交付工厂时，env 里配上自己的口令
             # 并把 with_samples 关掉（见 README）就不会留下默认口令的账号。
             with_samples=not config.bootstrap_admin_password,
         )
         if n:
-            print(f"[鉴权] 已创建 {n} 个初始账号（admin / engineer / operator）")
+            print(f"[鉴权] 已创建 {n} 个初始账号（admin / user）")
         if config.auth_disabled:
             print("[鉴权] ⚠️ 鉴权已被 MODEL_AUTH_DISABLED 关闭，任何人都能调用接口！")
         elif config.auth_key_is_default:

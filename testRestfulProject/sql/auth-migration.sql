@@ -34,7 +34,7 @@ CREATE TABLE IF NOT EXISTS `Roles` (
        ⚠️ 权限是**写死在代码里**的（见 model_service/auth.py 的 _ROLE_PERMS），
        这张表只负责"有哪些角色、每个角色叫什么、是否启用"，不做通用的权限点配置。 */
     `RoleID`      INT           NOT NULL AUTO_INCREMENT,
-    `RoleKey`     VARCHAR(50)   NOT NULL,     -- admin / engineer / operator
+    `RoleKey`     VARCHAR(50)   NOT NULL,     -- admin / user（只有两种身份；旧的 engineer/operator 见文末迁移段）
     `RoleName`    VARCHAR(100)  NOT NULL,     -- 超级管理员 / 算法工程师 / 现场操作员
     `Description` VARCHAR(500)  NULL,
     `IsActive`    TINYINT(1)    NULL DEFAULT 1,
@@ -96,12 +96,27 @@ CREATE TABLE IF NOT EXISTS `OperationLogs` (
 
 /* ---------------- 初始角色数据 ---------------- */
 /* ⚠️ 只插角色，不插用户。用户由 bootstrap_users() 在首次启动时创建，
-   口令哈希现算 —— 这样每台机器口令各自独立，也不会把哈希写进版本库。 */
+   口令哈希现算 —— 这样每台机器口令各自独立，也不会把哈希写进版本库。
+   ⚠️ 本平台只有**两种身份**：admin（管理员）与 user（普通用户）。 */
 INSERT IGNORE INTO `Roles` (`RoleKey`, `RoleName`, `Description`, `IsActive`, `CreatedDate`)
 VALUES
- ('admin',    '超级管理员', '全部权限，含用户管理与操作日志',                     1, CURRENT_TIMESTAMP(6)),
- ('engineer', '算法工程师', '训练、推理、发布、删除模型；不含用户管理/日志',        1, CURRENT_TIMESTAMP(6)),
- ('operator', '现场操作员', '只能浏览模型与产物、发起推理；不能训练/发布/删除',     1, CURRENT_TIMESTAMP(6));
+ ('admin', '管理员',   '全部权限，含用户管理与操作日志；可把普通用户设为管理员或停用', 1, CURRENT_TIMESTAMP(6)),
+ ('user',  '普通用户', '训练、推理、发布、上传模型与数据集；不含删除模型产物、用户管理、操作日志', 1, CURRENT_TIMESTAMP(6));
+
+
+/* ---------------- 增量：三角色 → 两种身份（admin / user） ----------------
+   背景：早期是 admin / engineer / operator 三种角色，后收敛成 admin / user。
+   ⚠️ 为什么必须跑：auth.perms_of() 对**未知角色返回空集**（刻意的失败方向），
+      所以库里的旧角色键不迁走，那些用户登进去会"什么权限都没有"——
+      表现为"能登录、但每个按钮都提示没权限"，很难查。
+   ⚠️ 后端启动时 db.migrate_legacy_roles() 会自动跑一次（幂等），
+      正常情况下不需要手工执行本段；留着它是给"只想改库、不想重启服务"的场合。
+   ⚠️ 删除旧角色行是安全的：Users.RoleKey 对 Roles.RoleKey **没有外键**
+      （见 schema_mysql.sql 里"为什么不建中间表"的说明）。 */
+UPDATE `Users` SET `RoleKey` = 'user' WHERE `RoleKey` IN ('engineer', 'operator');
+DELETE FROM `Roles` WHERE `RoleKey` IN ('engineer', 'operator');
+INSERT IGNORE INTO `Roles` (`RoleKey`, `RoleName`, `Description`, `IsActive`, `CreatedDate`)
+VALUES ('user', '普通用户', '训练、推理、发布、上传模型与数据集；不含删除模型产物、用户管理、操作日志', 1, CURRENT_TIMESTAMP(6));
 
 
 /* ---------------- 增量：Users.PwdChangeCount（初次登录强制改密） ----------------
@@ -135,6 +150,6 @@ DEALLOCATE PREPARE stmt;
 
 /* ⚠️ 跑完本脚本**还不能登录** —— Users 表是空的，没有任何账号。
    启动一次后端服务，会看到：
-       [鉴权] 已创建 3 个初始账号（admin / engineer / operator）
-   默认口令是 Admin@2026 / Engineer@2026 / Operator@2026（公开的演示口令），
+       [鉴权] 已创建 2 个初始账号（admin / user）
+   默认口令是 Admin@2026 / User@2026（公开的演示口令），
    交付现场前请至少改掉 admin 的。 */

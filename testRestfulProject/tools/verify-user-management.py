@@ -55,7 +55,10 @@ def req(method: str, path: str, token: str | None = None, body: dict | None = No
 def login(username: str, password: str):
     st, js = req("POST", "/api/login/", body={"username": username, "password": password})
     if js.get("code") == 2000:
-        return js["data"]["access"], js["data"].get("user")
+        # ⚠️ 第二个返回值是**整个 data**（= auth.login_payload）。
+        #    以前这里写的是 `js["data"].get("user")`，而 login_payload 里**没有** user 子键，
+        #    所以第二个返回值恒为 None —— 靠它判断角色的断言等于没判断。已修。
+        return js["data"]["access"], js["data"]
     return None, js.get("msg")
 
 
@@ -77,16 +80,30 @@ print("=" * 74)
 print("  用户管理接口端到端验证")
 print("=" * 74)
 
-# ---------------------------------------------------------------- 登录三个账号
-print("\n[1] 三个种子账号登录")
-admin_t, admin_u = login("admin", "Admin@2026")
-check("admin 登录成功", bool(admin_t), admin_u)
-eng_t, eng_u = login("engineer", "Engineer@2026")
-check("engineer 登录成功", bool(eng_t), eng_u)
-op_t, op_u = login("operator", "Operator@2026")
-check("operator 登录成功", bool(op_t), op_u)
+# ---------------------------------------------------------------- 登录种子账号
+print("\n[1] 种子账号登录（本平台只有两种身份：admin / user）")
+admin_t, admin_info = login("admin", "Admin@2026")
+check("admin 登录成功", bool(admin_t), admin_info)
+check("admin 的角色是 admin", (admin_info or {}).get("role_key") == "admin", (admin_info or {}).get("role_key"))
 
-if not (admin_t and eng_t and op_t):
+# "普通用户"那个种子账号的名字**视数据库新旧而定**：
+#   · 全新安装 → bootstrap_users() 建的是 `user` / User@2026；
+#   · 从三角色时代升级上来的库 → 原有的 engineer / operator 账号仍在（角色已被迁成 user），
+#     用户名不会自动改名。
+# 所以这里按顺序试一遍，取第一个"能登录且不是 admin"的账号，脚本在新老库上都能跑。
+NORMAL_CANDIDATES = (("user", "User@2026"), ("engineer", "Engineer@2026"), ("operator", "Operator@2026"))
+user_t, user_info, user_name = None, None, None
+for _name, _pwd in NORMAL_CANDIDATES:
+    _t, _info = login(_name, _pwd)
+    if _t and (_info or {}).get("role_key") != "admin":
+        user_t, user_info, user_name = _t, _info, _name
+        break
+check("普通用户登录成功", bool(user_t), f"试过 {[c[0] for c in NORMAL_CANDIDATES]}，理由：{user_info}")
+check("普通用户的角色是 user（旧键 engineer/operator 已归一）",
+      (user_info or {}).get("role_key") == "user", (user_info or {}).get("role_key"))
+print(f"  本轮用作「普通用户」的账号：{user_name}")
+
+if not (admin_t and user_t):
     print("\n  种子账号登录失败，后续测试无法进行。请先跑 reset-login-accounts.py")
     sys.exit(1)
 
@@ -102,13 +119,11 @@ def menu_titles(token):
 
 
 admin_menu = menu_titles(admin_t)
-eng_menu = menu_titles(eng_t)
-op_menu = menu_titles(op_t)
+user_menu = menu_titles(user_t)
 
 check("admin 菜单含「用户管理」", admin_menu is not None and "用户管理" in admin_menu, admin_menu)
-check("engineer 菜单不含「用户管理」", eng_menu is not None and "用户管理" not in eng_menu, eng_menu)
-check("operator 菜单不含「用户管理」", op_menu is not None and "用户管理" not in op_menu, op_menu)
-check("三个角色都能看到系统管理", all(m and "系统管理" in m for m in (admin_menu, eng_menu, op_menu)))
+check("普通用户菜单不含「用户管理」", user_menu is not None and "用户管理" not in user_menu, user_menu)
+check("两种身份都能看到系统管理", all(m and "系统管理" in m for m in (admin_menu, user_menu)))
 
 # ---------------------------------------------------------------- 列表权限隔离
 print("\n[3] 列表接口权限隔离")
@@ -123,21 +138,24 @@ check("列表所有行都没有 PasswordHash 键",
       all(not any("pass" in k.lower() for k in r.keys()) for r in admin_rows),
       [list(r.keys()) for r in admin_rows[:1]])
 
-st, js = req("GET", "/api/system/user/", eng_t)
-check("engineer 拉用户列表被拒", rejected(js), js.get("msg"))
-
-st, js = req("GET", "/api/system/user/", op_t)
-check("operator 拉用户列表被拒", rejected(js), js.get("msg"))
+st, js = req("GET", "/api/system/user/", user_t)
+check("普通用户拉用户列表被拒", rejected(js), js.get("msg"))
 
 st, js = req("GET", "/api/system/role/", admin_t)
 check("admin 能拉角色列表", envelope_ok(js), js.get("msg"))
 roles = js.get("data", {}).get("results", []) if envelope_ok(js) else []
 role_keys = sorted(r["key"] for r in roles)
-check("角色列表含 admin/engineer/operator", role_keys == ["admin", "engineer", "operator"], role_keys)
+# ⚠️ 角色清单以**代码**为准（auth.KNOWN_ROLES），不是数据库——库里可能残留废弃的旧角色行
+check("角色列表恰好是 admin / user 两种", role_keys == ["admin", "user"], role_keys)
 check("角色带权限点", all(isinstance(r.get("permissions"), list) for r in roles))
-check("operator 的权限点只有 2 个（model:read, predict:run）",
-      sorted(next((r["permissions"] for r in roles if r["key"] == "operator"), [])) == ["model:read", "predict:run"],
-      next((r["permissions"] for r in roles if r["key"] == "operator"), None))
+_admin_perms = sorted(next((r["permissions"] for r in roles if r["key"] == "admin"), []))
+_user_perms = sorted(next((r["permissions"] for r in roles if r["key"] == "user"), []))
+check("admin 拥有全部权限点（含 user:manage / log:read / model:delete）",
+      {"user:manage", "log:read", "model:delete"} <= set(_admin_perms), _admin_perms)
+check("普通用户能训练/推理/发布/上传数据集",
+      {"train:run", "predict:run", "export:run", "dataset:write", "model:write"} <= set(_user_perms), _user_perms)
+check("普通用户**没有**用户管理/操作日志/删除模型产物",
+      not ({"user:manage", "log:read", "model:delete"} & set(_user_perms)), _user_perms)
 
 # ---------------------------------------------------------------- 新建用户
 print("\n[4] 新建用户")
@@ -152,13 +170,13 @@ TESTPWD = "TestE2E@2026"
 print(f"  本轮测试账号：{TESTUSER}")
 
 st, js = req("POST", "/api/system/user/create/", admin_t,
-             {"username": TESTUSER, "password": TESTPWD, "role_key": "operator", "name": "E2E 测试账号"})
+             {"username": TESTUSER, "password": TESTPWD, "role_key": "user", "name": "E2E 测试账号"})
 first_created = envelope_ok(js)
 check("新建用户成功", first_created, js.get("msg"))
 
 # 重复用户名必须是**可读的业务失败**（HTTP 200 + code!=2000），不能是 500
 st, js = req("POST", "/api/system/user/create/", admin_t,
-             {"username": TESTUSER, "password": TESTPWD, "role_key": "operator"})
+             {"username": TESTUSER, "password": TESTPWD, "role_key": "user"})
 check("重复用户名返回可读提示（HTTP 200 + code!=2000）", st == 200 and rejected(js),
       f"http={st} msg={js.get('msg')}")
 check("重复用户名的提示写明原因", "已存在" in str(js.get("msg", "")), js.get("msg"))
@@ -178,46 +196,74 @@ check("新用户出现在列表里", test_row is not None)
 if not test_row:
     print("\n  找不到该用户，终止后续用例")
     sys.exit(1)
-check("新用户默认角色是 operator", test_row["role_info"]["key"] == "operator", test_row["role_info"])
+check("新用户默认角色是 user", test_row["role_info"]["key"] == "user", test_row["role_info"])
 check("新用户默认状态正常", test_row["is_active"] is True)
 
 # 密码不能为空 / 太短
-st, js = req("POST", "/api/system/user/create/", admin_t, {"username": "x_empty_pwd", "password": "", "role_key": "operator"})
+st, js = req("POST", "/api/system/user/create/", admin_t, {"username": "x_empty_pwd", "password": "", "role_key": "user"})
 check("空密码被拒", rejected(js), js.get("msg"))
-st, js = req("POST", "/api/system/user/create/", admin_t, {"username": "x_short_pwd", "password": "123", "role_key": "operator"})
+st, js = req("POST", "/api/system/user/create/", admin_t, {"username": "x_short_pwd", "password": "123", "role_key": "user"})
 check("短密码（<6）被拒", rejected(js), js.get("msg"))
 st, js = req("POST", "/api/system/user/create/", admin_t, {"username": "x_bad_role", "password": "GoodPwd@2026", "role_key": "superuser"})
 check("非法角色被拒", rejected(js), js.get("msg"))
+# 历史角色键也必须被拒：库里有旧行，不代表还能拿它建号
+st, js = req("POST", "/api/system/user/create/", admin_t, {"username": "x_legacy_role", "password": "GoodPwd@2026", "role_key": "engineer"})
+check("历史角色键（engineer）不能再用来建号", rejected(js), js.get("msg"))
 
 # 非管理员不能建号
-st, js = req("POST", "/api/system/user/create/", eng_t, {"username": "x_by_eng", "password": "GoodPwd@2026", "role_key": "operator"})
-check("engineer 建号被拒", rejected(js), js.get("msg"))
+st, js = req("POST", "/api/system/user/create/", user_t, {"username": "x_by_user", "password": "GoodPwd@2026", "role_key": "user"})
+check("普通用户建号被拒", rejected(js), js.get("msg"))
 
 # ---------------------------------------------------------------- 新账号能登录
 print("\n[5] 新账号登录与权限生效")
-test_t, test_u = login(TESTUSER, TESTPWD)
-check("新账号可用新密码登录", bool(test_t), test_u)
+test_t, test_info = login(TESTUSER, TESTPWD)
+check("新账号可用新密码登录", bool(test_t), test_info)
 if test_t:
+    check("新账号拿到的是普通用户身份", (test_info or {}).get("role_key") == "user", (test_info or {}).get("role_key"))
+    check("新账号有 train:run（普通用户能训练，不是空权限）",
+          "train:run" in ((test_info or {}).get("permissions") or []), (test_info or {}).get("permissions"))
     st, js = req("GET", "/api/system/user/", test_t)
-    check("新账号（operator）拉用户列表被拒", rejected(js), js.get("msg"))
-    st, js = req("POST", "/train", test_t, {"model": "1dcnn"})
-    check("新账号（operator）发起训练被拒(403)", st == 403, f"http={st}")
+    check("新账号（普通用户）拉用户列表被拒", rejected(js), js.get("msg"))
+    st, js = req("GET", "/api/system/operation_log/", test_t)
+    check("新账号（普通用户）看操作日志被拒", rejected(js), js.get("msg"))
 
-# ---------------------------------------------------------------- 编辑：改角色
-print("\n[6] 编辑用户：改角色 / 启停 / 自锁保护")
-st, js = req("PUT", f"/api/system/user/{test_row['id']}/", admin_t, {"role_key": "engineer"})
-check("改角色为 engineer 成功", envelope_ok(js), js.get("msg"))
+# ---------------------------------------------------------------- 编辑：提权 / 停用
+print("\n[6] 编辑用户：设为管理员 / 降回 / 停用启用 / 自锁保护")
 
-# ⚠️ 权限是**服务端按角色现算**的，不写进令牌（见 auth.issue_token 的说明）。
-#    所以改角色后必须**重新登录**拿新令牌——旧令牌里 r=operator，鉴权时按当前库里的
-#    角色算，其实也已经生效了。这里用新登录的令牌验证"角色真的变了"。
-relogin_t, relogin_u = login(TESTUSER, TESTPWD)
-check("改角色后重新登录成功", bool(relogin_t), relogin_u)
-if relogin_t:
-    st, js = req("GET", "/api/system/user/", relogin_t)
-    check("改角色后新令牌可用（不再被拒登录）", envelope_ok(js) or rejected(js), js.get("msg"))
-    # engineer 没有 user:manage，拉用户列表仍应被拒——证明"改成 engineer 而不是 admin"
-    check("engineer 仍无用户列表权限", rejected(js), js.get("msg"))
+# ① admin 把普通用户**设为管理员** —— 两种身份模型里的核心操作
+st, js = req("PUT", f"/api/system/user/{test_row['id']}/", admin_t, {"role_key": "admin"})
+check("把普通用户设为管理员成功", envelope_ok(js), js.get("msg"))
+
+# ⚠️ 权限是**服务端按当前角色现算**的（不写进令牌，见 auth.issue_token 的说明），
+#    所以必须重新登录拿新令牌再验证 —— 旧令牌的 r=user，但是鉴权时按库里当前角色算，
+#    严格说也会生效；这里重新登录是为了让断言更贴近真实使用路径。
+promoted_t, promoted_info = login(TESTUSER, TESTPWD)
+check("提权后重新登录成功", bool(promoted_t), promoted_info)
+if promoted_t:
+    check("提权后身份真的是 admin", (promoted_info or {}).get("role_key") == "admin", (promoted_info or {}).get("role_key"))
+    st, js = req("GET", "/api/system/user/", promoted_t)
+    check("提权后能拉用户列表（提权真的生效）", envelope_ok(js), js.get("msg"))
+
+# ② 降回普通用户 —— 权限必须收回
+st, js = req("PUT", f"/api/system/user/{test_row['id']}/", admin_t, {"role_key": "user"})
+check("降回普通用户成功", envelope_ok(js), js.get("msg"))
+demoted_t, demoted_info = login(TESTUSER, TESTPWD)
+if demoted_t:
+    check("降回后身份是 user", (demoted_info or {}).get("role_key") == "user", (demoted_info or {}).get("role_key"))
+    st, js = req("GET", "/api/system/user/", demoted_t)
+    check("降回后用户列表重新被拒（权限已收回）", rejected(js), js.get("msg"))
+
+# ③ admin 停用普通用户 —— 停用后必须登不进来
+st, js = req("PUT", f"/api/system/user/{test_row['id']}/", admin_t, {"is_active": False})
+check("停用普通用户成功", envelope_ok(js), js.get("msg"))
+disabled_t, disabled_msg = login(TESTUSER, TESTPWD)
+check("被停用后无法登录", not disabled_t, disabled_msg)
+
+# ④ 重新启用 —— 又能登录
+st, js = req("PUT", f"/api/system/user/{test_row['id']}/", admin_t, {"is_active": True})
+check("重新启用成功", envelope_ok(js), js.get("msg"))
+enabled_t, enabled_info = login(TESTUSER, TESTPWD)
+check("重新启用后能登录", bool(enabled_t), enabled_info)
 
 # 非法角色
 st, js = req("PUT", f"/api/system/user/{test_row['id']}/", admin_t, {"role_key": "not_a_role"})
@@ -229,14 +275,14 @@ check("空修改被拒（没有要修改的内容）", rejected(js), js.get("msg
 
 # 自锁保护：admin 不能改自己的角色 / 停用自己
 admin_id = next(r["id"] for r in admin_rows if r["username"] == "admin")
-st, js = req("PUT", f"/api/system/user/{admin_id}/", admin_t, {"role_key": "operator"})
+st, js = req("PUT", f"/api/system/user/{admin_id}/", admin_t, {"role_key": "user"})
 check("admin 不能改自己的角色", rejected(js), js.get("msg"))
 st, js = req("PUT", f"/api/system/user/{admin_id}/", admin_t, {"is_active": False})
 check("admin 不能停用自己", rejected(js), js.get("msg"))
 
 # 不存在的 ID：只要**不崩**（不 500）就算通过。UPDATE 影响 0 行是合法的结果，
 # 后端回 updated:0 或可读提示都算正常，关键是别把服务打挂。
-st, js = req("PUT", "/api/system/user/999999/", admin_t, {"role_key": "operator"})
+st, js = req("PUT", "/api/system/user/999999/", admin_t, {"role_key": "user"})
 check("编辑不存在的用户不崩溃（非 500）", st == 200 and js is not None, f"http={st} js={js}")
 
 # ---------------------------------------------------------------- 重置密码
@@ -261,7 +307,7 @@ check("新密码可登录", bool(new_t), new_u)
 # 旧令牌必须立刻失效（改密码时 TokenVersion+1）
 if pre_reset_t:
     # ⚠️ 用 user_info 而不是 /api/system/user/ 来验证：
-    #    后者需要 user:manage，该账号是 engineer，本来就会被拒，
+    #    后者需要 user:manage，该账号是普通用户，本来就会被拒，
     #    无法区分"令牌失效"与"权限不足"。user_info 只要求"已登录"，
     #    被拒就一定是因为令牌失效。
     st, js = req("GET", "/api/system/user/user_info/", pre_reset_t)
@@ -293,8 +339,8 @@ for act in ("create_user", "update_user", "reset_password"):
     check(f"日志含 {act}", act in actions, sorted(set(actions)))
 check("日志含登录记录", "login" in actions)
 
-st, js = req("GET", "/api/system/operation_log/", eng_t)
-check("engineer 拉操作日志被拒", rejected(js), js.get("msg"))
+st, js = req("GET", "/api/system/operation_log/", user_t)
+check("普通用户拉操作日志被拒", rejected(js), js.get("msg"))
 
 # ---------------------------------------------------------------- 清理
 print("\n[10] 清理测试账号")

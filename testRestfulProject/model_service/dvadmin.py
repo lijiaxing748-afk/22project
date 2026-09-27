@@ -206,9 +206,9 @@ def build_blueprint() -> Blueprint:
         给它加权限等于谁都用不了（与 /api/login/ 同一个道理）。
 
         ⚠️ 但"匿名"不等于"什么都能填"，下面几条都是硬规则：
-          · **角色强制 operator**，绝不接受前端传来的 role_key/role。
+          · **角色强制普通用户（user）**，绝不接受前端传来的 role_key/role。
             否则任何人注册时把角色填成 admin 就是一个提权漏洞。
-            要更高权限，只能让管理员在「用户管理」页改（需要 user:manage）。
+            要管理员权限，只能让管理员在「用户管理」页改（需要 user:manage）。
           · 用户名/口令规则与「用户管理」页的新建保持一致：非空、口令 ≥6 位、
             两次输入一致（`password_regain`）。前端表单也会校验，但**客户端校验可以绕过**，
             所以这里再留一道。
@@ -256,7 +256,7 @@ def build_blueprint() -> Blueprint:
 
         try:
             uid = database.create_user(
-                username, auth.hash_password(password), auth.ROLE_OPERATOR,
+                username, auth.hash_password(password), auth.ROLE_USER,
                 display_name=name or username,
                 dept_name="模型管理平台",
                 email=(body.get("email") or "").strip() or None,
@@ -271,8 +271,8 @@ def build_blueprint() -> Blueprint:
         # g.current_user 是空的，日志会出现一条"操作人不明"的记录。
         g.current_user = database.user_by_id(uid) or {"UserID": uid, "Username": username}
         auth.log_operation("register", target=username,
-                           detail={"role": auth.ROLE_OPERATOR, "user_id": uid})
-        return _ok({"username": username, "role_key": auth.ROLE_OPERATOR},
+                           detail={"role": auth.ROLE_USER, "user_id": uid})
+        return _ok({"username": username, "role_key": auth.ROLE_USER},
                    "注册成功，请登录")
 
     @bp.post("/api/logout/")
@@ -506,7 +506,7 @@ def build_blueprint() -> Blueprint:
         """用户列表（fast-crud 约定的 `{results, total}` 形状）。
 
         ⚠️ 需要 user:manage 权限。这里**不复用下面三个路由共用的空实现**：
-        用户清单是真数据（而且含账号名），让 operator 也能拉到不合适。
+        用户清单是真数据（而且含账号名），让普通用户也能拉到不合适。
         没权限时回 4000 + 明确文案，前端会弹提示而不是显示空表——
         "空表"会让人以为没数据，而不是"你没权限看"。
         """
@@ -540,20 +540,20 @@ def build_blueprint() -> Blueprint:
         if "user:manage" not in auth.perms_of(user.get("RoleKey")):
             return jsonify({"code": 4000, "data": None, "msg": "没有查看角色列表的权限"}), 200
         g.current_user = user
-        from .auth import ROLE_NAMES, perms_of
-        rows = database.roles_in_db()
-        # ⚠️ 以数据库为准，但**权限点取自代码**（_ROLE_PERMS）。库里只存"有哪些角色"，
-        # 不存权限——权限写死在 auth.py 里，见那边的说明。这里把两边合起来给前端。
+        from .auth import KNOWN_ROLES, ROLE_NAMES, perms_of
+        rows = {r["RoleKey"]: r for r in database.roles_in_db()}
+        # ⚠️ 以**代码**为准枚举角色，库里那份只用来取显示名/描述。
+        #    为什么不让库表说了算：库里可能残留已被废弃的角色行（例如三角色时代的
+        #    engineer / operator），照着它渲染下拉框，用户选了也是在 user_create 里被拒——
+        #    那种"看得见选不了"的选项比不显示更糟。权限本来就取自代码，角色清单同理。
         results = [{
-            "id": r["RoleKey"], "key": r["RoleKey"],
-            "name": r.get("RoleName") or ROLE_NAMES.get(r["RoleKey"], r["RoleKey"]),
-            "description": r.get("Description") or "",
-            "permissions": perms_of(r["RoleKey"]),
-            "is_active": bool(r.get("IsActive")),
-        } for r in rows]
-        if not results:      # 库里空表时用代码里的定义兜底，保证下拉框有东西可选
-            results = [{"id": k, "key": k, "name": v, "permissions": perms_of(k),
-                        "description": "", "is_active": True} for k, v in ROLE_NAMES.items()]
+            "id": key, "key": key,
+            "name": rows.get(key, {}).get("RoleName") or ROLE_NAMES.get(key, key),
+            "description": rows.get(key, {}).get("Description") or "",
+            "permissions": perms_of(key),
+            # 库里没有这一行时按"可用"处理（角色合法性由代码保证，不依赖库表）
+            "is_active": bool(rows.get(key, {}).get("IsActive", True)),
+        } for key in KNOWN_ROLES]
         return _ok({"results": results, "total": len(results)})
 
     @bp.get("/api/system/area/")
@@ -584,8 +584,11 @@ def build_blueprint() -> Blueprint:
             return _fail("用户名和密码都不能为空")
         if len(password) < 6:
             return _fail("密码至少 6 位")
-        if role_key not in auth._ROLE_PERMS:
-            return _fail(f"角色不合法：{role_key or '（空）'}")
+        if role_key not in auth.KNOWN_ROLES:
+            # ⚠️ 用 KNOWN_ROLES（代码承认的两种身份）而不是 _ROLE_PERMS 的键：
+            #    管理端只能建出"代码真的能授权"的角色，历史角色键（engineer/operator）
+            #    即便在库里还有残留行，也不允许再拿来建号。
+            return _fail(f"角色不合法：{role_key or '（空）'}（只能是 {' / '.join(auth.KNOWN_ROLES)}）")
         try:
             uid = database.create_user(
                 username, auth.hash_password(password), role_key,
@@ -605,7 +608,7 @@ def build_blueprint() -> Blueprint:
         """改用户（角色/启停/显示名）。需要 user:manage。
 
         ⚠️ 加了两条自我防护，都是"管理员把自己锁在门外"的经典场景：
-          1. 不许改自己的角色 —— 一键把自己从 admin 降成 operator 就再也改不回来了；
+          1. 不许改自己的角色 —— 一键把自己从 admin 降成普通用户就再也改不回来了；
           2. 不许停用自己 —— 同上。
         真要转移管理员，让另一个人来操作。
         """

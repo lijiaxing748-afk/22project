@@ -1176,15 +1176,16 @@ class Database:
         """
         if self.count_users() > 0:
             return 0
-        from .auth import ROLE_ADMIN, ROLE_ENGINEER, ROLE_OPERATOR, hash_password, role_name_of
+        from .auth import KNOWN_ROLES, ROLE_ADMIN, ROLE_USER, hash_password, role_name_of
         seeded = [("admin", admin_password_hash, ROLE_ADMIN, "系统管理员")]
         if with_samples:
             # 演示账号口令是固定的，**部署到工厂前应当删掉或改密**。
             # 用与 admin 不同的口令，避免"一个密码开所有门"。
+            # 只有两种身份：admin 与普通用户，所以演示号也只给一个普通用户 ——
+            # 留着它是为了能验证"普通用户"这条路径（少了它就没法用非管理员账号试权限）。
             seeded = [
                 ("admin", admin_password_hash, ROLE_ADMIN, "系统管理员"),
-                ("engineer", hash_password("Engineer@2026"), ROLE_ENGINEER, "算法工程师"),
-                ("operator", hash_password("Operator@2026"), ROLE_OPERATOR, "现场操作员"),
+                ("user", hash_password("User@2026"), ROLE_USER, "普通用户"),
             ]
         n = 0
         for username, pwd_hash, role_key, display in seeded:
@@ -1199,10 +1200,11 @@ class Database:
             except Exception:
                 # 并发启动时另一个线程可能已经插进去了（唯一键冲突），忽略继续
                 continue
-        # 角色表也补上，供「用户管理」页展示
+        # 角色表也补上，供「用户管理」页展示。
+        # ⚠️ 用 KNOWN_ROLES（代码承认的角色）而不是手写三个常量：加/减角色时只改 auth.py 一处。
         try:
             with self.cursor(commit=True) as cur:
-                for key in (ROLE_ADMIN, ROLE_ENGINEER, ROLE_OPERATOR):
+                for key in KNOWN_ROLES:
                     cur.execute(
                         f"INSERT IGNORE INTO Roles (RoleKey, RoleName, IsActive, CreatedDate) "
                         f"VALUES ({self.placeholder}, {self.placeholder}, 1, {self.placeholder})",
@@ -1210,6 +1212,49 @@ class Database:
         except Exception:
             pass
         return n
+
+    def migrate_legacy_roles(self) -> dict:
+        """把"三角色时代"（admin / engineer / operator）的存量数据收敛成两种身份。
+
+        迁移内容（**幂等**，每次启动跑一次没有副作用）：
+          1. `Users.RoleKey` 里的 engineer / operator → `user`；
+          2. `Roles` 表里补上 `user`（旧库里没有这个键）；
+          3. `Roles` 表里废弃的 engineer / operator 行**删掉** —— 它们没有外键引用
+             （见 schema 里"为什么不建中间表"的说明），留着只会让「用户管理」页的下拉框
+             多出两个选了就被拒的选项；
+          4. 把保留角色的**显示名**对齐到代码里的定义（旧库的 admin 叫"超级管理员"，
+             代码里现在叫"管理员"）。库里本来只存"叫什么"，但角色集合都变了，
+             名字不跟着统一，界面上一处写"管理员"、一处写"超级管理员"，看着像两个东西。
+
+        ⚠️ 为什么还要这一层：`auth.perms_of()` 对未知角色返回**空集**（刻意的失败方向），
+        所以旧角色键不迁移，那些用户登进去会**什么权限都没有**。
+        auth 那边另有一层 `normalize_role()` 别名兜底，两者叠加保证不会锁死人。
+        返回各步骤影响的行数，便于启动日志如实回报。
+        """
+        from .auth import ROLE_NAMES, ROLE_USER
+        stat = {"users_to_user": 0, "roles_added": 0, "roles_removed": 0, "roles_renamed": 0}
+        legacy = ("engineer", "operator")
+        try:
+            with self.cursor(commit=True) as cur:
+                marks = ", ".join([self.placeholder] * len(legacy))
+                cur.execute(f"UPDATE Users SET RoleKey = {self.placeholder} "
+                            f"WHERE RoleKey IN ({marks})", (ROLE_USER, *legacy))
+                stat["users_to_user"] = cur.rowcount
+                cur.execute(f"INSERT IGNORE INTO Roles (RoleKey, RoleName, IsActive, CreatedDate) "
+                            f"VALUES ({self.placeholder}, {self.placeholder}, 1, {self.placeholder})",
+                            (ROLE_USER, "普通用户", _now()))
+                stat["roles_added"] = cur.rowcount
+                cur.execute(f"DELETE FROM Roles WHERE RoleKey IN ({marks})", legacy)
+                stat["roles_removed"] = cur.rowcount
+                for key, name in ROLE_NAMES.items():
+                    cur.execute(f"UPDATE Roles SET RoleName = {self.placeholder} "
+                                f"WHERE RoleKey = {self.placeholder} "
+                                f"AND (RoleName IS NULL OR RoleName <> {self.placeholder})",
+                                (name, key, name))
+                    stat["roles_renamed"] += cur.rowcount
+        except Exception as exc:                      # 迁移失败不能阻止服务启动
+            stat["error"] = f"{type(exc).__name__}: {exc}"
+        return stat
 
     # -------------------------------------------------------------- 操作日志
     def log_operation(self, *, username: str | None, role_key: str | None, action: str,

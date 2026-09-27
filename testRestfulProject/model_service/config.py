@@ -236,7 +236,7 @@ class Config:
         self.captcha_enabled = (_env("MODEL_CAPTCHA", "") or "").strip().lower() in ("1", "true", "yes", "on")
         # 自助注册开关（MODEL_ALLOW_REGISTER）。默认**打开**。
         # 为什么默认开：本平台是实验室/内网工具，新人自己注册一个"现场操作员"账号就能开工，
-        # 不必每次都找管理员开号。注册出来的账号**角色强制 operator**（见 dvadmin.register），
+        # 不必每次都找管理员开号。注册出来的账号**角色强制"普通用户"**（见 dvadmin.register），
         # 想提权只能由管理员在「用户管理」页改。
         # ⚠️ 交付到工厂等正式环境时**建议关掉**（db.env 里写 MODEL_ALLOW_REGISTER=0）：
         #    关掉后登录页不显示「注册」页签，后端接口也会直接拒绝。

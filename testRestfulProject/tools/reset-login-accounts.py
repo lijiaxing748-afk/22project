@@ -65,8 +65,8 @@ from model_service.db import database, DBError       # noqa: E402
 
 DEFAULT_ADMIN_PASSWORD = "Admin@2026"
 SAMPLE_ACCOUNTS = (
-    ("engineer", "Engineer@2026", auth.ROLE_ENGINEER, "算法工程师"),
-    ("operator", "Operator@2026", auth.ROLE_OPERATOR, "现场操作员"),
+    # 只有两种身份：admin 与普通用户，所以演示账号也只给一个普通用户。
+    ("user", "User@2026", auth.ROLE_USER, "普通用户"),
 )
 
 
@@ -132,7 +132,7 @@ def main() -> int:
     ap.add_argument("--admin-password", default=DEFAULT_ADMIN_PASSWORD,
                     help=f"admin 的口令，默认 {DEFAULT_ADMIN_PASSWORD}")
     ap.add_argument("--no-samples", action="store_true",
-                    help="只处理 admin，不建 engineer/operator（工厂交付用）")
+                    help="只处理 admin，不建普通用户演示账号（工厂交付用）")
     ap.add_argument("--dry-run", action="store_true",
                     help="只显示会改什么，不真正写库")
     args = ap.parse_args()

@@ -1,9 +1,13 @@
 # -*- coding: utf-8 -*-
-"""把种子账号的口令对齐到文档里写的那三个（幂等，可重复跑）。
+"""把种子账号的口令对齐到文档里写的那两个（幂等，可重复跑）。
 
-背景：开发过程中 seed 相关的代码改过几轮，本地库里 operator 的哈希
-是用**旧版字符串**建的，于是文档写 Operator@2026、实际却登不进去。
+背景：开发过程中 seed 相关的代码改过几轮，本地库里某个种子账号的哈希
+是用**旧版字符串**建的，于是文档写 User@2026、实际却登不进去。
 交付前必须让"文档说的"和"库里存的"一致，否则现场演示第一个卡点就是这个。
+
+⚠️ 本平台只有两种身份（admin / user），所以种子账号是 admin 与 user。
+   从三角色时代升级上来的库可能还留着 engineer / operator 两个**用户名**，
+   它们不在这里重置（角色已经迁成 user，但用户名不会被自动改名）。
 
 用法：
     venv\\Scripts\\python.exe tools\\reset-seed-passwords.py
@@ -20,8 +24,7 @@ from model_service.db import database  # noqa: E402
 
 SEEDS = (
     ("admin", "Admin@2026"),
-    ("engineer", "Engineer@2026"),
-    ("operator", "Operator@2026"),
+    ("user", "User@2026"),
 )
 
 database.ensure_schema()

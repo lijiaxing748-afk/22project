@@ -105,11 +105,10 @@ def main() -> int:
     m1, m2 = r1.json().get("msg"), r2.json().get("msg")
     chk("'用户不存在' 与 '密码错' 回同一句话", m1 == m2, f"-> {m1!r} vs {m2!r}")
 
-    print("\n--- 6. 三个种子账号都能用明文登录 ---")
+    print("\n--- 6. 两个种子账号都能用明文登录 ---")
     seen = {}
     for user, pwd in (("admin", "Admin@2026"),
-                      ("engineer", "Engineer@2026"),
-                      ("operator", "Operator@2026")):
+                      ("user", "User@2026")):
         r = requests.post(f"{base}/api/login/",
                           json={"username": user, "password": pwd},
                           headers=ORIGIN, timeout=15)

@@ -1,4 +1,4 @@
-﻿<template>
+<template>
 	<div class="platform-user">
 		<!-- 顶部说明：把这个页面的能力边界讲清楚，避免误以为可以物理删除 -->
 		<el-alert type="info" :closable="false" show-icon class="mb">
@@ -275,14 +275,15 @@ const kpis = computed(() => {
 	];
 });
 
+// ⚠️ 只有两种身份。下拉框的**选项列表**来自后端 `GET /api/system/role/`
+//    （以代码里的 KNOWN_ROLES 为准），这里只负责"选中之后显示什么说明"。
 const ROLE_DESC: Record<string, string> = {
-	admin: '拥有全部权限，含用户管理与操作日志查看',
-	engineer: '可训练、推理、发布/删除模型，上传数据集',
-	operator: '只能查看模型与发起推理，不能训练或发布',
+	admin: '管理员：全部权限，含删除模型产物、用户管理、查看操作日志；可把普通用户设为管理员，也可停用账号',
+	user: '普通用户：训练、推理、发布、上传模型与数据集；不能删除模型产物、不能管用户、不能看操作日志',
 };
 
 const roleHint = (key: string) => ROLE_DESC[key] || '';
-const roleTagType = (key: string) => (key === 'admin' ? 'danger' : key === 'engineer' ? 'warning' : 'info');
+const roleTagType = (key: string) => (key === 'admin' ? 'danger' : 'info');
 
 /** 后端给的是 MySQL DATETIME 字符串（本地时间），截到分钟即可 */
 const fmtTime = (t: any) => (t ? String(t).slice(0, 16) : '—');
@@ -329,7 +330,8 @@ const load = async () => {
 };
 
 const openCreate = () => {
-	create.form = { username: '', name: '', password: '', password2: '', role_key: 'operator' };
+	// 默认选"普通用户"：新建账号绝大多数是普通用户，管理员是少数。
+	create.form = { username: '', name: '', password: '', password2: '', role_key: 'user' };
 	create.visible = true;
 };
 
