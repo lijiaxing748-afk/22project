@@ -30,6 +30,22 @@ data/figures/
 # data/models/ 下的**当前**产物仍然入库，保证克隆下来就有可用的模型。
 testRestfulProject/data/archive/
 
+# ---- 验证脚本造出来的临时"模型"目录 ----
+# ⚠️ 为什么只挡前缀、不挡整个 data/models/：
+#    1dcnn / adtk / cwt_cnn 三个**真实模型**是刻意入库的，克隆下来就能跑训练/推理；
+#    把整个目录忽略掉会让新克隆的仓库缺模型、系统开不起来。
+#
+# 这些 verify* 目录是 tools/verify-*.py 跑端到端验证时上传的假模型
+# （见 verify-operation-logs.py：name=f"verifylog_{tag}"），一次跑完就留下一个，
+# 既不是项目资产、又白白占体积（每个约 1.2 MB 的 model.keras）。
+# 它们是**运行产出的测试垃圾**，和 data/logs/ 、data/figures/ 同性质。
+testRestfulProject/data/models/verifylog_*/
+testRestfulProject/data/models/verify_*/
+testRestfulProject/data/models/e2e_test_*/
+testRestfulProject/data/models/_selftest_*/
+testRestfulProject/data/models/_probe_*/
+testRestfulProject/data/models/_tmp_*/
+
 # ---------------- 暂时挪走的 dvadmin 无用代码 ----------------
 # 见 项目技术详解.md §8：想恢复就把它移回 frontend/22project/src/
 _unused_dvadmin/
@@ -108,3 +124,38 @@ testRestfulProject/docs/
 
 # 代码更新包（make-update-package.ps1 的产物，优盘用的，不进仓库）
 code-update-*/
+
+# 提交信息临时文件（git commit 的 -F 参数用完后应删除，防误提交）
+.git-commit-msg.tmp
+
+# 调试时重定向出来的临时日志（排查后台启动问题用，不该进仓库）
+.tmp-*.log
+
+# 交付前工作总结（个人文档，属于内部材料，同「会议讨论说明」的处理）
+模型管理系统交付前工作总结.docx
+
+# =====================================================================
+#  大体积二进制（绝对不进仓库）
+#
+#  ⚠️ ISO 镜像：Ubuntu 安装盘 5.82 GB，是**本地装机素材**，不是项目代码。
+#     忘了挡的后果很严重：GitHub 单文件上限 100 MB，`git push` 必然失败，
+#     而且它会先污染本地提交历史 —— 想清理得重写历史，代价远大于现在加一行。
+#     实验室机器上的系统镜像路径与命名可能不同，所以按**扩展名**挡。
+*.iso
+*.ISO
+
+#  虚拟机磁盘与配置（VMware 的 vmdk/vmx 动辄几十 GB，且是本机环境相关，
+#  换台机器就没用了，没有分享意义）
+*.vmdk
+*.vmem
+*.vmsn
+*.vmsd
+*.nvram
+*.vmx
+*.vmxf
+*.lck/
+
+#  Linux 部署包（tools/make-linux-package.ps1 的产物）
+#  39 MB 的 tar.gz，里面是"已经拷进过虚拟机"的快照，随源码变动就过期，
+#  且二进制进仓库会让每次 clone 都变慢。产物不入库，脚本入库即可复现。
+dist-linux/

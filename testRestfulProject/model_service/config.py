@@ -23,6 +23,55 @@ from __future__ import annotations
 import os
 import tempfile
 from pathlib import Path
+
+
+def normalize_user_path(raw: str | os.PathLike | None) -> str:
+    """把"用户/前端给的路径"归一化成当前平台能解析的形式。
+
+    ⚠️ 存在的唯一理由：**Windows 风格的 `\\` 在 Linux 上不是分隔符**。
+       前端（以及 console.html、外部脚本）拼路径时普遍写成
+           `${dataset_dir}\\${filename}`      →  "1DCNN\\0HP\\x.csv"
+       在 Windows 上 `Path()` 认它；在 Linux 上 `\\` 只是普通字符，
+       整个串会被当成"一个名字里带反斜杠的文件"，于是 is_file() 为假、
+       报"文件不存在" —— 而真实的文件其实好好躺在那里。
+       这个 bug 在 Windows 开发机上**永远复现不出来**，只会在 Linux 部署后炸。
+
+    归一化规则：
+        · `\\` → `/`（正斜杠在所有平台都是合法分隔符）
+        · 盘符写法 `D:/x` / `D:\\x` → 去掉盘符前缀（Linux 上没有盘符概念，
+          留着会变成一个叫 "D:" 的目录名，必然找不到）
+        · 其余原样保留
+
+    安全性说明：这里**不做**越界校验，调用方（_guard_path / _resolve_workspace_path）
+    必须在归一化之后**照旧**做 relative_to 检查 —— 归一化只是让路径能被解析，
+    不能替代安全校验。
+
+    ⚠️ 这是**模块级函数**，同时以静态方法形式挂在 Config 上（见类内
+       `normalize_user_path = staticmethod(normalize_user_path)`）。
+       原因是调用方写法不统一：有的用 `config.normalize_user_path(...)`（实例），
+       有的可能 import 这个函数。两种都支持，省得再踩"实例上没有这个方法"的坑。
+    """
+    if raw is None:
+        return ""
+    text = str(raw).strip()
+    if not text:
+        return ""
+    # 反斜杠统一成正斜杠。放在最前面：后面判断盘符、切分目录都基于正斜杠。
+    text = text.replace("\\", "/")
+    # Windows 盘符：`D:/...` 或裸 `D:`。只在"单字母 + 冒号"且位于开头时才处理，
+    # 避免误伤 `http://` 之类的写法（那种不会被传进来，但防御性写清楚）。
+    if len(text) >= 2 and text[1] == ":" and text[0].isalpha():
+        text = text[2:]
+        text = text.lstrip("/")          # `D:/x` → `/x` → `x`
+        if not text:
+            return ""
+    return text
+
+
+# 兼容直接 from .config import normalize_user_path 的写法
+__all__ = ["normalize_user_path", "config", "Config"]
+
+
 SERVICE_DIR = Path(__file__).resolve().parent
 PROJECT_DIR = SERVICE_DIR.parent            # testRestfulProject
 WORKSPACE_DIR = PROJECT_DIR.parent          # 22project
@@ -32,11 +81,9 @@ LOG_DIR = DATA_DIR / "logs"                 # 训练日志
 UPLOAD_DIR = DATA_DIR / "datasets"          # 上传/存放的表格数据集（一个子目录 = 一个数据集）
 EXPORT_DIR = DATA_DIR / "exports"           # 模型发布包（一个训练产物一个 zip，按模型分子目录）
 SQL_DIR = PROJECT_DIR / "sql"
-# 前端产物目录（两个候选位置，web.py 里按顺序探测，先命中哪个用哪个）：
-#   1. frontend/22project/dist —— 开发机上 `npm run build` 的默认输出
-#      ⚠️ 注意层级：PROJECT_DIR 是 testRestfulProject，WORKSPACE_DIR 才是仓库根 22project
-#   2. data/web                —— 部署时把产物拷到这里，让"代码"和"构建产物"分开，
-#                                 更新代码不用连前端产物一起覆盖
+# 前端产物目录候选位置 —— **定义在 Config 类里**（见 self.dist_candidates），
+# 这里不再重复一份：两份定义迟早会不一致，而 web.py 只认类里那份。
+# 兼容旧引用：历史上这两个名字是模块级常量，外部若还有引用不至于直接崩。
 DIST_DIR = WORKSPACE_DIR / "frontend" / "22project" / "dist"
 WEB_DIR = DATA_DIR / "web"
 # ⚠️ 原来的 SQLITE_PATH（sqlite 兜底库路径）已删除：它零引用，且 sqlite 兜底本身
@@ -113,6 +160,11 @@ def _env(name: str, default: str | None = None) -> str | None:
     return v if v not in (None, "") else default
 class Config:
     """一次进程生命周期内不变的服务配置。"""
+
+    # 把模块级的路径归一化函数挂成静态方法，让 `config.normalize_user_path(...)`
+    # （config 是**实例**，不是模块）也能用 —— 调用方两种写法都有，统一支持。
+    normalize_user_path = staticmethod(normalize_user_path)
+
     def __init__(self) -> None:
         """把模块级的路径常量与环境变量快照成一份不可变配置。"""
         # ⚠️ 这里原来的 self.service_dir 与文件末尾的 self.adtk_dataset_dir 已删除：
@@ -126,6 +178,18 @@ class Config:
         self.upload_dir = UPLOAD_DIR
         self.export_dir = EXPORT_DIR
         self.sql_dir = SQL_DIR
+        # 前端产物候选位置（web.py 的 _dist_dir() 按顺序探测，先命中哪个用哪个）。
+        # ⚠️ **集中定义在这里**，不要在 web.py 里另列一份 —— 历史上两处各写一份、
+        #    注释还不一致，加一个候选位置要改两个文件，很容易漏。
+        # 覆盖三种实际存在的布局：
+        #   1. frontend/22project/dist —— 源码仓库里 `npm run build` 的默认输出
+        #   2. frontend/dist           —— **打包分发**时的布局（目录被压平，少一层）
+        #   3. data/web                —— 部署时把产物拷到这里，让"代码"和"构建产物"分开
+        self.dist_candidates = (
+            WORKSPACE_DIR / "frontend" / "22project" / "dist",
+            WORKSPACE_DIR / "frontend" / "dist",
+            DATA_DIR / "web",
+        )
         self.dataset_dirs = dict(DATASET_DIRS)
         # 本项目**只支持 MySQL**：早期为了"没装库也能跑"写过 SQLite 兜底与 SQL Server 分支，
         # 结果是三套方言各自演化、埋了不少坑（占位符、TOP/LIMIT、建表语句）。现在统一到 MySQL，

@@ -150,5 +150,20 @@ packaging==26.3
 cloudpickle==3.1.2
 et_xmlfile==2.0.0
 
-# ---------- Windows 平台 ----------
-pywin32==312
+# ---------- 平台相关依赖 ----------
+# pywin32：**仅 Windows 需要**，且只被 createdoc.py（用 win32com 驱动 Word 生成文档的
+#   辅助脚本）使用，不在运行链路（serve.py -> main.py -> model_service/*）里。
+#   ⚠️ 该包**没有 Linux 版本**，不加平台标记会导致 Linux 上 `pip install -r requirements.txt`
+#   直接失败（No matching distribution found for pywin32），整个部署卡在第一步。
+#   加 sys_platform 标记后：Windows 照常安装，Linux 自动跳过。
+pywin32==312; sys_platform == "win32"
+
+# cryptography：**MySQL 8 认证插件必需**。
+#   Linux 上 MySQL 8 的默认认证插件是 caching_sha2_password，PyMySQL 连接它时
+#   **强制要求**本包，否则抛：
+#       RuntimeError: 'cryptography' package is required for sha256_password
+#       or caching_sha2_password auth methods
+#   ⚠️ PyMySQL 自身**不携带**该依赖（其 Requires 为空），必须显式声明。
+#   该报错信息隐晦，容易被误判为"密码错误"或"网络不通"，故在此明示。
+#   Windows 上装了也无害（本机 MySQL 用旧插件时用不到而已）。
+cryptography==46.0.3
