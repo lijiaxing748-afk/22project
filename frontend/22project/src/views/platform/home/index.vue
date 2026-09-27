@@ -22,14 +22,14 @@
 					<p class="doc-lede">
 						一页讲清这套平台：系统架构、三个模型的指标与超参、两套数据集、
 						训练 → 产物 → 推理 → 落库 → 展示的完整链路、11 张表、28 条接口、
-						角色权限、启动部署方式，以及当前已知限制。
+						登录与注册、启动部署方式，以及当前已知限制。
 					</p>
 					<div class="doc-jump">
 						<el-button link type="primary" @click="openDocs('#arch')">系统架构</el-button>
 						<el-button link type="primary" @click="openDocs('#models')">三个模型</el-button>
 						<el-button link type="primary" @click="openDocs('#flow')">完整链路</el-button>
 						<el-button link type="primary" @click="openDocs('#api')">接口一览</el-button>
-						<el-button link type="primary" @click="openDocs('#auth')">登录与权限</el-button>
+						<el-button link type="primary" @click="openDocs('#auth')">登录与会话</el-button>
 						<el-button link type="primary" @click="openDocs('#deploy')">启动部署</el-button>
 						<el-button link type="primary" @click="openDocs('#faq')">常见问题</el-button>
 						<el-button link type="primary" @click="openDocs('#limits')">已知限制</el-button>

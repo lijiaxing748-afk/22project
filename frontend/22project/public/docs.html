@@ -186,7 +186,7 @@ footer{margin-top:var(--sp-12);padding:var(--sp-6) 0 var(--sp-10);border-top:1px
     <li><a href="#layout">07 · 目录与磁盘布局</a></li>
     <li><a href="#db">08 · 数据库</a></li>
     <li><a href="#api">09 · 接口一览</a></li>
-    <li><a href="#auth">10 · 登录、会话与权限</a></li>
+    <li><a href="#auth">10 · 登录与会话</a></li>
     <li><a href="#deploy">11 · 启动与部署</a></li>
     <li><a href="#faq">12 · 常见问题与排查</a></li>
     <li><a href="#limits">13 · 已知限制</a></li>
@@ -597,7 +597,7 @@ footer{margin-top:var(--sp-12);padding:var(--sp-6) 0 var(--sp-10);border-top:1px
     <div class="card"><span class="tag">/platform/system</span><h4>系统管理</h4>
       <p>运行环境与依赖、11 张表行数、日志查看、接口索引、维护（清空图库）。</p></div>
     <div class="card"><span class="tag">/platform/user · 仅 admin</span><h4>用户管理</h4>
-      <p>新建用户、重置口令、启停用、改角色。<strong>这是账号的唯一新增入口</strong>（系统没有自助注册）。</p></div>
+      <p>新建用户、重置口令、启停用、改角色。除登录页的自助注册外，这里是管理员开号的入口。</p></div>
     <div class="card"><span class="tag">/platform/log · 仅 admin</span><h4>操作日志</h4>
       <p>全平台操作审计：登录、训练、推理、发布、用户管理等动作的流水（<code>OperationLogs</code> 表）。</p></div>
   </div>
@@ -793,9 +793,9 @@ Roles ─► Users ─► OperationLogs</code></pre>
 
 <!-- ============ 10 ============ -->
 <section id="auth">
-  <h2><span class="num">10</span>登录、会话与权限</h2>
+  <h2><span class="num">10</span>登录与会话</h2>
 
-  <h3>登录：走真校验，本身不需要权限</h3>
+  <h3>登录：走真校验</h3>
   <p>
     <code>POST /api/login/</code> 是<strong>匿名可调、不做任何权限控制</strong>的——它就是入口，
     给入口加权限等于谁都进不来。校验流程是：
@@ -806,7 +806,7 @@ Roles ─► Users ─► OperationLogs</code></pre>
     用户名枚举接口。同理，<code>GET /api/captcha/</code> 也必须匿名（否则验证码拿不到，人也就登不进来）。
   </p>
 
-  <h3>注册：可以自助开号，但角色被强制成最低权限</h3>
+  <h3>注册：可以自助开号</h3>
   <div class="note">
     <b>账号有三个来源</b>
     <p>
@@ -906,32 +906,6 @@ Roles ─► Users ─► OperationLogs</code></pre>
       所有人被登出。日志里表现为"令牌校验未通过"。配好密钥即可，重启不掉线。
     </p>
   </div>
-
-  <h3>权限点与角色</h3>
-  <p>共 9 个权限点；权限写死在 <code>auth.py</code> 的 <code>_ROLE_PERMS</code> 里（库里只存"有哪些角色"）。</p>
-  <div class="tw">
-    <table>
-      <thead><tr><th>权限点</th><th>含义</th><th class="c">admin</th><th class="c">engineer</th><th class="c">operator</th></tr></thead>
-      <tbody>
-        <tr><td><code>model:write</code></td><td>上传 / 改名模型</td><td class="c"><span class="badge b-ok">有</span></td><td class="c"><span class="badge b-ok">有</span></td><td class="c"><span class="badge b-mute">无</span></td></tr>
-        <tr><td><code>model:delete</code></td><td>删除模型产物</td><td class="c"><span class="badge b-ok">有</span></td><td class="c"><span class="badge b-mute">无</span></td><td class="c"><span class="badge b-mute">无</span></td></tr>
-        <tr><td><code>train:run</code></td><td>发起训练</td><td class="c"><span class="badge b-ok">有</span></td><td class="c"><span class="badge b-ok">有</span></td><td class="c"><span class="badge b-mute">无</span></td></tr>
-        <tr><td><code>predict:run</code></td><td>发起推理</td><td class="c"><span class="badge b-ok">有</span></td><td class="c"><span class="badge b-ok">有</span></td><td class="c"><span class="badge b-mute">无</span></td></tr>
-        <tr><td><code>export:run</code></td><td>打包发布</td><td class="c"><span class="badge b-ok">有</span></td><td class="c"><span class="badge b-ok">有</span></td><td class="c"><span class="badge b-mute">无</span></td></tr>
-        <tr><td><code>export:delete</code></td><td>删除发布包</td><td class="c"><span class="badge b-ok">有</span></td><td class="c"><span class="badge b-ok">有</span></td><td class="c"><span class="badge b-mute">无</span></td></tr>
-        <tr><td><code>dataset:write</code></td><td>登记 / 上传数据集</td><td class="c"><span class="badge b-ok">有</span></td><td class="c"><span class="badge b-ok">有</span></td><td class="c"><span class="badge b-mute">无</span></td></tr>
-        <tr><td><code>user:manage</code></td><td>用户管理</td><td class="c"><span class="badge b-ok">有</span></td><td class="c"><span class="badge b-mute">无</span></td><td class="c"><span class="badge b-mute">无</span></td></tr>
-        <tr><td><code>log:read</code></td><td>查看操作日志</td><td class="c"><span class="badge b-ok">有</span></td><td class="c"><span class="badge b-mute">无</span></td><td class="c"><span class="badge b-mute">无</span></td></tr>
-      </tbody>
-    </table>
-  </div>
-  <p>
-    权限检查有<strong>两种实现方式</strong>，这是看代码时容易困惑的地方：
-    业务接口（<code>api.py</code>）用装饰器 <code>@require_login</code> / <code>@require_perm("...")</code>；
-    兼容层（<code>dvadmin.py</code>）<strong>没有装饰器</strong>，是在函数体开头手动
-    <code>authenticate()</code> + 查 <code>perms_of()</code>，然后把结果包成 <code>code=4000</code> 回给前端。
-    <strong>两种都必须看体内逻辑</strong>，只看装饰器会误判。
-  </p>
 
   <div class="warn">
     <b>交付前必做</b>
@@ -1104,7 +1078,7 @@ venv\Scripts\python.exe serve.py
     </p>
   </details>
 
-  <h3>登录 / 权限</h3>
+  <h3>登录与账号</h3>
   <details>
     <summary>登录页看不到「注册」页签</summary>
     <p>
@@ -1138,8 +1112,9 @@ venv\Scripts\python.exe serve.py
   <details>
     <summary>点了某个按钮提示"没有权限"</summary>
     <p>
-      对照 §10 的权限表。前端隐藏按钮只是体验，<strong>真正的拦截在后端</strong>：
+      当前账号的角色不够。前端隐藏按钮只是体验，<strong>真正的拦截在后端</strong>：
       业务接口返回 403 并带上需要的权限点，兼容层回 <code>code=4000</code> + 文案。
+      需要更高权限时，联系管理员在「用户管理」页调整你的角色。
     </p>
   </details>
   <details>
