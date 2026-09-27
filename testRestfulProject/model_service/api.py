@@ -710,15 +710,23 @@ class DatasetUpload(Resource):
         说明书那句已同步改成事实口径，不要为了这句话去伪造一条训练路径。
     """
     MAX_MB = 80
+    # 整批上限：**文件夹上传**一次可能带上百个文件（CWRU 那种一个数据集 10~30 个 .mat 很常见），
+    # 没有整批上限的话，一次误选一个 2GB 的目录就会把服务的内存和磁盘吃完。
+    MAX_TOTAL_MB = 300
     # ⚠️ 只加 .mat：.npy/.npz 是推理侧的单文件信号格式，训练管线没有对应的数据集加载器
     MAT_SUFFIXES = {".mat"}
     @require_perm("dataset:write")
     def post(self):
-        """保存上传的数据集文件（表格：一个文件 = 一个类别；.mat：CWRU 命名的多文件数据集）。"""
+        """保存上传的数据集文件（表格：一个文件 = 一个类别；.mat：CWRU 命名的多文件数据集）。
+
+        ⚠️ **支持选文件夹**：浏览器（`webkitdirectory`）只提交文件列表、子目录被压平成文件名，
+        所以后端收到的就是一堆文件名 —— 这也正是本平台要的形状（data/datasets/<名>/ 是**平铺**的）。
+        代价是两个子目录里的同名文件会撞车，见下面 seen_names 的处理。
+        """
         name = (request.form.get("name") or "").strip()
         files = _uploaded_files()
         if not files:
-            return {"error": "没有收到文件（表单字段名用 file，可重复传多个）"}, 400
+            return {"error": "没有收到文件（表单字段名用 file，可重复传多个；选文件夹也一样）"}, 400
         if not name:
             name = Path(files[0].filename or "dataset").stem
         safe_name = _sanitize_name(name, "dataset")
@@ -728,8 +736,17 @@ class DatasetUpload(Resource):
         #    于是一次"全是非法扩展名"的上传会留下一个空数据集目录（接口回 400、磁盘却多了东西），
         #    界面上还会多出一个空类别。实测复现过（上传 evil.exe）。
         saved, skipped, overwritten = [], [], []
+        seen_names: set[str] = set()          # 同一批里已经收下的文件名（文件夹压平后重名的判据）
+        total_bytes = 0
         for item in files:
             filename = Path(item.filename or "").name
+            # ⚠️ 选文件夹时子目录会被压平：`a/x.mat` 与 `b/x.mat` 到这里都叫 `x.mat`。
+            #    同批重名**只收第一个**并如实回报 —— 否则第二个会静默覆盖第一个，
+            #    用户以为 20 个文件都传上去了，实际只剩 19 个。
+            if filename and filename in seen_names:
+                skipped.append({"filename": filename,
+                                "reason": "同一批里重名（选文件夹会把子目录压平），只收第一个"})
+                continue
             if not filename or Path(filename).suffix.lower() not in allowed:
                 skipped.append({"filename": filename,
                                 "reason": f"不支持的扩展名，支持 {sorted(allowed)}"})
@@ -739,8 +756,13 @@ class DatasetUpload(Resource):
                 skipped.append({"filename": filename, "reason": "空文件（0 字节）"})
                 continue
             if len(blob) > self.MAX_MB * 1024 * 1024:
-                skipped.append({"filename": filename, "reason": f"超过 {self.MAX_MB}MB"})
+                skipped.append({"filename": filename, "reason": f"超过单文件上限 {self.MAX_MB}MB"})
                 continue
+            if total_bytes + len(blob) > self.MAX_TOTAL_MB * 1024 * 1024:
+                skipped.append({"filename": filename, "reason": f"超过整批上限 {self.MAX_TOTAL_MB}MB"})
+                continue
+            seen_names.add(filename)
+            total_bytes += len(blob)
             # 确认这个文件真的要收下，才建数据集目录（见上面那段说明：避免空目录残留）
             if not target.exists():
                 target.mkdir(parents=True, exist_ok=True)

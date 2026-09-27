@@ -10,7 +10,7 @@
 				<el-select v-model="current" style="width: 420px" @change="() => {}">
 					<el-option v-for="k in datasetKeys" :key="k" :label="k" :value="k" />
 				</el-select>
-				<el-button class="ml" size="small" type="primary" @click="uploadDialog = true">上传数据集</el-button>
+				<el-button class="ml" size="small" type="primary" @click="openUpload('files')">上传数据集</el-button>
 				<el-button size="small" type="danger" plain :disabled="!current" @click="removeDatasetFiles">
 					删除上传文件
 				</el-button>
@@ -56,19 +56,31 @@
 			     用户 2026-09-27 反馈「要上传 .mat 数据集，按钮没了」。本次补齐：
 			     后端放开 .mat（按 CWRU 命名取 DE 通道），界面在「数据集体检」页签直接给入口。
 			     ⚠️ .npy 仍然只支持推理的"单文件信号输入"，不作为数据集格式（说明书已改口径）。 -->
-			<el-dialog v-model="uploadDialog" title="上传数据集" width="560px" append-to-body>
+			<el-dialog v-model="uploadDialog" title="上传数据集" width="580px" append-to-body>
 				<el-form label-width="90px" size="small">
 					<el-form-item label="数据集名">
-						<el-input v-model="upload.name" placeholder="例如 my-bearing；不填就用第一个文件名" />
+						<el-input v-model="upload.name" placeholder="不填就用第一个文件名 / 文件夹名" />
 					</el-form-item>
-					<el-form-item label="文件">
+					<el-form-item label="方式">
+						<el-radio-group v-model="uploadMode" size="small">
+							<el-radio-button label="files">选文件</el-radio-button>
+							<el-radio-button label="dir">选文件夹</el-radio-button>
+						</el-radio-group>
+						<span class="hint ml">选文件夹 = 把整个文件夹收进来（CWRU 那种一次 10 个 .mat 的用法）</span>
+					</el-form-item>
+					<el-form-item v-if="uploadMode === 'files'" label="文件">
 						<input ref="fileInputDialog" type="file" multiple accept=".mat,.csv,.txt,.xlsx,.xlsm,.xls" class="file-input" />
+					</el-form-item>
+					<el-form-item v-else label="文件夹">
+						<!-- webkitdirectory：浏览器只给**文件**列表，子目录会被压平成"文件名"，这正是我们要的
+						     （后端按文件名落盘，一个文件 = 一个类别） -->
+						<input ref="dirInputDialog" type="file" webkitdirectory directory multiple class="file-input" @change="onDirPicked" />
 					</el-form-item>
 				</el-form>
 				<div class="hint">
 					· <code>.mat</code>：按 CWRU 命名（<code>48k_Drive_End_*</code> / <code>normal_*</code>），训练取 DE 通道；<br />
-					· <code>.csv</code> / <code>.txt</code> / <code>.xlsx</code>：一个文件 = 一个类别，文件名即标签；<br />
-					· 落到 <code>data/datasets/&lt;数据集名&gt;/</code>，同名文件会被覆盖（等于换掉那个类别的全部数据）。
+					· <code>.csv</code> / <code>.txt</code> / <code>.xlsx</code>：一个文件 = 一个类别，文件名即标签（⚠️ 文件夹里别混 <code>.txt</code> 说明文件，它会被当成一个类别）；<br />
+					· 落到 <code>data/datasets/&lt;数据集名&gt;/</code>；同名文件会被覆盖（等于换掉那个类别的全部数据），同一批里重名只收第一个。
 				</div>
 				<template #footer>
 					<el-button @click="uploadDialog = false">取消</el-button>
@@ -90,8 +102,9 @@
 							<el-form-item label="文件">
 								<input ref="fileInput" type="file" multiple accept=".mat,.csv,.txt,.xlsx,.xlsm,.xls" class="file-input" />
 							</el-form-item>
-							<el-button type="primary" :loading="uploading" @click="doUpload('tab')">上传</el-button>
-							<span class="hint ml">支持 .mat（CWRU 命名）/ .csv / .txt / .xlsx；CSV 自动试 utf-8 / GBK 编码。</span>
+							<el-button type="primary" :loading="uploading" @click="doUpload('card')">上传</el-button>
+							<el-button :loading="uploading" @click="openUpload('dir')">选文件夹上传</el-button>
+							<span class="hint ml">支持 .mat（CWRU 命名）/ .csv / .txt / .xlsx；文件夹上传走上面的对话框。</span>
 						</el-form>
 						<el-divider />
 						<div class="hint">已上传的表格数据集</div>
@@ -199,7 +212,9 @@ const dbDatasets = ref<any[]>([]);
 const previewData = ref<any>(null);
 const previewColumn = ref<string>('');
 const fileInput = ref<HTMLInputElement>();          // 「表格数据集」页签卡片里的上传控件
-const fileInputDialog = ref<HTMLInputElement>();    // 「数据集体检」页签弹出的上传对话框
+const fileInputDialog = ref<HTMLInputElement>();    // 「数据集体检」页签弹出的上传对话框（选文件）
+const dirInputDialog = ref<HTMLInputElement>();     // 同一个对话框里的"选文件夹"控件（webkitdirectory）
+const uploadMode = ref<'files' | 'dir'>('files');   // 对话框当前是选文件还是选文件夹
 const uploadDialog = ref(false);
 const uploading = ref(false);
 const upload = reactive({ name: '' });
@@ -306,15 +321,45 @@ const reloadPreview = async (path?: string) => {
 	previewData.value = await platformApi.tablePreview(target, 8, previewColumn.value);
 };
 
+/** 打开上传对话框（mode 决定默认落在「选文件」还是「选文件夹」）。 */
+const openUpload = (mode: 'files' | 'dir' = 'files') => {
+	uploadMode.value = mode;
+	uploadDialog.value = true;
+};
+
+/**
+ * 选完文件夹之后：浏览器只把**文件**塞进 `input.files`（子目录被压平成文件名），
+ * 但每个文件带 `webkitRelativePath`（形如 `0HP/normal_0_97.mat`），据此：
+ *   ① 用**文件夹名**当默认数据集名（省得用户自己敲，CWRU 那种一次 10 个 .mat 最需要）；
+ *   ② 告诉用户选了多少个、多少个来自子目录（子目录会平铺，同名文件后端按"同批重名"跳过第一个之外的）。
+ * ⚠️ 这里**不**自动上传：让用户先看清"文件夹名 → 数据集名"对不对，再点上传。
+ */
+const onDirPicked = () => {
+	const picked = Array.from(dirInputDialog.value?.files || []) as any[];
+	if (!picked.length) return;
+	const first = String(picked[0].webkitRelativePath || '');
+	const folder = first.split('/')[0];
+	if (folder && !upload.name) upload.name = folder;
+	const nested = picked.filter((f: any) => String(f.webkitRelativePath || '').split('/').length > 2).length;
+	ElMessage.info(`已选文件夹「${folder || '（未命名）'}」，共 ${picked.length} 个文件`
+		+ (nested ? `；其中 ${nested} 个在子目录里，上传时会平铺到同一个数据集` : ''));
+};
+
 /**
  * 上传数据集（`.mat` / csv / txt / xlsx 都走这里）。
  *
- * ⚠️ 两个入口（「数据集体检」页签的「上传数据集」按钮 → 对话框；「表格数据集」页签的卡片）
- *    共用本函数，所以按 source 取各自的 `<input type="file">`。以前只有一个入口，硬绑 fileInput。
+ * ⚠️ 三个入口共用本函数：
+ *    · 「数据集体检」页签的「上传数据集」按钮 → 对话框（可选文件或**文件夹**）；
+ *    · 「表格数据集」页签的卡片「上传」（选文件）；
+ *    · 「表格数据集」页签的「选文件夹上传」（打开对话框、默认文件夹模式）。
+ *    所以按 source + uploadMode 取对应的 `<input type="file">`；以前只有一个入口，硬绑 fileInput。
  * ⚠️ 上传 `.mat` 之后不刷新"表格预览"：那是表格专用视图，对 .mat 目录没意义。
  */
-const doUpload = async (source: 'tab' | 'dialog' = 'tab') => {
-	const files = (source === 'dialog' ? fileInputDialog.value?.files : fileInput.value?.files);
+const doUpload = async (source: 'card' | 'dialog' = 'card') => {
+	const input = source === 'dialog'
+		? (uploadMode.value === 'dir' ? dirInputDialog.value : fileInputDialog.value)
+		: fileInput.value;
+	const files = input?.files;
 	if (!files || !files.length) { ElMessage.warning('先选择文件'); return; }
 	const form = new FormData();
 	form.append('name', upload.name || '');
