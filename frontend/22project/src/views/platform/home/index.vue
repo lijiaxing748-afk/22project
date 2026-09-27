@@ -29,7 +29,9 @@
 						<el-button link type="primary" @click="openDocs('#models')">三个模型</el-button>
 						<el-button link type="primary" @click="openDocs('#flow')">完整链路</el-button>
 						<el-button link type="primary" @click="openDocs('#api')">接口一览</el-button>
+						<el-button link type="primary" @click="openDocs('#auth')">登录与权限</el-button>
 						<el-button link type="primary" @click="openDocs('#deploy')">启动部署</el-button>
+						<el-button link type="primary" @click="openDocs('#faq')">常见问题</el-button>
 						<el-button link type="primary" @click="openDocs('#limits')">已知限制</el-button>
 					</div>
 					<el-button type="primary" class="doc-open" @click="openDocs()">打开说明文档 →</el-button>
