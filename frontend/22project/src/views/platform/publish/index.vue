@@ -77,10 +77,15 @@
 								</el-tag>
 							</template>
 						</el-table-column>
-						<el-table-column label="操作" width="150" align="center">
+						<el-table-column label="操作" width="190" align="center">
 							<template #default="{ row }">
 								<el-button link type="primary" @click="download(g.model, row.package)">下载</el-button>
 								<el-button link type="primary" @click="showDetail(g.model, row.package)">看内容</el-button>
+								<!-- 删除是危险操作 → 用 danger（红）而不是克制的灰色，避免误点。
+								     只对有 export:delete 的角色显示：admin / engineer 有，operator 没有
+								     （后端 DELETE 挂的是 @require_perm("export:delete")）。 -->
+								<el-button v-if="canExportDelete" link type="danger"
+									@click="removePackage(g.model, row.package)">删除</el-button>
 							</template>
 						</el-table-column>
 					</el-table>
@@ -152,8 +157,9 @@
 <script setup lang="ts" name="platformPublish">
 import { computed, onMounted, reactive, ref } from 'vue';
 import { useRouter } from 'vue-router';
-import { ElMessage } from 'element-plus';
+import { ElMessage, ElMessageBox } from 'element-plus';
 import { platformApi, fileUrl } from '/@/api/platform';
+import { hasPerm } from '/@/stores/userInfo';
 
 const router = useRouter();
 const loading = ref(false);
@@ -162,6 +168,13 @@ const overview = ref<any>({});
 const activeGroups = ref<string[]>([]);
 
 const groups = computed<any[]>(() => overview.value.groups || []);
+
+/**
+ * 能否删除发布包。与「模型管理」页同口径：读登录时写进 Session 的权限点。
+ * 用 computed 而不是在模板里直接调 hasPerm()，理由同模型管理页 —— 用户信息是异步 hydrate 的。
+ * ⚠️ 按钮显隐只是体验，真正的拦截在后端（DELETE 挂的是 @require_perm("export:delete")）。
+ */
+const canExportDelete = computed(() => hasPerm('export:delete'));
 
 const kpis = computed(() => {
 	const t = overview.value.total || {};
@@ -215,6 +228,41 @@ const showDetail = async (model: string, pkg: string) => {
 	} catch (e: any) {
 		ElMessage.error('读取包内容失败：' + (e?.response?.data?.error || e?.message || e));
 		detail.visible = false;
+	}
+};
+
+/**
+ * 删除磁盘上的一个发布包。
+ *
+ * ⚠️ 语义与「模型管理」页的删除**完全一致**（同一个后端接口）：
+ *    只删 data/exports/<模型>/ 下的那个 zip，`ModelDeployments` 里那条记录**保留**
+ *    并标成「已删除」——包没了，但"曾经发布过 v1"是历史事实，删记录会断掉审计链。
+ *    所以删完不要以为"发布次数"会减 1：下面「发布流水」表仍会显示它，只是状态变了。
+ * ⚠️ 需要 export:delete 权限，后端 @require_perm("export:delete") 会拦（403）。
+ */
+const removePackage = async (model: string, pkg: string) => {
+	try {
+		await ElMessageBox.confirm(
+			`删除发布包 ${pkg}？磁盘文件会被删除，库里仍保留一条「已删除」记录。`,
+			'确认删除', { type: 'warning' });
+	} catch {
+		return;                     // 用户点了取消，不是错误
+	}
+	try {
+		const res: any = await platformApi.deleteExport(model, pkg);
+		if (res?.db_error) {
+			// 文件删掉了、但"标记成已删除"这一步失败：必须如实回报，
+			// 否则使用者会以为留痕也正常，审计链其实已经断了。
+			ElMessage.warning(`磁盘文件已删除（释放 ${res.freed_kb} KB），但库里的记录没能标成「已删除」：${res.db_error}`);
+		} else {
+			const marked = res?.records_marked ? `，${res.records_marked} 条发布记录已标记为已删除` : '';
+			ElMessage.success(`已删除，释放 ${res.freed_kb} KB${marked}`);
+		}
+		// 详情弹窗正开着这个包时先关掉，免得停在一个已经不存在的包上
+		if (detail.visible && detail.model === model && detail.package === pkg) detail.visible = false;
+		await load();
+	} catch (e: any) {
+		ElMessage.error('删除失败：' + (e?.response?.data?.error || e?.message || e));
 	}
 };
 
