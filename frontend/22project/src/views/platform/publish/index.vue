@@ -117,10 +117,16 @@
 						<el-table-column label="发布时间" width="160">
 							<template #default="{ row }">{{ fmtTime(row.DeployedDate) }}</template>
 						</el-table-column>
-						<el-table-column label="操作" width="90" align="center">
+						<el-table-column label="操作" width="150" align="center">
 							<template #default="{ row }">
+								<!-- ⚠️ DeployedPath 是库里的路径（可能带盘符/目录），必须取最后一段当包名，
+								     口径与上面的「磁盘上的包」表、以及「模型管理」页完全一致。
+								     ⚠️ 非「已导出」的行（包已被删）要禁用：文件已经不在了，再删只会拿到 404。 -->
 								<el-button link type="primary" :disabled="row.DeployStatus !== '已导出'"
 									@click="download(g.model, baseName(row.DeployedPath))">下载</el-button>
+								<el-button v-if="canExportDelete" link type="danger"
+									:disabled="row.DeployStatus !== '已导出'"
+									@click="removePackage(g.model, baseName(row.DeployedPath))">删除</el-button>
 							</template>
 						</el-table-column>
 					</el-table>
@@ -241,6 +247,12 @@ const showDetail = async (model: string, pkg: string) => {
  * ⚠️ 需要 export:delete 权限，后端 @require_perm("export:delete") 会拦（403）。
  */
 const removePackage = async (model: string, pkg: string) => {
+	// 与 download() 同口径的兜底：库里 DeployedPath 为空的记录取不出包名，
+	// 直接发请求会打到 `/exports/` 这个别的路由上，不如当场说清楚。
+	if (!pkg || pkg === '—') {
+		ElMessage.error('这条记录没有可删除的包文件名（DeployedPath 为空）');
+		return;
+	}
 	try {
 		await ElMessageBox.confirm(
 			`删除发布包 ${pkg}？磁盘文件会被删除，库里仍保留一条「已删除」记录。`,
