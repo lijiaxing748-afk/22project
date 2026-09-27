@@ -134,7 +134,9 @@ def _bootstrap_auth():
             print("[鉴权] ⚠️ 未配置 MODEL_SECRET_KEY，本次启动使用随机密钥"
                   "（重启后需要重新登录）")
     except Exception as exc:
-        print(f"[鉴权] 初始化跳过（{type(exc).__name__}: {exc}）；"
+        # ⚠️ 回给调用方的 DBUnavailable 文案已脱敏（不含主机/库名），
+        #    但**服务端控制台**要看详细原因 → 优先打 `.detail`。本地跑起来时这一行最有用。
+        print(f"[鉴权] 初始化跳过（{type(exc).__name__}: {getattr(exc, 'detail', exc)}）；"
               f"服务继续启动，若无法登录请检查数据库连接")
 
 

@@ -191,8 +191,15 @@ class Database:
         try:
             return pymysql.connect(**kwargs)
         except Exception as exc:
-            raise DBUnavailable(
-                f"MySQL 连接失败({cfg.db_host}:{cfg.db_port}/{cfg.db_name if require_db else '-'})：{exc}") from exc
+            # ⚠️ 报错文案里**不带主机/端口/库名**：这条消息会经 `api.py` 的 503 与
+            #    `dvadmin` 的登录失败原样回给调用方，等于把数据库部署信息公布出去。
+            #    详细信息放进 `.detail`，由服务端控制台打印（见 main._bootstrap_auth）。
+            #    ⚠️ 不要把这条改成"出口统一脱敏"：管理员要看的「系统管理 → 数据库」页
+            #    用的是另一处 `target` 字段，那是**应该**显示真实地址的，一刀切会把它脱坏。
+            err = DBUnavailable("数据库连接失败，请确认 MySQL 已启动且 db.env 配置正确（详细原因见服务端控制台）")
+            err.detail = (f"MySQL 连接失败({cfg.db_host}:{cfg.db_port}/"
+                          f"{cfg.db_name if require_db else '-'})：{exc}")
+            raise err from exc
     @contextmanager
     def cursor(self, commit: bool = False):
         """借出一个游标；块内正常结束才按 commit 决定提交，异常回滚并把原异常抛出去。

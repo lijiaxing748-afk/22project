@@ -170,8 +170,9 @@ def build_blueprint() -> Blueprint:
         except DBError as exc:
             # 数据库连不上**不让登录**：这是鉴权路径，宁可登不进来也不要放行。
             # 回一句能指导排查的话，而不是笼统的"登录失败"。
-            return jsonify({"code": 4000, "data": None,
-                            "msg": f"无法连接用户数据库：{exc}"}), 200
+            # ⚠️ 直接用 exc 的**已脱敏**文案（不含主机/端口/库名），详细原因在服务端控制台 ——
+            #    这条 msg 会被前端弹给用户看，不能带数据库部署信息。
+            return jsonify({"code": 4000, "data": None, "msg": str(exc)}), 200
 
         if not row or not auth.verify_password(row.get("PasswordHash"), password):
             auth.log_operation("login", target=username, result="失败",
@@ -780,5 +781,8 @@ def register_dvadmin(app) -> None:
         return jsonify({
             "code": 404,
             "data": None,
-            "msg": f"未找到该路径：{request.path}",
+            # ⚠️ 文案里**不回显请求路径**：这个 body 会被前端直接弹给用户，
+            #    带上 `/api/xxx` 就等于把内部接口公布出去（见"不暴露接口"的约定）。
+            #    排查要看具体路径时，服务端控制台的请求日志里每一条都有。
+            "msg": "请求的接口不存在",
         }), 404

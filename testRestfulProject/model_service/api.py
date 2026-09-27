@@ -1971,7 +1971,15 @@ class DatasetSignal(Resource):
         }, 200
 # ================================ 系统管理 ================================
 class SystemInfo(Resource):
-    """GET /system —— 运行信息：Python/平台、关键依赖版本、路径、库表行数、产物/图/日志 占用。"""
+    """GET /system —— 运行信息：Python/平台、关键依赖版本、路径、库表行数、产物/图/日志 占用。
+
+    ⚠️ **需登录**（原先匿名可读）。这里回的是**服务器内部结构**：解释器绝对路径、
+    项目/模型/临时/图库/日志目录、装了哪些包、库表行数。
+    匿名就能读到，等于把部署结构白送给任何能访问端口的人 —— 与 `GET /health` 的处理一致
+    （/health 对匿名只回存活/库连通/鉴权开关，刻意隐藏路径与库名）。
+    数据源页「系统管理」本身就在登录之后，加这道门不影响任何前端功能。
+    """
+    @require_login
     def get(self):
         # 内部小工具：某个包读不到版本不能让整个 /system 500 —— 没安装算 None（前端显示"未安装"），
         # 其它异常退化成"读取失败"（安装元数据损坏之类，属于"知道有问题但不致命"）
@@ -2014,7 +2022,12 @@ class SystemInfo(Resource):
                      "dir": str(config.log_dir)},
         }, 200
 class SystemLogs(Resource):
-    """GET /system/logs —— 训练日志文件列表（按修改时间倒序）。"""
+    """GET /system/logs —— 训练日志文件列表（按修改时间倒序）。
+
+    ⚠️ **需登录**（原先匿名可读）：回的是日志目录与日志文件名（含模型名、日期），
+    属于运维内部信息。日志正文由下面的 SystemLogFile 提供，同样要登录。
+    """
+    @require_login
     def get(self):
         # 倒序 = 最近写的日志排最前，前端下拉默认就落在"最近一次训练"上
         files = sorted(config.log_dir.glob("*.log"), key=lambda p: p.stat().st_mtime, reverse=True)
@@ -2024,7 +2037,8 @@ class SystemLogs(Resource):
              "modified": datetime.fromtimestamp(p.stat().st_mtime).strftime("%Y-%m-%d %H:%M:%S")}
             for p in files]}, 200
 class SystemLogFile(Resource):
-    """GET /system/logs/<name>?tail=N —— 看某个日志的尾部 N 行。"""
+    """GET /system/logs/<name>?tail=N —— 看某个日志的尾部 N 行。⚠️ 需登录（同 SystemLogs）。"""
+    @require_login
     def get(self, name):
         # 只接受纯文件名：挡掉 `../` 之类的路径，否则能读到日志目录之外的文件
         if Path(name).name != name:
@@ -2170,6 +2184,18 @@ def register_api(api) -> None:
     """把 _ROUTES 里的资源挂到 flask_restful.Api 上（由 main.py 调用）。"""
     for resource, paths in _ROUTES:
         api.add_resource(resource, *paths)
+    # ⚠️ flask_restful 自带的错误页是**英文**的，而且它在框架内部就处理掉了自己路由里抛的异常
+    # （Api.error_router → handle_error），Flask 的 `@app.errorhandler(404)` 根本轮不到：
+    # 最典型的是 `send_from_directory` 找不到文件时抛的 NotFound ——
+    # 前端会拿到 `{"message": "The requested URL was not found on the server. ..."}` 这种英文页。
+    # 用框架支持的 `errors` 表（按异常**类名**匹配）换成中文，并且**不回显请求路径**
+    # （探测信息最小化：区分"路径不存在"与"文件不存在"没有意义，反而多给了线索）。
+    # ⚠️ 框架会把 "status" 一起写进 body（handle_error 里 data.update(custom_data)），这是它的行为，别去改。
+    api.errors.setdefault("NotFound", {"status": 404, "message": "接口或文件不存在"})
+    api.errors.setdefault("MethodNotAllowed", {"status": 405, "message": "该接口不支持此请求方法"})
+    # ⚠️ 未捕获异常的 500（{"message": "Internal Server Error"}）仍是英文：框架的 errors 表按类名匹配，
+    # 没法"一网打尽"所有异常类型。项目里的做法是**各视图自己把异常收成中文 400/409/503**，
+    # 500 只是兜底，属于已知的遗留项（见 docs.html §13）。
     # ⚠️ 收尾必须调用它：脱敏挂在 app.after_request 上，跟资源注册顺序无关，
     # 但放在这里能保证"谁用 register_api 谁就自动带上出口脱敏"——漏挂一次，所有响应都在裸奔真实路径。
     # 注意这里传的是 flask_restful.Api 对象本身（_install_path_mask 内部自己取 api.app）

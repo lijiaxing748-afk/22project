@@ -245,7 +245,9 @@ def register_frontend(app, dist: Path | None = None) -> None:
         # ① 已知接口前缀（或第一段是已知接口资源）→ 如实 404，不交给前端路由
         first_seg = path.split("/")[0] if path else ""
         if path.startswith(_API_PREFIXES) or first_seg in _api_segments():
-            return {"error": f"接口不存在：/{path}"}, 404
+            # ⚠️ 不回显请求路径：该 body 会经前端直接弹给用户，带上路径等于公布内部接口。
+            #    要看具体路径，服务端控制台的请求日志里每一条都有。
+            return {"error": "接口不存在"}, 404
 
         # ② 真实文件
         if target.is_file():

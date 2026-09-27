@@ -64,9 +64,15 @@ function createService() {
 				return dataAxios;
 			}
 			// 根据 code 进行判断
+			//
+			// ⚠️ 这一段的报错文案**一律不带接口地址**（原先每条都拼了 `: ${response.config.url}`，
+			//    例如登录失败会弹"用户名或密码错误: /api/login/"）。
+			//    两条理由：① 路径对用户没有任何意义，只会让人困惑；
+			//    ② 提示是直接弹给用户看的，等于把内部接口清单一条条公布出去（"不暴露接口"的约定）。
+			//    排查时要看具体路径，看浏览器 Network 面板或下面的 console.error 就够了。
 			if (code === undefined) {
 				// 如果没有 code 代表这不是项目后端开发的接口
-				errorCreate(`非标准返回：${dataAxios}， ${response.config.url}`, false);
+				errorCreate('服务端返回格式不符合约定', false);
 				return dataAxios;
 			} else {
 				// 有 code 代表这是一个后端接口 可以进行进一步的判断
@@ -74,7 +80,7 @@ function createService() {
 					case 400:
 						// Local.clear();
 						// Session.clear();
-						errorCreate(`${dataAxios.msg}: ${response.config.url}`);
+						errorCreate(dataAxios.msg || '请求参数有误');
 						// window.location.reload();
 						break;
 					case 401:
@@ -87,7 +93,7 @@ function createService() {
 								// window.location.reload();
 							},
 						});
-						errorCreate(`${dataAxios.msg}: ${response.config.url}`);
+						errorCreate(dataAxios.msg || '登录认证失败，请重新登录');
 						break;
 					case 2000:
 						// @ts-ignore
@@ -117,11 +123,11 @@ function createService() {
 								});
 							break;
 						}
-						errorCreate(`${dataAxios.msg}: ${response.config.url}`);
+						errorCreate(dataAxios.msg || '操作失败');
 						break;
 					default:
 						// 不是正确的 code
-						errorCreate(`${dataAxios.msg}: ${response.config.url}`);
+						errorCreate(dataAxios.msg || '操作失败');
 						break;
 				}
 				return Promise.reject(dataAxios);
@@ -148,7 +154,8 @@ function createService() {
 					error.message = '拒绝访问';
 					break;
 				case 404:
-					error.message = `请求地址出错: ${error.response.config.url}`;
+					// ⚠️ 原先这里拼的是 `请求地址出错: ${url}`，等于把请求路径弹给用户看。改成中性文案。
+					error.message = '接口不存在（可能是后端版本与前端不一致）';
 					break;
 				case 408:
 					error.message = '请求超时';

@@ -759,15 +759,45 @@ Roles ─► Users ─► OperationLogs</code></pre>
     <span class="badge b-warn">需权限</span> 还要具备对应权限点
   </p>
 
+  <h3>约定：不向外暴露接口</h3>
+  <p>
+    这里的"接口"指<strong>路径本身</strong>。路径一旦出现在用户能看到的地方（弹窗、报错、页面），
+    等于把内部接口清单一条条公布出去，对用户毫无帮助、对排查也没必要。因此：
+  </p>
+  <div class="tw">
+    <table>
+      <thead><tr><th>位置</th><th>做法</th></tr></thead>
+      <tbody>
+        <tr><td>前端所有报错提示</td><td>文案<strong>不带 <code>/api/xxx</code></strong>。原先登录失败会弹"用户名或密码错误: <code>/api/login/</code>"，现已去掉路径（要看路径请开浏览器 Network 面板）</td></tr>
+        <tr><td>后端 404 响应</td><td>统一回 <code>{"code":404,"msg":"请求的接口不存在"}</code>，<strong>不回显请求路径</strong>（服务端控制台的请求日志里有）</td></tr>
+        <tr><td>匿名 <code>GET /api</code> 接口索引</td><td>只回 <code>{"endpoints": {}}</code> 加一句提示，<strong>不列任何路由</strong>；登录后才给全量清单</td></tr>
+        <tr><td>匿名 <code>GET /health</code></td><td>只回存活 / 库连通 / 鉴权开关，<strong>隐藏路径、库名与产物清单</strong></td></tr>
+        <tr><td><code>GET /system</code>、<code>/system/logs</code></td><td><strong>需登录</strong>（含服务器目录、装了哪些包、日志文件名等内部结构）</td></tr>
+        <tr><td>报错里的本机目录</td><td>响应出口统一脱敏（<code>_install_path_mask</code>）：绝对路径 → <code>&lt;工作区&gt;</code> / <code>&lt;用户目录&gt;</code> / <code>&lt;本机&gt;</code></td></tr>
+        <tr><td>数据库连不上的报错</td><td>回给调用方的文案<strong>不含主机/端口/库名</strong>，详细原因只打服务端控制台</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="warn">
+    <b>边界（诚实说明）</b>
+    <p>
+      上面管的是"<strong>不暴露路径</strong>"，不是"把一切接口都锁起来"：
+      <strong>只读业务接口仍是匿名可读的</strong>（<code>/models</code>、<code>/datasets</code>、<code>/exports</code>、
+      <code>/figures</code> 等，见下表「认证」列）—— 这是"实验室内网共享"的定位。
+      <strong>所有会改数据的接口都要求登录</strong>；训练与推理流水还按账号隔离。
+      要把只读接口也一起收紧，改 <code>api.py</code> 里对应资源类加 <code>@require_login</code> 即可。
+    </p>
+  </div>
+
   <div class="tw">
     <table>
       <thead><tr><th>方法</th><th>路径</th><th class="c">认证</th><th>用途</th></tr></thead>
       <tbody>
         <tr><td>GET</td><td><code>/api</code> · <code>/</code></td><td class="c"><span class="badge b-mute">匿名</span></td><td>接口索引（<strong>匿名只回一句"需要登录后查看"</strong>）</td></tr>
         <tr><td>GET</td><td><code>/health</code></td><td class="c"><span class="badge b-mute">匿名</span></td><td>体检（<strong>匿名只回存活/库连通/鉴权开关</strong>，不给路径与库名）</td></tr>
-        <tr><td>GET</td><td><code>/system</code></td><td class="c"><span class="badge b-mute">匿名</span></td><td>运行环境与依赖信息</td></tr>
+        <tr><td>GET</td><td><code>/system</code></td><td class="c"><span class="badge b-info">需登录</span></td><td>运行环境与依赖信息（含<strong>服务器目录与包版本</strong>，故需登录）</td></tr>
         <tr><td>POST</td><td><code>/system/maintenance</code></td><td class="c"><span class="badge b-info">需登录</span></td><td>维护动作（当前只支持清空图库）；<strong>破坏性操作，会写 maintenance 操作日志</strong></td></tr>
-        <tr><td>GET</td><td><code>/system/logs</code> · <code>/system/logs/&lt;名&gt;</code></td><td class="c"><span class="badge b-mute">匿名</span></td><td>日志清单 / 读某个日志</td></tr>
+        <tr><td>GET</td><td><code>/system/logs</code> · <code>/system/logs/&lt;名&gt;</code></td><td class="c"><span class="badge b-info">需登录</span></td><td>日志清单 / 读某个日志（日志里有服务器路径，故需登录；出口还会再脱敏一遍）</td></tr>
         <tr><td>GET</td><td><code>/models</code></td><td class="c"><span class="badge b-mute">匿名</span></td><td>模型清单（登记信息 + 产物 + 指标）</td></tr>
         <tr><td>POST</td><td><code>/models</code></td><td class="c"><span class="badge b-warn">model:write</span></td><td>新建模型登记行</td></tr>
         <tr><td>GET</td><td><code>/models/&lt;模型&gt;</code></td><td class="c"><span class="badge b-mute">匿名</span></td><td>模型档案（产物参数 + 指标）</td></tr>
@@ -1056,7 +1086,8 @@ Roles ─► Users ─► OperationLogs</code></pre>
   <div class="warn">
     <b>交付前必做</b>
     <p>
-      ① <strong>删掉或改掉演示账号的口令</strong>（<code>user</code> / <code>User@2026</code> 是公开的演示口令）；
+      ① <strong>删掉或改掉演示账号的口令</strong>（内置的演示口令是<strong>公开的</strong>，部署前务必替换；
+      内置值见仓库根目录的 <code>README.md</code>，或用 <code>MODEL_BOOTSTRAP_ADMIN_PASSWORD</code> 指定）；
       ② 把 <code>db.env</code> 里的 <code>MODEL_SECRET_KEY</code> 换成随机值；
       ③ 确认 <code>MODEL_AUTH_DISABLED</code> 没有被打开（打开时 <code>/health</code> 会显式回报 <code>auth_disabled</code>）；
       ④ <strong>决定要不要留自助注册</strong>：正式交付建议 <code>MODEL_ALLOW_REGISTER=0</code>；

@@ -42,9 +42,13 @@ def _guard_path(raw_path: str) -> Path:
         p = first if first.exists() else config.project_dir / p
     p = p.resolve()
     if config.workspace_dir.resolve() not in p.parents and p != config.workspace_dir.resolve():
-        raise InvalidInput(f"出于安全考虑，只允许读取工作区内的文件：{config.workspace_dir}")
+        # ⚠️ 不回显工作区**绝对路径**：这条提示会经 api 层原样回给调用方，
+        #    等于把服务器的目录结构告诉对方（"不暴露接口与内部路径"的约定）。
+        raise InvalidInput("出于安全考虑，只允许读取工作区内的文件（不接受绝对路径或跳出工作区的路径）")
     if not p.is_file():
-        raise InvalidInput(f"文件不存在：{p}")
+        # ⚠️ 回显的是**调用方传进来的原文**，不是 resolve() 之后的绝对路径 ——
+        #    后者会把服务器目录结构带出去（例如 D:\22project\testRestfulProject\...）。
+        raise InvalidInput(f"文件不存在：{raw_path}")
     return p
 def _read_signal(path: Path, column: str | None = None, sheet: str | int | None = None) -> tuple[np.ndarray, str]:
     """读一列信号。支持 .mat（CWRU 的 DE 通道）、.npy、以及表格文件（csv/txt/xlsx/xls）。"""
