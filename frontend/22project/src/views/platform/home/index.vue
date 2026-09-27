@@ -97,6 +97,7 @@
 <script setup lang="ts" name="platformHome">
 import { computed, onMounted, reactive, ref } from 'vue';
 import { useRouter } from 'vue-router';
+import { ElMessage } from 'element-plus';
 import { platformApi } from '/@/api/platform';
 
 const router = useRouter();
@@ -134,16 +135,23 @@ const openDocs = (hash = '') => {
 };
 
 const load = async () => {
-	const [h, m, t, k] = await Promise.all([
-		platformApi.health(),
-		platformApi.models(),
-		platformApi.trainings(5),
-		platformApi.tasks(5),
-	]);
-	health.value = h as any;
-	artifacts.value = (m as any).artifacts || [];
-	trainings.value = (t as any).trainings || [];
-	tasks.value = (k as any).tasks || [];
+	// ⚠️ 这里以前是**裸 await Promise.all**：任一接口 500 / 断网就变成"未处理的 Promise 拒绝"，
+	//    页面停在空白、用户一句话都看不到，只能刷新碰运气。加载失败必须说出来。
+	try {
+		const [h, m, t, k] = await Promise.all([
+			platformApi.health(),
+			platformApi.models(),
+			platformApi.trainings(5),
+			platformApi.tasks(5),
+		]);
+		health.value = h as any;
+		artifacts.value = (m as any).artifacts || [];
+		trainings.value = (t as any).trainings || [];
+		tasks.value = (k as any).tasks || [];
+	} catch (e: any) {
+		// e.message 已被 platformRequest/httpError 统一成中文（后端文案 → 状态码中文 → 网络层中文）
+		ElMessage.error(e?.message || '首页数据加载失败，请确认后端服务已启动后刷新重试');
+	}
 };
 
 onMounted(load);

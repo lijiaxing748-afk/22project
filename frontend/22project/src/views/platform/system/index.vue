@@ -171,20 +171,43 @@ const loadApi = async () => {
 };
 
 const cleanup = async () => {
-	await ElMessageBox.confirm('确认清空 data/figures 下所有 PNG？此操作不可撤销。', '危险操作', { type: 'warning' });
-	const res: any = await platformApi.maintenance('figures');
-	ElMessage.success(`已删除 ${res.removed} 张，释放 ${res.freed_kb} KB`);
-	await loadSystem();
+	// ⚠️ ElMessageBox 用 **reject** 表示"用户点了取消"：不接住就是一条未处理的 Promise 拒绝，
+	//    控制台留红字、看着像 bug（其余页面的确认框都写了这个 catch，这里原来漏了）。
+	try {
+		await ElMessageBox.confirm('确认清空 data/figures 下所有 PNG？此操作不可撤销。', '危险操作', { type: 'warning' });
+	} catch {
+		return;
+	}
+	try {
+		const res: any = await platformApi.maintenance('figures');
+		ElMessage.success(`已删除 ${res.removed} 张，释放 ${res.freed_kb} KB`);
+		await loadSystem();
+	} catch (e: any) {
+		ElMessage.error(e?.message || '清空图库失败');
+	}
 };
 const removeArtifact = async () => {
-	await ElMessageBox.confirm(`确认删除模型 ${del.name} 的产物？权重 / scaler / meta 会一并删除。`, '危险操作', { type: 'warning' });
-	const res: any = await platformApi.deleteArtifact(del.name);
-	ElMessage.success(`已删除 ${res.deleted}（${res.files} 个文件）`);
-	await loadSystem();
+	try {
+		await ElMessageBox.confirm(`确认删除模型 ${del.name} 的产物？权重 / scaler / meta 会一并删除。`, '危险操作', { type: 'warning' });
+	} catch {
+		return;
+	}
+	try {
+		const res: any = await platformApi.deleteArtifact(del.name);
+		ElMessage.success(`已删除 ${res.deleted}（${res.files} 个文件）`);
+		await loadSystem();
+	} catch (e: any) {
+		ElMessage.error(e?.message || '删除模型产物失败');
+	}
 };
 
 onMounted(async () => {
-	await Promise.all([loadSystem(), loadLogs(), loadApi()]);
+	// ⚠️ 以前是裸 Promise.all：任一接口 500/断网 → 未处理拒绝 + 整页空白且零提示。
+	try {
+		await Promise.all([loadSystem(), loadLogs(), loadApi()]);
+	} catch (e: any) {
+		ElMessage.error(e?.message || '系统信息加载失败，请确认后端服务已启动后刷新重试');
+	}
 });
 </script>
 

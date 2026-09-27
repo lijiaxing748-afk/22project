@@ -967,15 +967,73 @@ def _rewrite_meta_model(directory: Path, model_name: str) -> None:
     if isinstance(payload, dict):
         payload["model"] = model_name
         meta_file.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-def _rename_model(old: str, new: str) -> dict:
-    """模型改名的**磁盘侧**动作：搬产物目录 + 改 meta.json + 改库里已存的路径。
+def _safe_rename(src: Path, dst: Path) -> bool:
+    """同盘重命名，**失败不抛**（回滚路径专用）。返回是否真的搬了。
 
-    改名必须**同步四处**，少一处就出现"找得到一半、找不到另一半"的鬼状态：
-      ① 产物目录      data/models/<老名> → data/models/<新名>
-      ② 产物 meta     data/models/<新名>/meta.json 里的 model 字段
-      ③ 库里的路径    Trainings.ModelPath / InferenceTasks.InputPath·OutputPath /
-                      ModelDeployments.DeployedPath（实际由 db.rename_model_paths 按前缀 REPLACE）
-      ④ Models 表行   ModelName（本函数**不管**，由调用方接着调 database.update_model(..., new_name=)）
+    ⚠️ 回滚是在异常处理里跑的，再抛一个新异常会把真正的失败原因盖掉，所以这里一律吞异常。
+    ⚠️ 目标已存在时**原地不动**（返回 False）：宁可留下"没搬回去"，也不能覆盖掉别人的目录
+    —— 这个判断原来只写在 _undo_rename 里，现在三棵目录共用同一份。
+    """
+    try:
+        if src == dst or dst.exists():
+            return False
+        src.rename(dst)
+        return True
+    except OSError:
+        return False
+
+
+def _rollback_moves(moved: list[tuple[Path, Path]]) -> None:
+    """把 `_rename_model` 已经搬走的目录按**相反顺序**搬回去（best-effort，绝不抛）。
+
+    ⚠️ 必须按相反顺序：中途失败时最后搬的那个先回去，避免目标位置互相踩。
+    """
+    for done_src, done_dst in reversed(moved):
+        _safe_rename(done_dst, done_src)
+
+
+def _rename_path_pairs(old_key: str, new_key: str, old_formal: str, new_formal: str) -> list[tuple[str, str]]:
+    """改名时要替换的**库内路径前缀**清单（老 → 新），交给 db.rename_model_paths 逐列 REPLACE。
+
+    改名会搬三棵"按模型名分目录"的树，库里对应三套前缀，**少一套就会留下指向不存在目录的记录**：
+        · data/models/<产物键>/   ← Trainings.ModelPath（权重路径）
+        · data/figures/<产物键>/  ← InferenceTasks.OutputPath（图目录是按模型名分的）
+        · data/exports/<产物键>/  ← ModelDeployments.DeployedPath（发布包同理）
+        · /models/<库正式名>/     ← ModelDeployments.DeployUrl
+          ⚠️ 这个 URL 里用的是**库正式名**（1DCNN），不是产物键（1dcnn）。原先只按产物键拼模式，
+             大小写对不上 → 这个 URL **永远改不到** → 改名后发布包链接指向已不存在的模型名。
+    每种前缀都要 Windows 反斜杠与 POSIX 斜杠两份：库里两种写法都出现过。
+    产物键与正式名相同时（如 cwt_cnn）去重，避免同一对模式重复执行。
+    """
+    pairs: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for old_name, new_name in ((old_key, new_key), (old_formal, new_formal)):
+        # 名字没变（或空）就没什么可换的：产物键与正式名常常相同，去重靠下面的 seen
+        if not old_name or old_name == new_name:
+            continue
+        for tree in ("models", "figures", "exports"):
+            for pair in ((f"\\{tree}\\{old_name}\\", f"\\{tree}\\{new_name}\\"),
+                         (f"/{tree}/{old_name}/", f"/{tree}/{new_name}/")):
+                if pair not in seen:
+                    seen.add(pair)
+                    pairs.append(pair)
+    return pairs
+
+
+def _rename_model(old: str, new: str) -> dict:
+    """模型改名的**磁盘侧**动作：搬三棵目录 + 改 meta.json + 改库里已存的路径。
+
+    必须**同步四件事**，少一件就出现"找得到一半、找不到另一半"的鬼状态：
+      ① 产物目录   data/models/<老产物键>  → data/models/<新名>
+      ② 图库目录   data/figures/<老产物键> → data/figures/<新名>
+      ③ 发布包目录 data/exports/<老产物键> → data/exports/<新名>
+      Models.ModelName 由调用方接着调 database.update_model(..., new_name=) 改。
+    ④ 库里的路径前缀 + 产物 meta.json 的 model 字段
+
+    ⚠️ ②③ 原先**没搬**。图库与发布包都是**按模型名分目录**的（figures/<名>/、exports/<名>/），
+       只搬产物目录的话：改名后新名字下列不出任何图与发布包、下载链接直接 404，
+       而库里那条 ModelDeployments 记录还写着"已导出" —— 界面上就是一个点了报错的按钮。
+       同时 DeployUrl 里的模型名也改不到（大小写不匹配，见 _rename_path_pairs）。
 
     调用顺序（api 里就是这么用的）：先 _rename_model()，再 database.update_model(..., new_name=)；
     搬完目录后改库失败时用 _undo_rename() 搬回去，保证"库表"和"磁盘"不脱钩。
@@ -985,60 +1043,84 @@ def _rename_model(old: str, new: str) -> dict:
     """
     key = _artifact_key(old)                     # 真实目录名（1DCNN → 1dcnn）
     safe = _safe_model_name(new)
-    old_dir, new_dir = config.model_dir / key, config.model_dir / safe
-    moved = False                                # 真搬过目录才置位：没搬过就没什么可回滚的
-    if old_dir.is_dir():
+    models_dir = config.model_dir / safe
+    # 三棵树：产物 / 图库 / 发布包。某个模型没图、没发过包时对应目录不存在 → 跳过，不算失败
+    plan = ((config.model_dir / key, models_dir, "产物"),
+            (FIG_DIR / key, FIG_DIR / safe, "图库"),
+            (config.export_dir / key, config.export_dir / safe, "发布包"))
+    moved: list[tuple[Path, Path]] = []
+    for src, dst, label in plan:
+        if not src.exists():
+            continue
         # ⚠️ 用 exists() 而不是 is_dir()：同名位置被一个普通文件占着也照样不能搬，
         # 早点报错好过 Windows 上 rename 抛一个语焉不详的异常
-        if new_dir.exists():
-            raise InvalidInput(f"产物目录 data/models/{safe} 已存在，先删掉它或换个名字")
-        old_dir.rename(new_dir)                  # 同一磁盘上的重命名，秒完成
-        moved = True
-        # 每个版本一个子目录（v1/v2/...），里面各有一份 meta.json，model 字段全部要跟着改
-        _rewrite_meta_model(new_dir, safe)
+        if dst.exists():
+            # 半路失败要把**已经搬走的**搬回去再抛，别留下"产物搬了、图库没搬"的中间态
+            _rollback_moves(moved)
+            raise InvalidInput(f"{label}目录 data/{dst.parent.name}/{safe} 已存在，先删掉它或换个名字")
+        try:
+            src.rename(dst)                      # 同一磁盘上的重命名，秒完成
+        except OSError as exc:
+            # ⚠️ Windows 上如果目录里有文件**正被打开**，rename 会抛 PermissionError [WinError 5]：
+            #    最典型的场景就是"有人正在下载该模型的发布包"（send_from_directory 的文件句柄还开着），
+            #    或正在读产物权重。这时**必须把已经搬走的目录搬回去**，否则会留下
+            #    "产物搬了、图库没搬"的半改名状态 —— 而库里路径前缀也还没动，两边彻底对不上。
+            #    （实测复现：测试里先下载了一个 zip，紧接着改名 → 就是这里抛的 WinError 5。）
+            #    这里转成 InvalidInput（ValueError 子类），调用方会回 400 + 这句中文，
+            #    而不是把一个未捕获的 OSError 冒成 500。
+            _rollback_moves(moved)
+            raise InvalidInput(f"{label}目录搬不动：{exc}。"
+                               f"常见原因是有人正在下载该模型的发布包或正在读取产物，稍后重试即可")
+        moved.append((src, dst))
+    if moved:
+        _rewrite_meta_model(models_dir, safe)
     try:
-        paths = database.rename_model_paths(key, safe)   # Trainings.ModelPath 等路径前缀
+        paths = database.rename_model_paths(_rename_path_pairs(key, safe, old, new))   # 库里的路径前缀
     except DBError:
-        # 改库失败 → 把目录原样搬回去，宁可整体失败成一个"没改过名"的干净状态，
-        # 也不能留下"库说新名、磁盘是老名"的脱钩（meta 与路径前缀由调用方的 _undo_rename 收尾）
-        if moved:
-            new_dir.rename(old_dir)
+        # 改库失败 → 把三棵目录原样搬回去、meta 写回老名，宁可整体失败成一个"没改过名"的干净状态，
+        # 也不能留下"库说新名、磁盘是老名"（或"目录=旧名、meta=新名"）的脱钩。
+        # ⚠️ meta 必须一起回滚：原先只搬回产物目录、meta 没回滚，而 rename 又还没赋值给调用方，
+        #    调用方的 `if rename: _undo_rename()` 根本不会执行 → 中间态就一直留在磁盘上（已修）。
+        _rollback_moves(moved)
+        _rewrite_meta_model(config.model_dir / key, key)
         raise
-    # 返回值原样带在 PUT 响应里（改名与否、目录是否真的搬了、路径改了几行），供前端提示与排错
-    return {"from": key, "to": safe, "artifact_dir_moved": moved,
-            "artifact_dir": str(new_dir) if moved else None,
+    # 返回值原样带在 PUT 响应里（改名与否、搬了哪几棵目录、路径改了几行），供前端提示与排错。
+    # ⚠️ artifact_dir_moved 只表示**产物目录**搬没搬（前端文案是"产物目录已搬到…"），
+    #    图库/发布包另用 dirs_moved 报，别把两者混成一个布尔。
+    models_moved = any(dst == models_dir for _, dst in moved)
+    return {"from": key, "to": safe, "artifact_dir_moved": models_moved,
+            "artifact_dir": str(models_dir) if models_moved else None,
+            "dirs_moved": [dst.name for _, dst in moved],
             "path_rows_updated": paths,
             "note": ("内置模型（1DCNN/cwt_cnn/adtk）改名后不能再按老名字训练——训练模板是硬编码的；"
                      "按新名字看档案/推理不受影响") if key in MODEL_META else None}
 def _undo_rename(old: str, new: str) -> None:
-    """update_model 失败时回滚 _rename_model 的副作用（目录 + meta + 路径）。
+    """update_model 失败时回滚 _rename_model 的副作用（三棵目录 + meta + 库内路径前缀）。
 
     这里是**回滚路径**，原则是"尽力恢复、绝不抛异常"：它是在异常处理里被调用的，
-    再抛一个新异常会把真正的失败原因（改库为什么失败）彻底盖掉，且此时 _rename_model
-    已经搬过目录，用户看到的现象会更乱。所以下面所有失败分支都是 return / pass。
+    再抛一个新异常会把真正的失败原因（改库为什么失败）彻底盖掉，而此时 _rename_model
+    已经搬过目录，用户看到的现象会更乱。所以下面所有失败分支都是 return / pass
+    （搬目录交给 _safe_rename，它自己不会抛）。
     """
     key = _artifact_key(old)
     # ⚠️ 回滚路径不允许再抛异常（会盖掉"改库为什么失败"这个真正的错误），
     # 所以这里用不抛异常的 _sanitize_name（而不是会 raise 的 _safe_model_name），
     # 清洗不出来就退回原文照搬。
     safe = _sanitize_name(new, new)
-    old_dir, new_dir = config.model_dir / key, config.model_dir / safe
-    # 三个条件缺一不可：新目录得真的在、老目录不能已被别人占用（占用时宁可不动，避免把人家覆盖掉）、
-    # 清洗后的名字确实和老名字不同（相同就没必要搬）
-    if new_dir.is_dir() and not old_dir.exists() and safe != key:
-        try:
-            new_dir.rename(old_dir)
-        except OSError:
-            # 目录都搬不回去，后面改 meta/路径也没有意义，直接放弃整次回滚
-            return
-    # 与 _rename_model 对称：目录搬回老名后，各版本 meta 里的 model 也要写回老名
-    _rewrite_meta_model(old_dir, key)
-    # 路径前缀反向改回（rename_model_paths 是 REPLACE 前缀，反向调用即可复原）。
-    # ⚠️ 这步和上面的目录搬回是相互独立的：能走到本函数，就说明 _rename_model 已经完整跑完
-    # （它内部的 rename_model_paths 已经把库里路径改成新前缀了，否则会抛 DBError 而不是走到这），
-    # 所以即使目录因为上面三个条件不满足而没搬回来，路径前缀也必须改回去。
+    if safe == key:
+        return                                   # 名字没变过，没什么可回滚的
+    # 三棵目录都搬回老名。_safe_rename 在"老目录已被别人占用"时原地不动（避免覆盖掉人家的目录）。
+    # ⚠️ 这里**不能**像原先那样"搬不动就 return"：路径前缀的复原与目录能不能搬回是两件独立的事，
+    #    提前 return 会把库里的新前缀留在原地（库说新名、目录还是老名），正是要避免的那种脱钩。
+    for tree in (config.model_dir, FIG_DIR, config.export_dir):
+        _safe_rename(tree / safe, tree / key)
+    # 与 _rename_model 对称：目录搬回老名后，meta 里的 model 也要写回老名（读不到文件就静默跳过）
+    _rewrite_meta_model(config.model_dir / key, key)
+    # 路径前缀反向改回（REPLACE 前缀，反向调用即可复原）。
+    # ⚠️ 能走到本函数，就说明 _rename_model 已经完整跑完（它内部的 rename_model_paths 已经把库里路径
+    #    改成新前缀了，否则会抛 DBError 而不是走到这），所以即使目录搬不回去，路径前缀也必须改回去。
     try:
-        database.rename_model_paths(safe, key)
+        database.rename_model_paths(_rename_path_pairs(safe, key, new, old))
     except DBError:
         pass                                     # 回滚里的失败只能吞掉，别再抛出去盖住原始异常
 class ArtifactDetail(Resource):

@@ -947,20 +947,25 @@ class Database:
         self.ensure_schema()
         with self.cursor() as cur:
             return self._find_id(cur, "Models", "ModelID", "ModelName", name) is not None
-    def rename_model_paths(self, old: str, new: str) -> dict:
-        """模型改名后，把库里已存的**路径前缀**一起换掉（...\\models\\old\\... → ...\\models\\new\\...）。
+    def rename_model_paths(self, pairs: list[tuple[str, str]]) -> dict:
+        """模型改名后，把库里已存的**路径前缀**一起换掉（老前缀 → 新前缀）。
 
-        只动路径列：Trainings.ModelPath、InferenceTasks.InputPath/OutputPath、
-        ModelDeployments.DeployedPath/DeployUrl（清单见 _PATH_FIELDS）。
-        ⚠️ 为什么必须做：改名时 api._rename_model() 会把磁盘目录一并搬走，库里这些列存的还是旧目录名，
+        `pairs` 是 `[(老前缀, 新前缀), ...]`，由 `api._rename_path_pairs()` 按"这次改名动了哪几棵树"
+        给出：产物 `data/models/<名>/`、图库 `data/figures/<名>/`、发布包 `data/exports/<名>/`，
+        以及发布 URL 里的 `/models/<库正式名>/`（⚠️ 那里用的是**大写正式名 1DCNN**，不是小写产物键
+        `1dcnn` —— 原先只按小写键拼模式，大小写对不上，DeployUrl 永远改不到）。
+        ⚠️ 为什么把"拼哪些模式"交给调用方：三棵树的前缀各不相同，同一列里出现过 Windows 反斜杠与
+        POSIX 斜杠两种写法，只有 api 层清楚这次究竟搬了哪几个目录。
+
+        要动的列见 `_PATH_FIELDS`：Trainings.ModelPath、InferenceTasks.InputPath/OutputPath、
+        ModelDeployments.DeployedPath/DeployUrl。
+        ⚠️ 为什么必须做：改名时 api._rename_model() 会把目录一并搬走，库里这些列存的还是老目录名，
         不换掉就会出现"记录里指着一个已经不存在的路径"，列表页/明细页一致显示产物丢失。
-        实现用 SQL 的 REPLACE() 就地改（两种分隔符各来一遍，兼容 Windows 反斜杠与 POSIX 斜杠），
-        rowcount 是"被替换到的行数"，全 0 也不报错——本来就可能没有任何记录引用过旧路径。
+        实现用 SQL 的 REPLACE() 就地改，rowcount 是"被替换到的行数"，全 0 也不报错——本来就可能没有任何记录引用过。
         ⚠️ touched 的键固定用 cols[0]（该表首列名），而值是所有列累加的行数：
         键名只当"这张表动过"的标记看，不代表只有首列被改。
         """
         self.ensure_schema()
-        pairs = ((f"\\models\\{old}\\", f"\\models\\{new}\\"), (f"/models/{old}/", f"/models/{new}/"))
         touched: dict[str, int] = {}
         with self.cursor(commit=True) as cur:
             for table, cols in self._PATH_FIELDS:

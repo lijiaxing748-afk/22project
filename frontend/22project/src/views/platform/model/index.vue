@@ -1064,7 +1064,12 @@ const doPredict = async () => {
 };
 
 onMounted(async () => {
-	await Promise.all([loadModels(), loadTrainings(), loadTasks(), loadDatasets()]);
+	// ⚠️ 以前是裸 Promise.all：任一接口 500/断网 → 未处理拒绝 + 整页空白且零提示。
+	try {
+		await Promise.all([loadModels(), loadTrainings(), loadTasks(), loadDatasets()]);
+	} catch (e: any) {
+		ElMessage.error(e?.message || '模型页数据加载失败，请确认后端服务已启动后刷新重试');
+	}
 });
 </script>
 

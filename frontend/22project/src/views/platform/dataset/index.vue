@@ -246,8 +246,13 @@ const doRegister = async () => {
 };
 
 onMounted(async () => {
-	await Promise.all([loadDatasets(), loadDatasetDb()]);
-	if (tabularKeys.value.length) await preview(tabularKeys.value[0], tabularFiles(tabularKeys.value[0])[0]?.filename);
+	// ⚠️ 以前是裸 Promise.all：任一接口 500/断网 → 未处理拒绝 + 整页空白且零提示。
+	try {
+		await Promise.all([loadDatasets(), loadDatasetDb()]);
+		if (tabularKeys.value.length) await preview(tabularKeys.value[0], tabularFiles(tabularKeys.value[0])[0]?.filename);
+	} catch (e: any) {
+		ElMessage.error(e?.message || '数据集信息加载失败，请确认后端服务已启动后刷新重试');
+	}
 });
 </script>
 

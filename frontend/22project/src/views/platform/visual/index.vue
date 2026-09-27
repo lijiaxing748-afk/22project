@@ -178,8 +178,13 @@ const removeFigure = async (f: any) => {
 };
 
 onMounted(async () => {
-	await loadDatasets();
-	await Promise.all([loadSignal(), loadFigures()]);
+	// ⚠️ 以前是裸 Promise.all：任一接口 500/断网 → 未处理拒绝 + 整页空白且零提示。
+	try {
+		await loadDatasets();
+		await Promise.all([loadSignal(), loadFigures()]);
+	} catch (e: any) {
+		ElMessage.error(e?.message || '数据展示页加载失败，请确认后端服务已启动后刷新重试');
+	}
 });
 </script>
 
