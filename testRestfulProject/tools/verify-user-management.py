@@ -150,12 +150,14 @@ check("角色列表恰好是 admin / user 两种", role_keys == ["admin", "user"
 check("角色带权限点", all(isinstance(r.get("permissions"), list) for r in roles))
 _admin_perms = sorted(next((r["permissions"] for r in roles if r["key"] == "admin"), []))
 _user_perms = sorted(next((r["permissions"] for r in roles if r["key"] == "user"), []))
-check("admin 拥有全部权限点（含 user:manage / log:read / model:delete）",
-      {"user:manage", "log:read", "model:delete"} <= set(_admin_perms), _admin_perms)
-check("普通用户能训练/推理/发布/上传数据集",
-      {"train:run", "predict:run", "export:run", "dataset:write", "model:write"} <= set(_user_perms), _user_perms)
-check("普通用户**没有**用户管理/操作日志/删除模型产物",
-      not ({"user:manage", "log:read", "model:delete"} & set(_user_perms)), _user_perms)
+check("admin 拥有全部权限点（含 user:manage / log:read）",
+      {"user:manage", "log:read"} <= set(_admin_perms), _admin_perms)
+check("普通用户能训练/推理/发布/上传数据集/**删除模型产物**",
+      {"train:run", "predict:run", "export:run", "dataset:write", "model:write",
+       "model:delete"} <= set(_user_perms), _user_perms)
+# 差别只剩这两项：都涉及**别的账号**（能改别人的角色/口令、能看别人干了什么）
+check("普通用户**没有**用户管理/操作日志",
+      not ({"user:manage", "log:read"} & set(_user_perms)), _user_perms)
 
 # ---------------------------------------------------------------- 新建用户
 print("\n[4] 新建用户")

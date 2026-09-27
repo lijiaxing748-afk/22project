@@ -857,8 +857,11 @@ Roles ─► Users ─► OperationLogs</code></pre>
   <h3>两种身份</h3>
   <p>
     平台只有 <strong><code>admin</code>（管理员）</strong> 与 <strong><code>user</code>（普通用户）</strong> 两种身份，
-    差别<strong>只有三项</strong>：<strong>删除模型产物</strong>、<strong>用户管理</strong>、<strong>查看操作日志</strong>。
-    其余日常操作（训练、推理、发布、上传模型与数据集、删除发布包）两种身份都能做。
+    差别<strong>只有两项</strong>：<strong>用户管理</strong>、<strong>查看操作日志</strong>。
+    这两项都涉及<strong>别人的账号</strong>（能改别人的角色与口令、能看别人干了什么），所以只给管理员。
+    其余操作两种身份都能做：训练、推理、发布、上传模型与数据集、删除发布包，
+    <strong>以及删除模型产物</strong>——它看着危险，但影响面只在本机这一套产物上、重跑训练就能再生，
+    而各部署点的账号库彼此独立，删本机的模型影响不到任何别人的账号或数据。
   </p>
   <p>
     管理员在「用户管理」页可以<strong>把普通用户设为管理员</strong>，也可以<strong>停用 / 启用</strong>账号

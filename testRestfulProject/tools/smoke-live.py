@@ -118,11 +118,12 @@ def main() -> int:
             f"-> admin={len(seen['admin'])} user={len(seen['user'])}")
         chk("普通用户**没有**用户管理", "user:manage" not in seen["user"])
         chk("普通用户**没有**查看操作日志", "log:read" not in seen["user"])
-        chk("普通用户**没有**删除模型产物", "model:delete" not in seen["user"])
+        chk("普通用户有 model:delete（也能删模型产物）", "model:delete" in seen["user"])
         chk("普通用户有 train:run（能训练）", "train:run" in seen["user"])
         chk("普通用户有 predict:run（能推理）", "predict:run" in seen["user"])
-        chk("admin 三项管理员权限齐全",
-            {"user:manage", "log:read", "model:delete"} <= set(seen["admin"]))
+        chk("普通用户有 export:run（能发布）", "export:run" in seen["user"])
+        chk("admin 两项管理员权限齐全",
+            {"user:manage", "log:read"} <= set(seen["admin"]))
 
     print("\n--- G. 鉴权拦截 ---")
     x = requests.post(f"{base}/train", json={}, timeout=10)
