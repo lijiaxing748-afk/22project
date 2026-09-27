@@ -103,6 +103,10 @@ td.c,th.c{text-align:center}
 .card{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);padding:var(--sp-5);box-shadow:var(--shadow)}
 .card h4{margin:0 0 var(--sp-2);font-family:var(--font-display);font-size:16px}
 .card p{margin:0;font-size:13.5px;color:var(--text-2)}
+/* 能力卡右下角的"详见某节"跳转。用 mono + 次级色，避免和正文抢注意力 */
+.card .more{margin:var(--sp-3) 0 0;font-family:var(--font-mono);font-size:11.5px}
+.card .more a{color:var(--text-3)}
+.card .more a:hover{color:var(--accent)}
 .card .tag{display:inline-block;font-family:var(--font-mono);font-size:11.5px;color:var(--accent);
   background:var(--accent-soft);border-radius:4px;padding:1px 7px;margin-bottom:var(--sp-2)}
 
@@ -221,6 +225,12 @@ footer{margin-top:var(--sp-12);padding:var(--sp-6) 0 var(--sp-10);border-top:1px
     原始训练脚本跑完就把模型丢在内存里——仓库里没有权重文件、没有推理入口、数据库里一张表都没被写过，
     那条件链是<strong>断的</strong>。本平台把断点补上，并且保证每一环都能被验证。
   </p>
+  <p>
+    一句话概括：把「脚本跑完就散」的过程，变成一条<strong>有账号、有数据、有产物、有记录、能交付</strong>的线。
+    平台只有两种身份——<strong>管理员</strong>与<strong>普通用户</strong>：日常干活（训练、推理、发布、
+    删产物、看图）两种身份都能做，管理员多出<strong>用户管理</strong>与<strong>操作日志</strong>两项，
+    并且能把普通用户设为管理员、或停用某个账号（详见 <a href="#auth">10 登录与会话</a>）。
+  </p>
 
   <div class="grid g3" style="margin-top:var(--sp-6)">
     <div class="stat"><div class="v">3<small>套</small></div><div class="k">可训练模型（2 分类 + 1 无监督）</div></div>
@@ -228,35 +238,66 @@ footer{margin-top:var(--sp-12);padding:var(--sp-6) 0 var(--sp-10);border-top:1px
     <div class="stat"><div class="v">28<small>条</small></div><div class="k">业务接口（裸 JSON）</div></div>
     <div class="stat"><div class="v">30<small>条</small></div><div class="k">兼容层接口（信封）</div></div>
     <div class="stat"><div class="v">11<small>张</small></div><div class="k">MySQL 表（14 条外键）</div></div>
+    <div class="stat"><div class="v">8<small>个</small></div><div class="k">功能页（见 <a href="#pages">06 页导览</a>）</div></div>
   </div>
 
-  <h3>五个能力面</h3>
+  <h3>七个能力面</h3>
   <div class="grid g2">
+    <div class="card">
+      <span class="tag">数据集</span>
+      <h4>内置数据集能体检，也能用你们自己的数据</h4>
+      <p>CWRU 内置数据集可直接查看（10 类清单、切窗规则一清二楚）；也可以<strong>上传自己的表格数据</strong>——
+        一个文件一个类别，登记后就能直接训练。</p>
+      <p class="more"><a href="#data">详见 04 两套数据集 →</a></p>
+    </div>
     <div class="card">
       <span class="tag">训练与产物</span>
       <h4>三模型 + 产物扁平化</h4>
       <p>三个模型可选；产物按「一个模型一份」落盘，重训即替换。支持上传、改名、删除、下载产物。</p>
+      <p class="more"><a href="#models">详见 03 三个模型 →</a></p>
     </div>
     <div class="card">
       <span class="tag">推理与审计</span>
       <h4>按窗口推理，结果可追到明细</h4>
       <p>输出类别 + 置信度，或无监督异常分数；每次训练/推理都落库，<strong>失败路径也留记录</strong>。</p>
+      <p class="more"><a href="#flow">详见 05 一条完整链路 →</a></p>
     </div>
     <div class="card">
       <span class="tag">模型发布</span>
       <h4>打成包给别的机器用</h4>
       <p>zip 内含权重、<code>meta.json</code>、<code>README.md</code>、<code>requirements.txt</code> 和一个可直接跑的示例脚本。</p>
+      <p class="more"><a href="#flow">详见 05 一条完整链路 →</a></p>
     </div>
     <div class="card">
       <span class="tag">可视化</span>
       <h4>波形、频谱与自动出图</h4>
-      <p>原始信号查看；训练自动生成训练曲线/混淆矩阵/每类指标，推理自动生成预测分布与波形。</p>
+      <p>原始信号查看；训练自动生成训练曲线/混淆矩阵/每类指标，推理自动生成预测分布与波形。
+        图库里的图可以<strong>单张删除</strong>，也可以整库清空（「系统管理 → 维护」）。</p>
+      <p class="more"><a href="#pages">详见 06 页面功能导览 →</a></p>
+    </div>
+    <div class="card">
+      <span class="tag">账号与权限</span>
+      <h4>真登录、可自助注册、管理员可提权与停用</h4>
+      <p>口令按 pbkdf2 加盐存储，令牌带过期；只有<strong>管理员</strong>与<strong>普通用户</strong>两种身份。
+        管理员在「用户管理」里可以<strong>把普通用户设为管理员</strong>、<strong>停用/启用</strong>账号、重置口令。</p>
+      <p class="more"><a href="#auth">详见 10 登录与会话 →</a></p>
     </div>
     <div class="card">
       <span class="tag">运维与审计</span>
       <h4>库表登记、日志、接口索引</h4>
-      <p>运行环境体检、11 张表行数、训练日志与错误日志查看、接口清单、维护操作。</p>
+      <p>运行环境体检、11 张表行数、训练日志与错误日志查看、接口清单、维护操作（清空图库 / 删除模型产物）。</p>
+      <p class="more"><a href="#api">详见 09 接口一览 →</a></p>
     </div>
+  </div>
+
+  <div class="note">
+    <b>刚拿到项目，从哪看起？</b>
+    <p>
+      想<strong>动手用</strong>：直接看 <a href="#pages">06 页面功能导览</a>（八个页面各干什么、点哪里做什么），
+      再按 <a href="#deploy">11 启动与部署</a> 把服务跑起来。
+      想<strong>读代码</strong>：先 <a href="#arch">02 系统架构</a> 搞清两层接口，再看
+      <a href="#flow">05 一条完整链路</a>。本节这七个能力面只是同一件事的另一种切法。
+    </p>
   </div>
 </section>
 
@@ -592,15 +633,18 @@ footer{margin-top:var(--sp-12);padding:var(--sp-6) 0 var(--sp-10);border-top:1px
     <div class="card"><span class="tag">/platform/dataset</span><h4>数据集管理</h4>
       <p>CWRU 内置数据集体检、表格数据集上传（一文件一类别）、信号列预览与统计、库表登记。</p></div>
     <div class="card"><span class="tag">/platform/visual</span><h4>数据展示</h4>
-      <p>波形/频谱查看，以及训练与推理自动生成的图（混淆矩阵、训练曲线、异常时序）。</p></div>
+      <p>波形/频谱查看；<strong>图库</strong>页签列出训练与推理自动生成的图（混淆矩阵、训练曲线、异常时序），
+        可点开放大、按路径过滤，也能<strong>单张删除</strong>。</p></div>
     <div class="card"><span class="tag">/platform/publish</span><h4>模型发布</h4>
       <p>按模型汇总已发布的包：磁盘上的 zip 可下载、查看包内目录结构、删除；下方是含"已删除"留痕的发布流水。</p></div>
     <div class="card"><span class="tag">/platform/system</span><h4>系统管理</h4>
-      <p>运行环境与依赖、11 张表行数、日志查看、接口索引、维护（清空图库）。</p></div>
+      <p>运行环境与依赖、11 张表行数、日志查看、接口索引；「维护」页签两个破坏性操作 ——
+        <strong>清空图库</strong>与<strong>删除模型产物</strong>（都带二次确认）。</p></div>
     <div class="card"><span class="tag">/platform/user · 仅 admin</span><h4>用户管理</h4>
-      <p>新建用户、重置口令、启停用、改角色。除登录页的自助注册外，这里是管理员开号的入口。</p></div>
+      <p>新建用户、重置口令、启停用、<strong>把普通用户设为管理员或改回普通用户</strong>。
+        除登录页的自助注册外，这里是管理员开号的入口。</p></div>
     <div class="card"><span class="tag">/platform/log · 仅 admin</span><h4>操作日志</h4>
-      <p>全平台操作审计：登录、训练、推理、发布、用户管理等动作的流水（<code>OperationLogs</code> 表）。</p></div>
+      <p>全平台操作审计：登录、注册、训练、推理、发布、删图、用户管理等动作的流水（<code>OperationLogs</code> 表）。</p></div>
   </div>
 </section>
 
