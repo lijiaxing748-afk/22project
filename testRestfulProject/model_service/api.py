@@ -18,7 +18,8 @@
     推理    POST /predict、GET /inference-tasks、GET /inference-tasks/<id>
     数据集  GET  /datasets/db、POST /datasets/db（登记）、POST /datasets/upload（上传）
             GET  /datasets/table（预览）、GET /datasets/signal（取一段信号画波形）
-    图      GET  /figures、GET  /figures/<路径>、POST /system/maintenance（清空图库）
+    图      GET  /figures、GET  /figures/<路径>、DELETE /figures/<路径>（删单张，需登录）
+            POST /system/maintenance（清空图库）
 
 约定：任何失败都返回 {"error": ...} + 合适的状态码，并把细节写进 ModelInvocations（能写库时）。
 """
@@ -40,7 +41,7 @@ from . import tabular
 from .auth import authenticate, log_operation, require_login, require_perm
 from .config import config
 from .db import DBError, database
-from .figures import FIG_DIR, clear_figures, list_figures
+from .figures import FIG_DIR, clear_figures, delete_figure, list_figures
 from .inference import InvalidInput, predict
 from .exporter import list_packages, resolve_package
 from .registry import abort_artifact, begin_artifact, commit_artifact, delete_artifact, list_artifacts, load_artifact
@@ -1756,7 +1757,15 @@ class FigureList(Resource):
         return {"count": len(items[:limit]), "figures": items[:limit],
                 "hint": "图片可直接用返回的 url 在浏览器打开（GET /figures/<路径>）"}
 class FigureFile(Resource):
-    """GET /figures/<路径> —— 直接返回 PNG 文件（conditional=True 支持 304 缓存协商）。"""
+    """GET /figures/<路径> —— 直接返回 PNG 文件（conditional=True 支持 304 缓存协商）。
+
+    DELETE /figures/<路径> —— 删除**单张**图（「图库」页每张图的删除按钮）。
+    ⚠️ 只有删除要求登录，读图仍是匿名的（历史行为：图库靠前端路由守卫挡）。
+       "看"和"删"的风险不对称 —— 删是不可逆的，必须能追到人，
+       所以这里挂 `@require_login`，而不是跟着 GET 一起放任。
+       不额外要权限点：图是**可再生的本地产物**（重跑一次训练/推理就有），
+       与 `model:delete` 同样的道理，普通用户也能删。
+    """
     def get(self, relpath):
         # 直接把 PNG 交给 Flask 发文件：不用自己 open/read，还能白拿 Content-Length、ETag、
         # Range 这些头。conditional=True 让它处理 If-None-Match/If-Modified-Since → 命中时回 304，
@@ -1764,6 +1773,21 @@ class FigureFile(Resource):
         # ⚠️ relpath 直接来自 URL，穿越防护靠 send_from_directory 自己做的 safe_join
         # （规范化后若逃出 FIG_DIR 会抛 NotFound），所以别改成 Path(FIG_DIR / relpath).read_bytes() 那种写法
         return send_from_directory(FIG_DIR, relpath, conditional=True)
+
+    @require_login
+    def delete(self, relpath):
+        # ⚠️ 这里**不能**照抄上面 GET 那句"穿越防护交给 send_from_directory"：删除没有
+        #    safe_join 帮忙，防护在 figures.delete_figure 里自己做（relative_to 判边界）。
+        try:
+            result = delete_figure(relpath)
+        except FileNotFoundError as exc:
+            # 路径穿越、非 png、图不存在 —— 三种都归 404，不区分：
+            # 区分了等于告诉调用方"这个路径存在但不是 png"，属于多余的探测信息。
+            return {"error": str(exc)}, 404
+        # 删图不可逆 → 记操作日志（log_operation 从 flask.g 取当前用户，require_login 已放好）
+        log_operation("delete_figure", target=relpath,
+                      detail={"freed_kb": result["freed_kb"]})
+        return result, 200
 # class Console(Resource)（GET /ui，零构建单页控制台）已整类删除：它每次请求读盘吐 console.html，
 # 与 Vue 前端功能重叠，属于第二套 UI。删除后 /ui 不再注册路由 → 返回 404。
 # 备注：当初路径选 /ui 而不是 /console，是因为 Flask debug=True 时 Werkzeug 调试器独占 /console。

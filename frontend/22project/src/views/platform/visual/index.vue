@@ -54,7 +54,10 @@
 				<div class="gallery">
 					<div v-for="f in filtered" :key="f.url" class="cell">
 						<el-image :src="fileUrl(f.url)" :preview-src-list="[fileUrl(f.url)]" fit="contain" class="img" />
-						<div class="cap" :title="f.file">{{ f.file }}</div>
+						<div class="cap" :title="f.file">
+							<span class="cap-name">{{ f.file }}</span>
+							<el-button link type="danger" size="small" class="cap-del" @click="removeFigure(f)">删除</el-button>
+						</div>
 						<div class="hint">{{ f.size_kb }} KB · {{ f.modified }}</div>
 					</div>
 					<div v-if="!filtered.length" class="empty">没有匹配的图，去训练或推理一次</div>
@@ -67,7 +70,7 @@
 <script setup lang="ts" name="platformVisual">
 import { computed, onMounted, ref } from 'vue';
 import { useRoute } from 'vue-router';
-import { ElMessage } from 'element-plus';
+import { ElMessage, ElMessageBox } from 'element-plus';
 import { platformApi, fileUrl } from '/@/api/platform';
 
 const route = useRoute();
@@ -150,6 +153,30 @@ const draw = (values: number[]) => {
 
 const loadFigures = async () => { figures.value = ((await platformApi.figures(300)) as any).figures || []; };
 
+/**
+ * 删除一张图。
+ *
+ * ⚠️ 取消确认要用 try/catch 单独接住：`ElMessageBox.confirm` 用 **reject** 表示"用户点了取消"，
+ *    不接就会变成未处理的 Promise 拒绝（控制台一片红，看着像 bug）。
+ *    所以确认框与真正的删除请求分开写，别把两者塞进同一个 try。
+ * ⚠️ 删除失败（图已被人删掉 / 没登录 / 路径非法）由平台拦截器包成 Error(msg) 抛出，
+ *    这里负责提示 —— platformRequest 不会自己弹消息（见其文件头说明）。
+ */
+const removeFigure = async (f: any) => {
+	try {
+		await ElMessageBox.confirm(`确认删除这张图？\n${f.file}`, '危险操作', { type: 'warning' });
+	} catch {
+		return;                                  // 用户取消
+	}
+	try {
+		const res: any = await platformApi.deleteFigure(f.file);
+		ElMessage.success(`已删除，释放 ${res?.freed_kb ?? '?'} KB`);
+		await loadFigures();                     // 重新拉列表：目录可能被一并清掉了
+	} catch (e: any) {
+		ElMessage.error(e?.message || '删除失败');
+	}
+};
+
 onMounted(async () => {
 	await loadDatasets();
 	await Promise.all([loadSignal(), loadFigures()]);
@@ -165,7 +192,12 @@ onMounted(async () => {
 .gallery { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 12px; }
 .cell { border: 1px solid var(--el-border-color); border-radius: 6px; overflow: hidden; background: #fff; }
 .img { width: 100%; height: 170px; background: #f5f5f5; display: block; }
-.cap { font-size: 12px; padding: 6px 8px 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+// ⚠️ 文件名用 flex 布局：`.cap` 原来靠自身的 ellipsis 截断，现在里面多了一个删除按钮，
+//    截断必须挪到 `.cap-name` 上，否则按钮会跟着文字一起被 ellipsis 裁掉（点不到）。
+//    `min-width: 0` 是 flex 子项能收缩的前提，漏了它长文件名会把按钮挤出卡片。
+.cap { font-size: 12px; padding: 6px 8px 0; display: flex; align-items: center; gap: 6px; }
+.cap-name { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cap-del { flex: 0 0 auto; }
 .cell .hint { padding: 0 8px 8px; }
 .empty { color: var(--el-text-color-secondary); text-align: center; padding: 24px 0; grid-column: 1 / -1; }
 </style>

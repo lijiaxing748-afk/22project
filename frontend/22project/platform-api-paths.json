@@ -22,6 +22,7 @@
  "/datasets/signal",
  "/datasets/upload",
  "/figures",
+ "/figures/<x>",
  "/system/logs",
  "/system/logs/<x>",
  "/system/maintenance",

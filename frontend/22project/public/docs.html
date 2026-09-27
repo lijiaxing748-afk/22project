@@ -563,6 +563,7 @@ footer{margin-top:var(--sp-12);padding:var(--sp-6) 0 var(--sp-10);border-top:1px
       <span class="st">回到页面上看</span>
       <span class="sd">
         首页看总览与最近活动；「数据展示」看波形/频谱/图库；「系统管理」看运行环境、11 张表行数、日志与接口索引。
+        图库里的图可以<strong>单张删除</strong>（每张图右上角），也可以在「系统管理 → 维护」里<strong>一次清空</strong>。
         每一步都能追到明细。
       </span>
     </li>
@@ -748,9 +749,28 @@ Roles ─► Users ─► OperationLogs</code></pre>
         <tr><td>GET</td><td><code>/datasets/table</code></td><td class="c"><span class="badge b-mute">匿名</span></td><td>表格预览（列名 + 前 N 行）</td></tr>
         <tr><td>GET</td><td><code>/datasets/signal</code></td><td class="c"><span class="badge b-mute">匿名</span></td><td>取一段信号（画波形用）</td></tr>
         <tr><td>POST</td><td><code>/datasets/upload</code></td><td class="c"><span class="badge b-warn">dataset:write</span></td><td>上传表格数据集</td></tr>
-        <tr><td>GET</td><td><code>/figures</code> · <code>/figures/&lt;路径&gt;</code></td><td class="c"><span class="badge b-mute">匿名</span></td><td>图库清单 / 直接取 PNG</td></tr>
+        <tr><td>GET</td><td><code>/figures</code> · <code>/figures/&lt;路径&gt;</code></td><td class="c"><span class="badge b-mute">匿名</span></td><td>图库清单 / 直接取 PNG（读图是匿名，靠前端路由守卫挡）</td></tr>
+        <tr><td>DELETE</td><td><code>/figures/&lt;路径&gt;</code></td><td class="c"><span class="badge b-info">需登录</span></td><td><strong>删除单张图</strong>（图库页每张图的「删除」按钮）；不限身份，见下方说明</td></tr>
       </tbody>
     </table>
+  </div>
+
+  <div class="note">
+    <b>删除单张图（图库页的「删除」按钮）</b>
+    <p>
+      路径是 <code>DELETE /figures/&lt;相对路径&gt;</code>，<strong>要求登录、但不要求管理员</strong>。
+      理由和"删除模型产物"一样：图是<strong>可再生的本地产物</strong>（重跑一次训练/推理就有），
+      各部署点的数据又彼此独立，删本机的图影响不到别人。
+      ⚠️ 但它<strong>没有</strong>跟着 <code>GET /figures</code> 一起匿名 ——
+      "看"和"删"的风险不对称，删除不可逆，必须能追到人（每次删除都会写一条
+      <code>delete_figure</code> 操作日志）。
+    </p>
+    <p>
+      另外服务端做了<strong>路径穿越防护</strong>：传入的路径 resolve 后必须仍在
+      <code>data/figures/</code> 之内，且只允许删 <code>.png</code>；
+      <code>../db.env</code> 这类写法一律 404 且不删任何东西。
+      删完空目录会顺手清掉（图库根目录保留）。
+    </p>
   </div>
 
   <div class="note">

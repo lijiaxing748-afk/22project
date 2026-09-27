@@ -84,6 +84,12 @@ export const platformApi = {
 
 	// ---------- 图 ----------
 	figures: (limit = 300) => request({ url: `/figures?limit=${limit}`, method: 'get' }),
+	// 删除图库里单张图。⚠️ 后端要求**登录**（读图是匿名的，删图不是）。
+	// file 是相对 data/figures 的路径，可能带子目录；**逐段** encodeURIComponent 再拼，
+	// 这样非 ASCII 文件名不会把 URL 弄坏，而 `/` 仍作为路径分隔符保留（整段 encode 会把斜杠
+	// 变成 %2F，后端就拿不到子目录了）。
+	deleteFigure: (file: string) =>
+		request({ url: `/figures/${file.split('/').map(encodeURIComponent).join('/')}`, method: 'delete' }),
 
 	// ---------- 日志 / 维护 ----------
 	logs: () => request({ url: '/system/logs', method: 'get' }),

@@ -267,6 +267,45 @@ def list_figures(limit: int = 200) -> list[dict]:
         if len(out) >= limit:
             break
     return out
+def delete_figure(relpath: str) -> dict:
+    """删除图库里**单张**图（前端「图库」页每张图上的删除按钮）。返回删掉的文件与释放空间。
+
+    ⚠️ **路径穿越防护必须自己做**：relpath 直接来自 URL。`GET /figures/<路径>` 那边靠
+       `send_from_directory` 的 safe_join 兜住了，但那是"读"；这里是"删文件"，
+       一旦 `../../db.env` 这种路径被放进来，后果不可逆。做法是 resolve() 后要求它
+       仍在 FIG_DIR 之内 —— 用 `relative_to()` 判，逃出去会抛 ValueError。
+       不要改成字符串 startswith 那种判断：`FIG_DIR + "_backup"` 也能骗过它。
+
+    ⚠️ **只允许删 .png**：这个目录按约定只放图，但"按传入路径删任意文件"这件事本身
+       太危险，限定后缀能把误传路径时的破坏面收窄到"最多删掉一张图"。
+
+    ⚠️ 删空目录但**不动 FIG_DIR 本身**：训练/推理会各建一层子目录
+       （`<模型>/` 与 `<模型>/predict-<时间戳>/`），图删光后目录留着只是垃圾；
+       但 FIG_DIR 是模块级创建、被多处引用，删掉它会让后续出图多一次 mkdir 的竞态。
+    """
+    root = FIG_DIR.resolve()
+    target = (FIG_DIR / relpath).resolve()
+    try:
+        rel = target.relative_to(root)
+    except ValueError:
+        raise FileNotFoundError("路径不合法：超出了图库目录")
+    if target.suffix.lower() != ".png":
+        raise FileNotFoundError("只能删除图库里的 PNG 图")
+    if not target.is_file():
+        raise FileNotFoundError(f"图不存在：{relpath}")
+    size = target.stat().st_size
+    target.unlink()
+    # 往上逐级删**空**目录，直到 FIG_DIR 为止（rmdir 碰见非空会抛 OSError，就此收手）
+    parent = target.parent
+    while parent != root and root in parent.parents:
+        try:
+            parent.rmdir()
+        except OSError:
+            break
+        parent = parent.parent
+    return {"deleted": rel.as_posix(), "freed_kb": round(size / 1024, 1)}
+
+
 def clear_figures() -> dict:
     """清空图库（危险操作，由系统的「维护」触发）。目录本身保留。"""
     removed = 0
