@@ -59,7 +59,10 @@ const setTransitionName = computed(() => {
 });
 // 获取组件缓存列表(name值)
 const getKeepAliveNames = computed(() => {
-  console.log(cachedViews.value)
+	// ⚠️ 这里原先有一句 `console.log(cachedViews.value)`（模板遗留的调试日志）。
+	//    它是 computed 体内的副作用，而 computed 会在**每次依赖变化时重算**
+	//    （切换页签/开新页面都会动 cachedViews），于是控制台被
+	//    `Proxy(Array)` 刷屏 —— 排查真问题时这点噪音很碍事。已删除。
 	return themeConfig.value.isTagsview ? cachedViews.value : state.keepAliveNameList;
 });
 // 设置 iframe 显示/隐藏
