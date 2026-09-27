@@ -52,14 +52,6 @@
 						<el-button @click="go('/platform/visual', 'gallery')">看图库</el-button>
 						<el-button @click="go('/platform/system', 'logs')">看训练日志</el-button>
 					</div>
-					<el-divider />
-					<div class="hint">已落盘产物</div>
-					<div class="quick">
-						<el-tag v-for="a in artifacts" :key="a.model" class="tag-gap" size="small">
-							{{ a.model }} · {{ a.metrics?.test_accuracy != null ? Number(a.metrics.test_accuracy).toFixed(4) : '—' }}
-						</el-tag>
-						<span v-if="!artifacts.length" class="hint">还没有产物，去「模型管理 → 训练」跑一次</span>
-					</div>
 				</el-card>
 			</el-col>
 		</el-row>
@@ -165,8 +157,8 @@ onMounted(load);
 .mt { margin-top: 16px; }
 .quick { margin-top: 8px; }
 .quick .el-button { margin: 0 8px 8px 0; }
-.hint { font-size: 12px; color: var(--el-text-color-secondary); }
-.tag-gap { margin: 0 6px 6px 0; }
+/* ⚠️ 原来这里还有 `.hint` 与 `.tag-gap` 两条规则，是给「快捷入口」卡片下半部分那个
+   「已落盘产物」标签列表用的。那块已按需求去掉，两条规则也一并删除（留着就是死样式）。 */
 /* ---- 项目说明文档卡片 ---- */
 .doc-lede {
 	font-size: 13px;
