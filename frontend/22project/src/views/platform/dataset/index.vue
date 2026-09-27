@@ -10,7 +10,8 @@
 				<el-select v-model="current" style="width: 420px" @change="() => {}">
 					<el-option v-for="k in datasetKeys" :key="k" :label="k" :value="k" />
 				</el-select>
-				<el-button class="ml" size="small" type="danger" plain :disabled="!current" @click="removeDatasetFiles">
+				<el-button class="ml" size="small" type="primary" @click="uploadDialog = true">上传数据集</el-button>
+				<el-button size="small" type="danger" plain :disabled="!current" @click="removeDatasetFiles">
 					删除上传文件
 				</el-button>
 				<el-button size="small" type="danger" plain :disabled="!current" @click="removeDatasetRecord">
@@ -48,6 +49,32 @@
 					</el-table-column>
 				</el-table>
 			</el-card>
+
+			<!-- 上传数据集：.mat 与表格共用这一个入口。
+			     ⚠️ 说明书 §4.2 一直写着「上传数据集 | 支持 .mat / .csv / .npy / .xlsx」，
+			     但后端以前只认表格扩展名（.mat 会被整批判非法、回 400），界面上也没有这个按钮 ——
+			     用户 2026-09-27 反馈「要上传 .mat 数据集，按钮没了」。本次补齐：
+			     后端放开 .mat（按 CWRU 命名取 DE 通道），界面在「数据集体检」页签直接给入口。
+			     ⚠️ .npy 仍然只支持推理的"单文件信号输入"，不作为数据集格式（说明书已改口径）。 -->
+			<el-dialog v-model="uploadDialog" title="上传数据集" width="560px" append-to-body>
+				<el-form label-width="90px" size="small">
+					<el-form-item label="数据集名">
+						<el-input v-model="upload.name" placeholder="例如 my-bearing；不填就用第一个文件名" />
+					</el-form-item>
+					<el-form-item label="文件">
+						<input ref="fileInputDialog" type="file" multiple accept=".mat,.csv,.txt,.xlsx,.xlsm,.xls" class="file-input" />
+					</el-form-item>
+				</el-form>
+				<div class="hint">
+					· <code>.mat</code>：按 CWRU 命名（<code>48k_Drive_End_*</code> / <code>normal_*</code>），训练取 DE 通道；<br />
+					· <code>.csv</code> / <code>.txt</code> / <code>.xlsx</code>：一个文件 = 一个类别，文件名即标签；<br />
+					· 落到 <code>data/datasets/&lt;数据集名&gt;/</code>，同名文件会被覆盖（等于换掉那个类别的全部数据）。
+				</div>
+				<template #footer>
+					<el-button @click="uploadDialog = false">取消</el-button>
+					<el-button type="primary" :loading="uploading" @click="doUpload('dialog')">上传</el-button>
+				</template>
+			</el-dialog>
 		</el-tab-pane>
 
 		<!-- ============ 表格数据集 ============ -->
@@ -55,16 +82,16 @@
 			<el-row :gutter="16">
 				<el-col :xs="24" :md="10">
 					<el-card shadow="never">
-						<template #header><span>上传表格文件（一个文件 = 一个类别，文件名即标签）</span></template>
+						<template #header><span>上传数据集（.mat / 表格；表格：一个文件 = 一个类别，文件名即标签）</span></template>
 						<el-form label-width="90px" size="small">
 							<el-form-item label="数据集名">
 								<el-input v-model="upload.name" placeholder="data/datasets/<名称>/" />
 							</el-form-item>
 							<el-form-item label="文件">
-								<input ref="fileInput" type="file" multiple accept=".csv,.txt,.xlsx,.xls,.xlsm" class="file-input" />
+								<input ref="fileInput" type="file" multiple accept=".mat,.csv,.txt,.xlsx,.xlsm,.xls" class="file-input" />
 							</el-form-item>
-							<el-button type="primary" :loading="uploading" @click="doUpload">上传</el-button>
-							<span class="hint ml">支持 .csv/.txt/.xlsx/.xls；CSV 自动试 utf-8 / GBK 编码。</span>
+							<el-button type="primary" :loading="uploading" @click="doUpload('tab')">上传</el-button>
+							<span class="hint ml">支持 .mat（CWRU 命名）/ .csv / .txt / .xlsx；CSV 自动试 utf-8 / GBK 编码。</span>
 						</el-form>
 						<el-divider />
 						<div class="hint">已上传的表格数据集</div>
@@ -171,7 +198,9 @@ const current = ref<string>('');
 const dbDatasets = ref<any[]>([]);
 const previewData = ref<any>(null);
 const previewColumn = ref<string>('');
-const fileInput = ref<HTMLInputElement>();
+const fileInput = ref<HTMLInputElement>();          // 「表格数据集」页签卡片里的上传控件
+const fileInputDialog = ref<HTMLInputElement>();    // 「数据集体检」页签弹出的上传对话框
+const uploadDialog = ref(false);
 const uploading = ref(false);
 const upload = reactive({ name: '' });
 const reg = reactive<any>({ name: '', source: '', class_count: 10, sample_count: null, data_path: '', description: '' });
@@ -277,8 +306,15 @@ const reloadPreview = async (path?: string) => {
 	previewData.value = await platformApi.tablePreview(target, 8, previewColumn.value);
 };
 
-const doUpload = async () => {
-	const files = fileInput.value?.files;
+/**
+ * 上传数据集（`.mat` / csv / txt / xlsx 都走这里）。
+ *
+ * ⚠️ 两个入口（「数据集体检」页签的「上传数据集」按钮 → 对话框；「表格数据集」页签的卡片）
+ *    共用本函数，所以按 source 取各自的 `<input type="file">`。以前只有一个入口，硬绑 fileInput。
+ * ⚠️ 上传 `.mat` 之后不刷新"表格预览"：那是表格专用视图，对 .mat 目录没意义。
+ */
+const doUpload = async (source: 'tab' | 'dialog' = 'tab') => {
+	const files = (source === 'dialog' ? fileInputDialog.value?.files : fileInput.value?.files);
 	if (!files || !files.length) { ElMessage.warning('先选择文件'); return; }
 	const form = new FormData();
 	form.append('name', upload.name || '');
@@ -286,10 +322,17 @@ const doUpload = async () => {
 	uploading.value = true;
 	try {
 		const res: any = await platformApi.upload(form);
-		ElMessage.success(`已保存 ${res.saved.length} 个到 ${res.directory}`);
+		const kindText = res.dataset_type === 'matlab' ? '（MATLAB .mat 数据集）' : '（表格数据集）';
+		ElMessage.success(`已保存 ${res.saved.length} 个到 ${res.directory} ${kindText}`);
 		if (res.skipped?.length) ElMessage.warning(`跳过 ${res.skipped.length} 个：${res.skipped.map((s: any) => s.filename).join(', ')}`);
 		await loadDatasets();
-		if (tabularKeys.value.length) await preview(tabularKeys.value[0], tabularFiles(tabularKeys.value[0])[0]?.filename);
+		// 刚上传完就把它选中，用户不用再去下拉框里找（.mat 上传在"数据集体检"页签里才看得见）
+		const newKey = `${res.dataset_type === 'matlab' ? 'mat' : '表格'}:${res.dataset}`;
+		if (datasets.value[newKey]) current.value = newKey;
+		uploadDialog.value = false;
+		if (res.dataset_type !== 'matlab' && tabularKeys.value.length) {
+			await preview(tabularKeys.value[0], tabularFiles(tabularKeys.value[0])[0]?.filename);
+		}
 	} finally {
 		uploading.value = false;
 	}

@@ -613,19 +613,26 @@ class DatasetList(Resource):
         upload_root = sorted([p for p in config.upload_dir.iterdir() if p.is_dir()], key=lambda p: p.name) \
             if config.upload_dir.is_dir() else []          # 目录被删掉时不该 500，当成"没有上传数据集"
         for directory in upload_root:
-            # key 前面加 "表格:" 前缀：用来和内置 .mat 的名字区分开，/datasets/signal 就是靠这个前缀
-            # 认出"这是上传目录下的数据集"并去 data/datasets/<名> 找文件的
-            key = f"表格:{directory.name}"
+            # ⚠️ 上传目录里可能是**表格**（csv/xlsx），也可能是 **.mat**（CWRU 命名，训练时取 DE 通道）。
+            #    按目录里实际有什么文件决定用哪个体检器、以及 key 前缀 —— 原先一律当表格，
+            #    于是传上来的 .mat 会显示成"0 个文件 / 读取失败"，等于这个数据集在页面里不存在。
+            #    （2026-09-27：用户要在「数据集体检」里上传 .mat，界面上连入口都没有。）
+            #    判定顺序与 training.resolve_source 一致：**先表格、后 .mat**。
+            kind = "tabular" if tabular.has_tables(directory) else (
+                "matlab" if any(directory.glob("*.mat")) else "tabular")
+            # key 前缀区分"上传的哪一类"：/datasets/signal 靠它认出这是上传目录并去 data/datasets/<名> 找文件
+            prefix = "mat" if kind == "matlab" else "表格"
+            key = f"{prefix}:{directory.name}"
             try:
-                # ⚠️ 这里读的是 tabular.describe_directory 的 **120 秒 TTL 缓存**结果：
+                # ⚠️ 表格那边读的是 tabular.describe_directory 的 **120 秒 TTL 缓存**结果：
                 # 刚上传完文件如果这里显示不出来，不是文件没进去，而是缓存没清
                 #（/datasets/upload 里那句 cache_clear() 就是为这个加的）
-                info = tabular.describe_directory(directory)
+                info = ds.describe_dataset(directory) if kind == "matlab" else tabular.describe_directory(directory)
             except Exception as exc:
                 info = {"error": f"{type(exc).__name__}: {exc}", "files": []}
             # 无论体检成功还是失败，都补齐同样几个字段，前端不用到处判 key 在不在：
             # file_count / classes 缺失时给 0（空目录 = 0 个文件 0 个类别，比 null 好渲染）
-            info.update({"key": key, "dataset_type": "tabular", "dataset_dir": str(directory),
+            info.update({"key": key, "dataset_type": kind, "dataset_dir": str(directory),
                          "file_count": info.get("file_count", 0), "classes": info.get("classes", 0)})
             out[key] = info
         return out, 200
@@ -691,11 +698,23 @@ class DatasetDelete(Resource):
 
 
 class DatasetUpload(Resource):
-    """上传表格文件到 data/datasets/<数据集名>/（一个文件 = 一个类别）。"""
+    """上传数据集文件到 `data/datasets/<数据集名>/`。
+
+    支持两类（按文件扩展名自动分流）：
+      · **表格**（`.csv/.txt/.xlsx/.xlsm/.xls`）：一个文件 = 一个类别，文件名即标签，信号列自动识别；
+      · **`.mat`**（CWRU 命名：`48k_Drive_End_*` / `normal_*`）：训练时取 DE 通道，类别名按 datasets.py 的
+        故障模式表映射。⚠️ 说明书 §4.2 一直写着"上传数据集支持 .mat/.csv/.npy/.xlsx"，
+        但**代码只实现了表格那条路**：.mat 会被判"不支持的扩展名"跳过、整批回 400，
+        界面上也没有入口（2026-09-27 用户反馈"要上传 .mat 数据集，按钮没了"）。本次补上 .mat。
+        ⚠️ `.npy` **仍然不支持作为数据集**（它只在推理的"单文件信号输入"里支持，见 inference.py）——
+        说明书那句已同步改成事实口径，不要为了这句话去伪造一条训练路径。
+    """
     MAX_MB = 80
+    # ⚠️ 只加 .mat：.npy/.npz 是推理侧的单文件信号格式，训练管线没有对应的数据集加载器
+    MAT_SUFFIXES = {".mat"}
     @require_perm("dataset:write")
     def post(self):
-        """保存上传的表格文件，一个文件 = 一个类别（文件名即标签）。"""
+        """保存上传的数据集文件（表格：一个文件 = 一个类别；.mat：CWRU 命名的多文件数据集）。"""
         name = (request.form.get("name") or "").strip()
         files = _uploaded_files()
         if not files:
@@ -704,15 +723,16 @@ class DatasetUpload(Resource):
             name = Path(files[0].filename or "dataset").stem
         safe_name = _sanitize_name(name, "dataset")
         target = config.upload_dir / safe_name
+        allowed = tabular.TABLE_SUFFIXES | self.MAT_SUFFIXES
         # ⚠️ 目录**延迟到真有文件要落盘时**才建：原先在这里无条件 mkdir，而扩展名过滤在下面的循环里，
         #    于是一次"全是非法扩展名"的上传会留下一个空数据集目录（接口回 400、磁盘却多了东西），
         #    界面上还会多出一个空类别。实测复现过（上传 evil.exe）。
         saved, skipped, overwritten = [], [], []
         for item in files:
             filename = Path(item.filename or "").name
-            if not filename or Path(filename).suffix.lower() not in tabular.TABLE_SUFFIXES:
+            if not filename or Path(filename).suffix.lower() not in allowed:
                 skipped.append({"filename": filename,
-                                "reason": f"不支持的扩展名，支持 {sorted(tabular.TABLE_SUFFIXES)}"})
+                                "reason": f"不支持的扩展名，支持 {sorted(allowed)}"})
                 continue
             blob = item.read()
             if not blob:                                   # 0 字节文件会变成"空类别"，直接拒收
@@ -734,8 +754,11 @@ class DatasetUpload(Resource):
                           "replaced": replaced})
         # 体检结果有 120 秒 TTL 缓存：不清掉的话，响应里和列表页里都还是上传前的旧内容
         tabular.describe_directory.cache_clear()
+        # 按**实际收下的文件**决定用哪个体检器（与 DatasetList 的口径一致）
+        has_mat = any(Path(s["filename"]).suffix.lower() in self.MAT_SUFFIXES for s in saved)
+        kind = "matlab" if has_mat and not tabular.has_tables(target) else "tabular"
         try:
-            listing = tabular.describe_directory(target)
+            listing = ds.describe_dataset(target) if kind == "matlab" else tabular.describe_directory(target)
         except Exception as exc:
             listing = {"error": str(exc)}
         # ⚠️ 只在**有文件真的存下来**时记日志（saved 非空 = 返回 200）。
@@ -745,9 +768,11 @@ class DatasetUpload(Resource):
             log_operation("upload_dataset", target=safe_name,
                           detail={"files": [s["filename"] for s in saved],
                                   "size_kb": round(sum(s["size_kb"] for s in saved), 1),
+                                  "dataset_type": kind,
                                   "overwritten": overwritten,
                                   "skipped": len(skipped)})
         return {"dataset": safe_name, "directory": str(target), "saved": saved,
+                "dataset_type": kind,
                 "skipped": skipped, "overwritten": overwritten,
                 "hint": ("同名文件已被覆盖：本平台约定「一个文件 = 一个类别、文件名即标签」，"
                          "覆盖会直接换掉那个类别的全部数据" if overwritten else None),
@@ -2103,8 +2128,10 @@ class DatasetSignal(Resource):
         if dataset in config.dataset_dirs:
             # 内置 .mat：键就是 CWRU_0HP 这类名字
             directory = config.dataset_dirs[dataset]
-        elif dataset.startswith("表格:"):
-            # 上传的表格集：列表页(DatasetList)回的 key 是 "表格:<目录名>"，这里切掉前缀还原成真实目录名
+        elif dataset.startswith("表格:") or dataset.startswith("mat:"):
+            # 上传的数据集：列表页(DatasetList)回的 key 带**类型前缀**（"表格:<目录名>" / "mat:<目录名>"），
+            # 这里切掉前缀还原成真实目录名。⚠️ 两种前缀都要认：.mat 上传的 key 是 "mat:"，
+            # 只认 "表格:" 的话点了 .mat 数据集的图就取不到信号。
             directory = config.upload_dir / dataset.split(":", 1)[1]
         elif dataset:
             # 兜底：兼容直接传裸目录名的老调用（按 data/datasets/<名> 找）
