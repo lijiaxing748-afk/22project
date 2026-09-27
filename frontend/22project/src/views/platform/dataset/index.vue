@@ -4,7 +4,7 @@
 		<el-tab-pane label="数据集体检" name="inspect">
 			<el-card shadow="never">
 				<template #header>
-					<span>数据集（内置 .mat + data/datasets 下上传的表格数据集）</span>
+					<span>数据集</span>
 					<el-button link type="primary" style="float: right" @click="loadDatasets">刷新</el-button>
 				</template>
 				<el-select v-model="current" style="width: 420px" @change="() => {}">
@@ -17,11 +17,6 @@
 				<el-button size="small" type="danger" plain :disabled="!current" @click="removeDatasetRecord">
 					删除库表登记行
 				</el-button>
-				<div class="hint">
-					⚠️ 两个动作<strong>互不牵连</strong>：前者只删上传目录 <code>data/datasets/&lt;名&gt;/</code>，
-					后者只删库表那一行（磁盘不动）。内置/项目内数据集不在上传目录里，删不到也不需要删。
-					登记行被训练/推理任务引用时后端会拒绝并说明原因，不会替你把历史记录删掉。
-				</div>
 				<el-row :gutter="16" class="mt">
 					<el-col :xs="12" :md="6" v-for="k in kpis" :key="k.label">
 						<el-card shadow="never">
@@ -56,7 +51,7 @@
 			     用户 2026-09-27 反馈「要上传 .mat 数据集，按钮没了」。本次补齐：
 			     后端放开 .mat（按 CWRU 命名取 DE 通道），界面在「数据集体检」页签直接给入口。
 			     ⚠️ .npy 仍然只支持推理的"单文件信号输入"，不作为数据集格式（说明书已改口径）。 -->
-			<el-dialog v-model="uploadDialog" title="上传数据集" width="580px" append-to-body>
+			<el-dialog v-model="uploadDialog" title="上传数据集" width="460px" append-to-body>
 				<el-form label-width="90px" size="small">
 					<el-form-item label="数据集名">
 						<el-input v-model="upload.name" placeholder="不填就用第一个文件名 / 文件夹名" />
@@ -66,7 +61,6 @@
 							<el-radio-button label="files">选文件</el-radio-button>
 							<el-radio-button label="dir">选文件夹</el-radio-button>
 						</el-radio-group>
-						<span class="hint ml">选文件夹 = 把整个文件夹收进来（CWRU 那种一次 10 个 .mat 的用法）</span>
 					</el-form-item>
 					<el-form-item v-if="uploadMode === 'files'" label="文件">
 						<input ref="fileInputDialog" type="file" multiple accept=".mat,.csv,.txt,.xlsx,.xlsm,.xls" class="file-input" />
@@ -77,11 +71,6 @@
 						<input ref="dirInputDialog" type="file" webkitdirectory directory multiple class="file-input" @change="onDirPicked" />
 					</el-form-item>
 				</el-form>
-				<div class="hint">
-					· <code>.mat</code>：按 CWRU 命名（<code>48k_Drive_End_*</code> / <code>normal_*</code>），训练取 DE 通道；<br />
-					· <code>.csv</code> / <code>.txt</code> / <code>.xlsx</code>：一个文件 = 一个类别，文件名即标签（⚠️ 文件夹里别混 <code>.txt</code> 说明文件，它会被当成一个类别）；<br />
-					· 落到 <code>data/datasets/&lt;数据集名&gt;/</code>；同名文件会被覆盖（等于换掉那个类别的全部数据），同一批里重名只收第一个。
-				</div>
 				<template #footer>
 					<el-button @click="uploadDialog = false">取消</el-button>
 					<el-button type="primary" :loading="uploading" @click="doUpload('dialog')">上传</el-button>
@@ -94,7 +83,7 @@
 			<el-row :gutter="16">
 				<el-col :xs="24" :md="10">
 					<el-card shadow="never">
-						<template #header><span>上传数据集（.mat / 表格；表格：一个文件 = 一个类别，文件名即标签）</span></template>
+						<template #header><span>上传数据集</span></template>
 						<el-form label-width="90px" size="small">
 							<el-form-item label="数据集名">
 								<el-input v-model="upload.name" placeholder="data/datasets/<名称>/" />
@@ -104,10 +93,8 @@
 							</el-form-item>
 							<el-button type="primary" :loading="uploading" @click="doUpload('card')">上传</el-button>
 							<el-button :loading="uploading" @click="openUpload('dir')">选文件夹上传</el-button>
-							<span class="hint ml">支持 .mat（CWRU 命名）/ .csv / .txt / .xlsx；文件夹上传走上面的对话框。</span>
 						</el-form>
 						<el-divider />
-						<div class="hint">已上传的表格数据集</div>
 						<div class="mt">
 							<el-tag v-for="k in tabularKeys" :key="k" size="small" class="tag-gap" @click="preview(k, tabularFiles(k)[0]?.filename)">
 								{{ k }}（{{ datasets[k].file_count }} 文件 / {{ datasets[k].classes }} 类）
