@@ -234,6 +234,13 @@ class Config:
         #    只有在开关打开时才该生效，所以两边的开关都读这一个配置，不会各说各话。
         # 为什么要它：没有验证码时，弱口令可以在线慢慢爆破（登录接口没有失败计数）。
         self.captcha_enabled = (_env("MODEL_CAPTCHA", "") or "").strip().lower() in ("1", "true", "yes", "on")
+        # 自助注册开关（MODEL_ALLOW_REGISTER）。默认**打开**。
+        # 为什么默认开：本平台是实验室/内网工具，新人自己注册一个"现场操作员"账号就能开工，
+        # 不必每次都找管理员开号。注册出来的账号**角色强制 operator**（见 dvadmin.register），
+        # 想提权只能由管理员在「用户管理」页改。
+        # ⚠️ 交付到工厂等正式环境时**建议关掉**（db.env 里写 MODEL_ALLOW_REGISTER=0）：
+        #    关掉后登录页不显示「注册」页签，后端接口也会直接拒绝。
+        self.allow_register = (_env("MODEL_ALLOW_REGISTER", "1") or "1").strip().lower() in ("1", "true", "yes", "on")
         # ⚠️ 这里原来还有一个 self.defaults 字典（三套模型的默认超参速查表），已删除：
         #    它全项目零引用（只有本行赋值），运行时真正生效的默认值写在 training.py 里，
         #    形式是 `opts.get("epochs", 10)` 这类内联字面量。**改默认超参请改 training.py。**
@@ -269,6 +276,10 @@ class Config:
                 "enabled": not self.auth_disabled,
                 "key_is_default": self.auth_key_is_default,
                 "token_ttl_hours": self.token_ttl_hours,
+                # 两个登录页开关也露出来：交付前自检想知道"注册开着没有 / 验证码开着没有"，
+                # 不必去翻 db.env；它们不含任何敏感信息。
+                "allow_register": self.allow_register,
+                "captcha_enabled": self.captcha_enabled,
             },
         }
 config = Config()

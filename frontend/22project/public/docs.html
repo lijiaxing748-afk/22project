@@ -774,6 +774,7 @@ Roles ─► Users ─► OperationLogs</code></pre>
       <thead><tr><th>路径</th><th class="c">认证</th><th>说明</th></tr></thead>
       <tbody>
         <tr><td><code>POST /api/login/</code></td><td class="c"><span class="badge b-mute">匿名</span></td><td><strong>登录本身不做任何权限控制</strong></td></tr>
+        <tr><td><code>POST /api/register/</code></td><td class="c"><span class="badge b-mute">匿名</span></td><td><strong>自助注册</strong>（同样不做权限控制）；角色被服务端强制成 <code>operator</code>，可用 <code>MODEL_ALLOW_REGISTER=0</code> 整体关闭</td></tr>
         <tr><td><code>GET /api/captcha/</code></td><td class="c"><span class="badge b-mute">匿名</span></td><td>验证码图片（默认关闭；登录前必须可取，否则登不进去）</td></tr>
         <tr><td><code>GET /api/init/dictionary/</code> · <code>/api/init/settings/</code></td><td class="c"><span class="badge b-mute">匿名</span></td><td>字典 / 系统设置桩</td></tr>
         <tr><td><code>GET /api/system/menu_button/menu_button_all_permission/</code></td><td class="c"><span class="badge b-mute">匿名</span></td><td>按钮权限清单</td></tr>
@@ -805,21 +806,80 @@ Roles ─► Users ─► OperationLogs</code></pre>
     用户名枚举接口。同理，<code>GET /api/captcha/</code> 也必须匿名（否则验证码拿不到，人也就登不进来）。
   </p>
 
-  <h3>本系统没有"注册"功能</h3>
+  <h3>注册：可以自助开号，但角色被强制成最低权限</h3>
   <div class="note">
-    <b>账号只有两个来源</b>
+    <b>账号有三个来源</b>
     <p>
-      ① <strong>首次启动的种子账号</strong>：<code>admin</code>，以及（未配置
+      ① <strong>自助注册</strong>（登录页「注册」页签，见下）；
+      ② <strong>首次启动的种子账号</strong>：<code>admin</code>，以及（未配置
       <code>MODEL_BOOTSTRAP_ADMIN_PASSWORD</code> 时）演示用的 <code>engineer</code> / <code>operator</code>；
-      ② <strong>管理员在「用户管理」页新建</strong>（<code>POST /api/system/user/create/</code>，需 <code>user:manage</code>）。
+      ③ <strong>管理员在「用户管理」页新建</strong>（<code>POST /api/system/user/create/</code>，需 <code>user:manage</code>）。
     </p>
     <p>
-      后端<strong>没有</strong> <code>/api/register/</code> 之类的自助注册接口，登录页也<strong>没有</strong>注册入口。
-      所以"注册要不要权限控制"这件事在当前版本里不存在；如果将来要加自助注册，
-      它会和登录一样属于匿名接口，而<strong>创建账号的权限校验应当在服务端做</strong>
-      （比如只允许注册最低权限角色、或干脆先工单后开号）。
+      <code>POST /api/register/</code> 与登录一样是<strong>匿名接口、不做权限控制</strong>——
+      它服务的就是"还没有账号的人"。但"匿名"不等于"随便填"，服务端有几条硬规则：
+    </p>
+    <ul>
+      <li><strong>角色强制 <code>operator</code></strong>：请求里带 <code>role</code>/<code>role_key</code> 会被<strong>直接忽略</strong>。
+        否则任何人注册时把角色填成 <code>admin</code> 就是一个提权漏洞。要更高权限只能让管理员在「用户管理」页改。</li>
+      <li>用户名 3~50 字符、不含空格与斜杠；密码 ≥6 位、两次输入一致。</li>
+      <li>重名会被拒（数据库唯一键）。</li>
+      <li>账号的 <code>PwdChangeCount</code> 置 1 —— 口令是他自己刚定的，不该再被"初次登录强制改密"拦一次。</li>
+      <li>若开了验证码（<code>MODEL_CAPTCHA=1</code>），注册<strong>同样要过验证码</strong>：
+        否则"登录要人机校验、注册不要"就成了绕过口子，脚本完全可以改用注册接口批量造号。</li>
+    </ul>
+  </div>
+  <div class="warn">
+    <b>开关与交付建议</b>
+    <p>
+      注册由 <code>MODEL_ALLOW_REGISTER</code> 控制，<strong>默认打开</strong>（内网工具，新人自己开号即可开工）。
+      关掉（<code>db.env</code> 里写 <code>MODEL_ALLOW_REGISTER=0</code>）后：登录页不显示「注册」页签，
+      后端接口也直接拒绝。登录页的显隐读的是 <code>/api/init/settings/</code> 的 <code>base.register_state</code>
+      （与验证码的 <code>captcha_state</code> 同一套机制），所以不会出现"前端显示、后端拒绝"的错配。
+    </p>
+    <p>
+      <strong>交付到工厂等正式环境时建议关掉</strong>，改由管理员按需开号 —— 这样账号是可追溯的。
     </p>
   </div>
+
+  <h3>登录页有哪些页签</h3>
+  <div class="tw">
+    <table>
+      <thead><tr><th>页签</th><th>出现条件</th><th>说明</th></tr></thead>
+      <tbody>
+        <tr><td>账号登录</td><td>总是</td><td>默认页签，用户名 + 密码（+ 验证码，若开启）</td></tr>
+        <tr><td>注册</td><td><code>base.register_state</code> 为真</td><td>自助注册，成功后<strong>自动登录并进首页</strong></td></tr>
+        <tr><td>初次登录修改密码</td><td>该账号 <code>PwdChangeCount=0</code></td><td>此时<strong>只显示</strong>这一个页签（强制改密，不给注册入口）</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>已登录之后：个人资料与修改密码在哪</h3>
+  <p>
+    在<strong>右上角头像的下拉菜单</strong>里：
+  </p>
+  <div class="tw">
+    <table>
+      <thead><tr><th>菜单项</th><th>打到的接口</th><th>行为</th></tr></thead>
+      <tbody>
+        <tr>
+          <td>个人资料</td><td><code>POST /api/system/user/update_user_info/</code></td>
+          <td>改<strong>显示名 / 邮箱 / 手机</strong>。⚠️ 明确<strong>不改角色</strong>：请求体里的
+            <code>role</code> 字段会被服务端丢弃（否则任何登录用户都能把自己改成 admin）。</td>
+        </tr>
+        <tr>
+          <td>修改密码</td><td><code>POST /api/system/user/change_password/</code></td>
+          <td>填原密码 + 新密码两遍。改完 <code>TokenVersion</code> +1、<strong>旧令牌立即失效</strong>，
+            后端会下发<strong>新令牌</strong>，前端自动换上 —— 所以不用重新登录，其它设备上的会话则会被踢下线。</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+  <p>
+    「改密码」一共有三条路，别混淆：① 上面这个<strong>自助修改</strong>；
+    ② <strong>初次登录强制改密</strong>（登录页的独立页签，<code>PwdChangeCount=0</code> 时才出现）；
+    ③ 管理员在「用户管理」页<strong>重置他人密码</strong>（需 <code>user:manage</code>，同样会让对方当前会话失效）。
+  </p>
 
   <h3>令牌怎么带</h3>
   <p>三种写法后端都认，按优先级：</p>
@@ -878,7 +938,11 @@ Roles ─► Users ─► OperationLogs</code></pre>
     <p>
       ① <strong>删掉或改掉演示账号的口令</strong>（<code>engineer</code> / <code>operator</code> 默认口令在文档里是公开的）；
       ② 把 <code>db.env</code> 里的 <code>MODEL_SECRET_KEY</code> 换成随机值；
-      ③ 确认 <code>MODEL_AUTH_DISABLED</code> 没有被打开（打开时 <code>/health</code> 会显式回报 <code>auth_disabled</code>）。
+      ③ 确认 <code>MODEL_AUTH_DISABLED</code> 没有被打开（打开时 <code>/health</code> 会显式回报 <code>auth_disabled</code>）；
+      ④ <strong>决定要不要留自助注册</strong>：正式交付建议 <code>MODEL_ALLOW_REGISTER=0</code>；
+      ⑤ 建议开 <code>MODEL_CAPTCHA=1</code>（登录接口没有失败计数，弱口令能被在线慢爆破）；
+      ⑥ 把上面四项一起看一遍：匿名 <code>GET /health</code> 的 <code>config.auth</code> 块会把
+         <code>enabled / key_is_default / allow_register / captcha_enabled</code> 全列出来，不用去翻代码。
     </p>
   </div>
 </section>
@@ -907,6 +971,20 @@ source testRestfulProject/sql/schema_mysql.sql;</code></pre>
     然后复制 <code>testRestfulProject/db.env.example</code> 为 <code>db.env</code>，填自己的账号口令。
     <code>db.env</code> 含明文口令，已在 <code>.gitignore</code> 里按 <code>db.env*</code> 整体忽略，<strong>不要提交</strong>。
   </p>
+  <p>除了数据库连接，<code>db.env</code> 里还有几个开关值得按环境调整：</p>
+  <div class="tw">
+    <table>
+      <thead><tr><th>变量</th><th>默认</th><th>说明</th></tr></thead>
+      <tbody>
+        <tr><td><code>MODEL_SECRET_KEY</code></td><td>未配 → 每次启动随机</td><td>必须固定成随机值，否则每次重启所有人都掉线</td></tr>
+        <tr><td><code>MODEL_ALLOW_REGISTER</code></td><td><b>1（开）</b></td><td>自助注册。正式交付建议设 <code>0</code></td></tr>
+        <tr><td><code>MODEL_CAPTCHA</code></td><td><code>0（关）</code></td><td>登录/注册验证码，建议开</td></tr>
+        <tr><td><code>MODEL_TOKEN_TTL_HOURS</code></td><td>12</td><td>令牌有效期</td></tr>
+        <tr><td><code>MODEL_BOOTSTRAP_ADMIN_PASSWORD</code></td><td>空</td><td>首次启动建 admin 用的口令；留空则用内置默认口令并额外建两个演示号</td></tr>
+        <tr><td><code>MODEL_AUTH_DISABLED</code></td><td><code>0</code></td><td><b>打开就等于关掉鉴权</b>，只在本地纯调试时用</td></tr>
+      </tbody>
+    </table>
+  </div>
 
   <h3>② 开发模式（两个端口）</h3>
 <pre><code># 后端（先起）→ http://127.0.0.1:5000
@@ -1028,6 +1106,29 @@ venv\Scripts\python.exe serve.py
 
   <h3>登录 / 权限</h3>
   <details>
+    <summary>登录页看不到「注册」页签</summary>
+    <p>
+      两种情况：① 后端把注册关掉了（<code>MODEL_ALLOW_REGISTER=0</code>，或 <code>db.env</code> 里没生效）
+      —— 可以打开 <code>/api/init/settings/</code> 看 <code>base.register_state</code> 是不是 <code>false</code>；
+      ② 你所在的账号处于"初次登录强制改密"状态（<code>PwdChangeCount=0</code>），此时只显示改密页签。
+      另外注册页签的显隐依赖一次系统配置请求，页面刚打开的一瞬间可能还没到。
+    </p>
+  </details>
+  <details>
+    <summary>注册时提示"该角色不合法"或角色不是我要的</summary>
+    <p>
+      注册<strong>只能</strong>拿到 <code>operator</code>，这是服务端写死的（防止注册即提权）。
+      需要训练/发布/用户管理权限，请让管理员在「用户管理」页改你的角色。
+    </p>
+  </details>
+  <details>
+    <summary>改了密码之后，其它设备上的登录被踢了</summary>
+    <p>
+      这是预期行为：改密会把 <code>TokenVersion</code> +1，所有旧令牌立即失效。
+      当前这台设备会自动换上后端下发的新令牌，所以自己不受影响。
+    </p>
+  </details>
+  <details>
     <summary>登录后没多久就掉线，或者每次重启都要重新登录</summary>
     <p>
       没配 <code>MODEL_SECRET_KEY</code>。此时服务每次启动随机生成密钥，旧令牌全部失效。
@@ -1079,6 +1180,13 @@ venv\Scripts\python.exe serve.py
         <strong>对匿名请求开放</strong>，没有登录检查。这与本项目"前端隐藏按钮只是体验、真正拦截在后端"
         的自我要求不一致，建议补上 <code>@require_login</code>（维护类操作建议再加一个管理员权限点）。
         影响范围：前者会丢掉已生成的图（图可由重训/重推再生），后者可被用来占用磁盘。</p>
+    </div>
+    <div class="card">
+      <span class="tag">鉴权</span>
+      <h4>自助注册默认是开着的</h4>
+      <p>任何人打开登录页都能自己注册一个 <strong>operator</strong> 账号（角色被服务端锁死，提不了权）。
+        内网工具这样最省事，但<strong>交付到工厂等正式环境前建议在 <code>db.env</code> 里写
+        <code>MODEL_ALLOW_REGISTER=0</code> 关掉</strong>，改由管理员按需开号，账号才可追溯。</p>
     </div>
     <div class="card">
       <span class="tag">依赖</span>

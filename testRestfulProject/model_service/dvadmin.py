@@ -13,6 +13,7 @@ frontend/22project 启动时会打一组 Django 接口；这里用 Flask 把**�
 数据全部来自本服务（模型产物 / 数据集 / 图 / 库表）：
 
     POST /api/login/                              登录   → {code:2000, data:{access, username}}
+    POST /api/register/                           自助注册（默认开启；MODEL_ALLOW_REGISTER=0 关闭）
     GET  /api/system/user/user_info/               用户信息
     GET  /api/system/menu/web_router/              动态菜单（后端控制路由，五个模块在这里）
     GET  /api/init/dictionary/?dictionary_key=all  字典（data 必须是数组）
@@ -199,6 +200,81 @@ def build_blueprint() -> Blueprint:
         auth.log_operation("login", target=username)
         return _ok(data, "登录成功")
 
+    @bp.post("/api/register/")
+    def register():
+        """自助注册：**匿名接口，刻意不做任何权限控制** —— 它就是"还没有账号的人"的入口，
+        给它加权限等于谁都用不了（与 /api/login/ 同一个道理）。
+
+        ⚠️ 但"匿名"不等于"什么都能填"，下面几条都是硬规则：
+          · **角色强制 operator**，绝不接受前端传来的 role_key/role。
+            否则任何人注册时把角色填成 admin 就是一个提权漏洞。
+            要更高权限，只能让管理员在「用户管理」页改（需要 user:manage）。
+          · 用户名/口令规则与「用户管理」页的新建保持一致：非空、口令 ≥6 位、
+            两次输入一致（`password_regain`）。前端表单也会校验，但**客户端校验可以绕过**，
+            所以这里再留一道。
+          · 重名由 `database.create_user()` 翻成 DBError（MySQL 1062），这里转成人话。
+          · `pwd_change_count=1`：口令是他自己刚定的，不该再被"初次登录强制改密"拦一次。
+          · 开关关闭（`MODEL_ALLOW_REGISTER=0`）时直接拒绝；登录页也不显示注册页签。
+          · 开了验证码就同样要过验证码 —— 否则"登录要人机校验、注册不要"就成了绕过的口子，
+            自动化脚本完全可以改用注册接口批量造号。
+
+        ⚠️ 不直接签发令牌：返回用户名，由前端拿这份凭据走一次**正常的 login()**。
+           这样"登录成功之后要做什么"（初始化动态路由/字典/按钮权限）只存在一条路径，
+           不会再多出第二份分叉实现。
+        """
+        from .config import config            # 本文件里 config 一直是函数内导入（避免模块级循环依赖）
+        if not config.allow_register:
+            return _fail("本平台未开放自助注册，请联系管理员开号")
+
+        body = request.get_json(silent=True) or {}
+        username = (body.get("username") or "").strip()
+        password = body.get("password") or ""
+        # 前端"再次输入"字段：客户端会比对一次，但可以绕过，服务端再比一次
+        regain = body.get("password_regain")
+        name = (body.get("name") or "").strip()
+
+        if not username or not password:
+            return _fail("用户名和密码都不能为空")
+        if len(username) < 3 or len(username) > 50:
+            return _fail("用户名长度需在 3~50 个字符之间")
+        # 用户名会进 URL（`/models/...` 之外的地方）与日志，这里只做最基本的两条：
+        # 不含空白、不含路径分隔符 —— 与 registry 的模型名净化同一条思路。
+        if any(c.isspace() for c in username) or any(c in username for c in "/\\"):
+            return _fail("用户名不能包含空格或斜杠")
+        if len(password) < 6:
+            return _fail("密码至少 6 位")
+        if regain is not None and regain != password:
+            return _fail("两次输入的密码不一致")
+
+        # 验证码：与 login() 同一道闸、同一个开关（captcha.active()），
+        # 且同样放在**落库之前** —— 放到后面等于没挡。
+        if captcha.active():
+            ok, why = captcha.verify(body)
+            if not ok:
+                auth.log_operation("register", target=username, result="失败", message=why)
+                return _fail(why)
+
+        try:
+            uid = database.create_user(
+                username, auth.hash_password(password), auth.ROLE_OPERATOR,
+                display_name=name or username,
+                dept_name="模型管理平台",
+                email=(body.get("email") or "").strip() or None,
+                mobile=(body.get("mobile") or "").strip() or None,
+                # 口令是本人刚定的 → 1，不触发"初次登录强制改密"
+                pwd_change_count=1)
+        except DBError as exc:
+            auth.log_operation("register", target=username, result="失败", message=str(exc))
+            return _fail(f"注册失败：{exc}")
+
+        # 日志里的"操作人"记成这个新账号自己：注册是匿名的，若不显式设置，
+        # g.current_user 是空的，日志会出现一条"操作人不明"的记录。
+        g.current_user = database.user_by_id(uid) or {"UserID": uid, "Username": username}
+        auth.log_operation("register", target=username,
+                           detail={"role": auth.ROLE_OPERATOR, "user_id": uid})
+        return _ok({"username": username, "role_key": auth.ROLE_OPERATOR},
+                   "注册成功，请登录")
+
     @bp.post("/api/logout/")
     def logout():
         """退出。令牌是无状态的，服务端没有会话要清，前端删掉本地令牌即可。"""
@@ -354,8 +430,14 @@ def build_blueprint() -> Blueprint:
 
         ⚠️ 返回的是**平铺的 key-value**，不是列表：前端拿它当 map 下标取值，
         给成数组会让 `systemConfig['base.captcha_state']` 恒为 undefined（登录页验证码又冒出来）。
+
+        `base.register_state` 同理：登录页据此决定显不显示「注册」页签。
+        两个开关都由**后端**说了算（`captcha.active()` / `config.allow_register`），
+        前端只是读它——这样不会出现"前端显示注册、后端拒绝提交"的错配。
         """
+        from .config import config
         return _ok({"base.captcha_state": bool(captcha.active()),
+                    "base.register_state": bool(config.allow_register),
                     "base.site_name": "模型管理平台",
                     "base.login_title": "模型管理平台",
                     # 登录页大标题/副标题：前端优先读这两个 key（见 views/system/login/index.vue），

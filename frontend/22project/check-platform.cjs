@@ -35,8 +35,25 @@ function platformPages() {
 	if (fs.existsSync(base)) walk(base);
 	return out.sort();
 }
-const FILES = platformPages();
-const ALSO = ['src/api/platform/index.ts'];
+/**
+ * 平台页之外的**登录 / 布局**文件。
+ *
+ * ⚠️ 为什么要把它们列进来：这几个文件不在 `src/views/platform/` 下，自动扫描扫不到，
+ *    但它们是**登录链路**——改坏了整站都进不去，比某个业务页出问题严重得多。
+ *    2026-09 加「注册」页签时就吃了这个亏：新写的 register.vue 与改过的 user.vue
+ *    没有任何自动校验覆盖，只能临时手写脚本去编译。
+ *    这里手写清单是**有意**的：文件少、且每个都值得单独确认存在。
+ */
+const AUTH_LAYOUT_FILES = [
+	'src/views/system/login/index.vue',
+	'src/views/system/login/component/account.vue',
+	'src/views/system/login/component/changePwd.vue',
+	'src/views/system/login/component/register.vue',
+	'src/layout/navBars/breadcrumb/user.vue',
+].filter((rel) => fs.existsSync(path.join(ROOT, rel)));
+
+const FILES = [...platformPages(), ...AUTH_LAYOUT_FILES];
+const ALSO = ['src/api/platform/index.ts', 'src/api/system/user.ts', 'src/views/system/login/api.ts'];
 
 let errors = 0;
 const ok = (m) => console.log('  ✅ ' + m);

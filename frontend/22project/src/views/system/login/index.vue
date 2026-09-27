@@ -19,12 +19,22 @@
 					<div class="login-right-warp-main-form">
 						<div v-if="!state.isScan">
 							<el-tabs v-model="state.tabsActiveName">
-                <el-tab-pane :label="$t('message.label.changePwd')" name="changePwd"  v-if="userInfos.pwd_change_count===0">
+                <!-- 首登强制改密：此时**只**显示改密页，不给注册入口 -->
+                <el-tab-pane :label="$t('message.label.changePwd')" name="changePwd"  v-if="isForcedChangePwd">
                   <ChangePwd />
                 </el-tab-pane>
-								<el-tab-pane :label="$t('message.label.one1')" name="account" v-else>
-									<Account />
-								</el-tab-pane>
+                <template v-else>
+                  <el-tab-pane :label="$t('message.label.one1')" name="account">
+                    <Account />
+                  </el-tab-pane>
+                  <!-- 「注册」页签：只在后端开关打开时出现。
+                       读的是 base.register_state（与验证码的 captcha_state 同一套机制，
+                       由 /api/init/settings/ 下发），这样不会出现"前端显示注册、后端拒绝提交"
+                       的错配。管理员可以用 MODEL_ALLOW_REGISTER=0 整体关掉。 -->
+                  <el-tab-pane v-if="isRegisterEnabled" label="注册" name="register">
+                    <Register />
+                  </el-tab-pane>
+                </template>
 
 								<!-- TODO 手机号码登录未接入，展示隐藏 -->
 								<!-- <el-tab-pane :label="$t('message.label.two2')" name="mobile">
@@ -63,6 +73,7 @@ const Account = defineAsyncComponent(() => import('/@/views/system/login/compone
 const Mobile = defineAsyncComponent(() => import('/@/views/system/login/component/mobile.vue'));
 const Scan = defineAsyncComponent(() => import('/@/views/system/login/component/scan.vue'));
 const ChangePwd = defineAsyncComponent(() => import('/@/views/system/login/component/changePwd.vue'));
+const Register = defineAsyncComponent(() => import('/@/views/system/login/component/register.vue'));
 const OAuth2 = defineAsyncComponent(() => import('/@/views/system/login/component/oauth2.vue'));
 
 import _ from "lodash-es";
@@ -98,6 +109,12 @@ const getSystemConfig = computed(() => {
 	return systemConfig.value
 })
 
+// 是否处于「初次登录强制改密」：这种状态下只显示改密页，不给注册入口。
+const isForcedChangePwd = computed(() => userInfos.value.pwd_change_count === 0);
+// 自助注册是否开放。⚠️ 由**后端**决定（`/api/init/settings/` 的 base.register_state），
+// 前端只是读它 —— 与验证码的 captcha_state 完全同一套机制，不会出现两边各说各话。
+const isRegisterEnabled = computed(() => !!systemConfigStore.systemConfig['base.register_state']);
+
 const siteLogo = computed(() => {
 	if (!_.isEmpty(getSystemConfig.value['login.site_logo'])) {
 		return getSystemConfig.value['login.site_logo']
@@ -114,6 +131,10 @@ const siteBg = computed(() => {
 // 页面加载时
 onMounted(() => {
 	NextLoading.done();
+	// 自己拉一次系统配置：注册页签的显隐由 base.register_state 决定，
+	// 不能只依赖 Account 子组件里那次请求（首登强制改密时 Account 根本不挂载，
+	// 页签就会一直不出现）。store 有 persist，老访客这次请求通常直接命中缓存。
+	systemConfigStore.getSystemConfigs();
 });
 </script>
 
