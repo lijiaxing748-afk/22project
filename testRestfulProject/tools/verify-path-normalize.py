@@ -1,15 +1,22 @@
 # -*- coding: utf-8 -*-
-"""验证 config.normalize_user_path()：Windows 风格路径在 Linux 上也能解析。
+"""验证路径归一化与数据集目录解析：Windows 风格路径在任何平台上都能被正确解析。
 
-背景：前端拼路径用 `\\`，Windows 上 Path() 认；Linux 上 `\\` 只是普通字符，
-      导致"文件明明在却报不存在"。这个测试在 Windows 上同样可跑，
-      断言的是**归一化结果**（与平台无关），从而能在开发机上提前发现问题。
+背景（两条教训，都在这一个文件里验）：
+  ① 前端拼路径用 `\\`，Windows 上 Path() 认；Linux 上 `\\` 只是普通字符，
+     导致"文件明明在却报不存在"。
+  ② ⚠️ **盘符相关的期望值依平台而异**：Windows 上 `D:\\x` 本身就是绝对路径，
+     去掉盘符会把它降级成相对路径，调用方再拼一次项目根就成了
+     `...\\testRestfulProject\\22project\\testRestfulProject\\1DCNN\\0HP` —— 目录不存在、
+     训练直接 500（2026-09-27 实测踩到）。Linux 上没有盘符概念，只能丢掉。
+     所以下面用 `os.name` 区分期望值，而不是断言一个"与平台无关"的错答案。
 """
+import os
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from model_service.config import config, normalize_user_path  # noqa: E402
+from model_service.config import (  # noqa: E402
+    config, normalize_user_path, dataset_dir_candidates)
 
 FAIL = 0
 
@@ -31,6 +38,8 @@ def main():
     print("  normalize_user_path —— Windows 路径 → 当前平台可解析形式")
     print("=" * 64)
 
+    # ⚠️ 盘符相关期望值**依平台而异**，见文件头 ②。
+    nt = (os.name == "nt")
     cases = [
         # (说明, 输入, 期望)
         ("反斜杠相对路径（前端最常发的格式）",
@@ -41,12 +50,13 @@ def main():
          "1DCNN\\0HP/sub/x.csv", "1DCNN/0HP/sub/x.csv"),
         ("中文目录名（我们的数据集就是中文）",
          "DEMO-轴承表格数据\\信号.csv", "DEMO-轴承表格数据/信号.csv"),
-        ("Windows 绝对路径 D:\\...",
-         "D:\\22project\\frontend\\dist", "22project/frontend/dist"),
+        ("Windows 绝对路径 D:\\...（Windows 上必须**保持绝对**）",
+         "D:\\22project\\frontend\\dist",
+         "D:/22project/frontend/dist" if nt else "22project/frontend/dist"),
         ("Windows 绝对路径小写盘符",
-         "c:\\x\\y.csv", "x/y.csv"),
+         "c:\\x\\y.csv", "c:/x/y.csv" if nt else "x/y.csv"),
         ("盘符 + 正斜杠",
-         "D:/22project/x.csv", "22project/x.csv"),
+         "D:/22project/x.csv", "D:/22project/x.csv" if nt else "22project/x.csv"),
         ("相对工作区写法（响应脱敏后的典型值）",
          "testRestfulProject\\1DCNN\\0HP", "testRestfulProject/1DCNN/0HP"),
         ("空字符串",
@@ -58,8 +68,8 @@ def main():
          "  a\\b.csv  ", "a/b.csv"),
         ("单个文件名",
          "x.csv", "x.csv"),
-        ("只有盘符（退化成空）",
-         "D:", ""),
+        ("只有盘符（Windows 上仍是绝对的根，Linux 上退化成空）",
+         "D:", "D:" if nt else ""),
         ("UNC 风格 \\\\server\\share → //server/share（双斜杠保留，UNC 语义）",
          "\\\\server\\share\\f.csv", "//server/share/f.csv"),
     ]
@@ -76,6 +86,30 @@ def main():
     # 实例调用全部通过时补一条汇总，避免上面循环没输出显得"没测"
     all_same = all(config.normalize_user_path(r) == w for _, r, w in cases)
     check("config.normalize_user_path（实例）与模块函数结果一致", all_same, True)
+
+    print()
+    print("=" * 64)
+    print("  dataset_dir_candidates —— 数据集的六种写法都要能落到同一个真实目录")
+    print("=" * 64)
+
+    real = config.project_dir / "1DCNN" / "0HP"
+    forms = [
+        ("绝对写法", str(real)),
+        ("反斜杠绝对写法", str(real).replace("/", "\\")),
+        ("相对项目根", "1DCNN/0HP"),
+        ("反斜杠相对", "1DCNN\\0HP"),
+        ("相对工作区", "testRestfulProject/1DCNN/0HP"),
+        ("盘符 + 相对（脱敏后/旧库里的典型值）",
+         "D:/22project/testRestfulProject/1DCNN/0HP"),
+    ]
+    for desc, raw in forms:
+        candidates = dataset_dir_candidates(raw)
+        hit = next((c for c in candidates if c.is_dir()), None)
+        check(f"{desc} → 首个存在的候选 = 真实目录",
+              hit is not None and Path(hit).resolve() == real.resolve(), True)
+    check("空输入 → 空候选", dataset_dir_candidates("") == [], True)
+    check("候选里包含「原样」这一项（绝对路径优先）",
+          str(real) in [str(c) for c in dataset_dir_candidates(str(real))], True)
 
     print()
     print("=" * 64)

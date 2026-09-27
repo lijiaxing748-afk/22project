@@ -81,6 +81,15 @@ def normalize_user_path(raw: str | os.PathLike | None) -> str:
     # Windows 盘符：`D:/...` 或裸 `D:`。只在"单字母 + 冒号"且位于开头时才处理，
     # 避免误伤 `http://` 之类的写法（那种不会被传进来，但防御性写清楚）。
     if len(text) >= 2 and text[1] == ":" and text[0].isalpha():
+        # ⚠️⚠️ Windows 上 `D:/x` 本身就是**绝对路径**，去掉盘符会把它降级成相对路径
+        #     （`22project/testRestfulProject/1DCNN/0HP`）。调用方随后按项目根再拼一次，
+        #     就得到 `...\testRestfulProject\22project\testRestfulProject\1DCNN\0HP` —— 目录当然不存在。
+        #     2026-09-27 的 `/train` 500 就是这么来的：实测日志里的报错路径与这个推演**逐字一致**。
+        #     所以：**有盘符概念的平台上必须原样保留**；只有 Linux 这种没有盘符的地方才把盘符当噪声丢掉
+        #     （那边 `D:/x` 无论如何都指不到真实文件，丢掉盘符后靠"按项目根拼"或
+        #       `dataset_dir_candidates()` 的锚点回退才可能找到）。
+        if os.name == "nt":
+            return text
         text = text[2:]
         text = text.lstrip("/")          # `D:/x` → `/x` → `x`
         if not text:
@@ -88,8 +97,65 @@ def normalize_user_path(raw: str | os.PathLike | None) -> str:
     return text
 
 
+def dataset_dir_candidates(raw: str | os.PathLike | None) -> list[Path]:
+    """把"数据集目录"的各种写法展开成**候选路径**（按最可能命中排序，已去重）。
+
+    为什么不能只算一个：同一个字符串在不同来源下含义不同 ——
+      · 前端从 `Datasets.DataPath` 读出来的是**绝对**路径：`D:\\22project\\testRestfulProject\\1DCNN\\0HP`
+      · 老前端/外部脚本给的是**相对项目根**的写法：`1DCNN\\0HP`
+      · 表里也可能存**相对工作区**的写法：`testRestfulProject/1DCNN/0HP`
+      · 迁移到 Linux 后，老库里存的仍是上面那种 Windows 绝对路径（盘符在那边没有意义）
+
+    解析顺序：
+      ① 原样（正斜杠）—— Windows 的 `D:/x` 与 Linux 的 `/opt/x` 都能被 `Path` 认成绝对路径
+      ② 去掉盘符/前导斜杠后，按**项目根**拼、再按**工作区**拼（老语义的两种口径）
+      ③ 以「项目目录名 / 工作区目录名」为锚点取尾巴 —— 跨机器、跨平台最稳：
+         `D:/22project/testRestfulProject/1DCNN/0HP` 与 `testRestfulProject/1DCNN/0HP`
+         都会落到 `<项目根>/1DCNN/0HP`
+    """
+    text = str(raw or "").strip()
+    if not text:
+        return []
+    posix = text.replace("\\", "/")
+    out: list[Path] = []
+
+    def add(candidate) -> None:
+        candidate = Path(candidate)
+        if candidate not in out:
+            out.append(candidate)
+
+    add(posix)                                        # ①
+    stripped = normalize_user_path(text)              # ②
+    if stripped:
+        add(PROJECT_DIR / stripped)
+        add(WORKSPACE_DIR / stripped)
+    parts = [p for p in posix.split("/") if p not in ("", ".")]        # ③
+    for anchor, base in ((PROJECT_DIR.name, PROJECT_DIR), (WORKSPACE_DIR.name, WORKSPACE_DIR)):
+        for index in range(len(parts) - 1, -1, -1):
+            if parts[index].lower() == anchor.lower() and index + 1 < len(parts):
+                add(base / "/".join(parts[index + 1:]))
+                break
+    return out
+
+
+def dataset_dir_error_message(raw: str, candidates: list[Path]) -> str:
+    """数据集目录找不到时的中文说明：把"试过哪些位置"如实列出来。
+
+    ⚠️ 原先只说 `数据集目录不存在：<拼错的绝对路径>`，用户看到的是一个自己从没输入过的路径
+    （`...\\testRestfulProject\\22project\\testRestfulProject\\...`），根本没法排查。
+    """
+    tried = "；".join(str(c) for c in candidates[:4]) or "（无候选）"
+    message = f"数据集目录不存在：{raw}\n    已尝试的位置：{tried}"
+    files = [c for c in candidates if c.is_file()]
+    if files:
+        message += (f"\n    注意：{files[0]} 存在但**是个文件**（不是目录），"
+                    f"请填它所在的目录（例如 {files[0].parent}）")
+    return message
+
+
 # 兼容直接 from .config import normalize_user_path 的写法
-__all__ = ["normalize_user_path", "config", "Config"]
+__all__ = ["normalize_user_path", "dataset_dir_candidates", "dataset_dir_error_message",
+           "match_dir_case_insensitive", "config", "Config"]
 
 
 SERVICE_DIR = Path(__file__).resolve().parent
@@ -183,7 +249,12 @@ class Config:
 
     # 把模块级的路径归一化函数挂成静态方法，让 `config.normalize_user_path(...)`
     # （config 是**实例**，不是模块）也能用 —— 调用方两种写法都有，统一支持。
+    # ⚠️ 新增路径相关的模块级函数时**必须**在这里也挂一份：只加模块级函数的话，
+    #    `config.xxx(...)` 会 AttributeError（本轮就踩了一次，测试直接红了）。
     normalize_user_path = staticmethod(normalize_user_path)
+    dataset_dir_candidates = staticmethod(dataset_dir_candidates)
+    dataset_dir_error_message = staticmethod(dataset_dir_error_message)
+    match_dir_case_insensitive = staticmethod(match_dir_case_insensitive)
 
     def __init__(self) -> None:
         """把模块级的路径常量与环境变量快照成一份不可变配置。"""

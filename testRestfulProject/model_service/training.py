@@ -124,14 +124,18 @@ def resolve_source(opts: dict) -> tuple[str, Path, str]:
     （一个文件一个类别，文件名即标签，信号列可显式指定 signal_column）。
     未显式给 dataset_type 时按目录里有什么文件自动判断。
     """
-    # ① 目录从哪来：显式 dataset_dir 优先（相对路径按 project_dir 拼，例如 "1DCNN/0HP"），
-    #    没给就用内置的 CWRU-0HP。目录不存在就直接报错，不做"退回到默认目录"这种事。
+    # ① 目录从哪来：显式 dataset_dir 优先，没给就用内置的 CWRU-0HP。
+    #    ⚠️ 候选解析交给 config.dataset_dir_candidates()（与 API 层 `_resolve_dataset_dir` **同一套**）。
+    #       原先这里只有"去盘符 → 当相对路径按项目根拼"一条路，于是绝对路径
+    #       `D:\...\1DCNN\0HP` 被拼成 `...\testRestfulProject\22project\testRestfulProject\1DCNN\0HP`
+    #       （目录不存在 → /train 直接 500，2026-09-27 实测到的就是这个）。
+    #    目录不存在就直接报错，不做"退回到默认目录"这种事。
     raw_dir = opts.get("dataset_dir")
     if raw_dir:
-        # 归一化 Windows 分隔符：前端给的是 "1DCNN\\0HP" 这种写法，Linux 上不处理会找不到目录。
-        directory = Path(config.normalize_user_path(raw_dir))
-        if not directory.is_absolute():
-            directory = config.project_dir / directory
+        candidates = config.dataset_dir_candidates(raw_dir)
+        directory = next((c for c in candidates if c.is_dir()), None)
+        if directory is None:
+            raise FileNotFoundError(config.dataset_dir_error_message(str(raw_dir), candidates))
     else:
         directory = config.dataset_dirs["CWRU-0HP"]
     if not directory.is_dir():

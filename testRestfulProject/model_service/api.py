@@ -448,6 +448,34 @@ def _resolve_workspace_path(raw: str) -> Path:
         if resolved.is_file():            # 目录不算命中，必须是指到文件
             return resolved
     raise InvalidInput(f"文件不存在或不在工作区内：{raw}")
+def _resolve_dataset_dir(raw: str) -> Path:
+    """训练用的数据集目录 → **工作区内**的绝对路径。
+
+    与 `training.resolve_source` 共用 `config.dataset_dir_candidates()`（**同一套**候选顺序）。
+    别再各写一份 —— 各写一份的后果就是两边拼法不一致：API 把
+    `D:\\22project\\testRestfulProject\\1DCNN\\0HP` 拼成
+    `...\\testRestfulProject\\22project\\testRestfulProject\\1DCNN\\0HP`，训练侧再用同样的错误口径
+    拼一次，最后报出一个用户从没输入过的路径、训练 500（2026-09-27 实测）。
+
+    安全：命中的候选必须落在工作区内。用 `Path.relative_to` 判断而**不是字符串 startswith** ——
+    否则 `D:\\22project_evil\\x` 这类同前缀目录能绕过（历史上真踩过，见 _resolve_workspace_path）。
+    """
+    candidates = config.dataset_dir_candidates(raw)
+    inside: list[Path] = []
+    for candidate in candidates:
+        try:
+            resolved = candidate.resolve()
+            resolved.relative_to(config.workspace_dir.resolve())
+        except (ValueError, OSError):
+            continue
+        inside.append(resolved)
+    if not inside:
+        raise InvalidInput("dataset_dir 必须在工作区内")
+    hit = next((p for p in inside if p.is_dir()), None)
+    if hit is None:
+        # 抛 FileNotFoundError：调用方（Train.post）把它映射成 409 + 提示，而不是 500
+        raise FileNotFoundError(config.dataset_dir_error_message(raw, inside))
+    return hit
 class ApiIndex(Resource):
     """GET / 与 GET /api —— 接口索引，给人和「系统管理→接口索引」页看的自描述清单。
 
@@ -785,24 +813,8 @@ class Train(Resource):
                 if body.get(key) is not None:
                     options[key] = body[key]
             if body.get("dataset_dir"):
-                # 同样先归一化：前端给的可能是 "testRestfulProject\\1DCNN\\0HP" 这种
-                # Windows 分隔符写法，Linux 下不归一化会变成"一个名字带反斜杠的目录"。
-                candidate = Path(config.normalize_user_path(body["dataset_dir"]))
-                if candidate.is_absolute():
-                    resolved = candidate.resolve()
-                else:
-                    # 相对路径口径与 `_resolve_workspace_path` 一致：先按工作区试，再按项目目录试。
-                    # 这一步必须两边都试 —— 响应脱敏后前端拿到的是 "testRestfulProject\\1DCNN\\0HP"
-                    # 这种"相对工作区"的路径，只按项目目录拼会得到 testRestfulProject\testRestfulProject\...
-                    first = config.workspace_dir / candidate
-                    resolved = (first if first.exists() else config.project_dir / candidate).resolve()
-                # 用 relative_to 判断"在工作区内"：字符串 startswith 会被 D:\22project_evil
-                # 这类同前缀目录绕过（inference._guard_path 也是这么做的，口径统一）
-                try:
-                    resolved.relative_to(config.workspace_dir.resolve())
-                except ValueError:
-                    raise InvalidInput("dataset_dir 必须在工作区内")
-                options["dataset_dir"] = str(resolved)
+                # 与 training.resolve_source 共用同一套候选解析（见 _resolve_dataset_dir 的说明）
+                options["dataset_dir"] = str(_resolve_dataset_dir(body["dataset_dir"]))
             if epochs is not None:
                 options["epochs"] = epochs
         except FileNotFoundError as exc:            # 数据目录不存在 / 目录里没有可用数据文件
