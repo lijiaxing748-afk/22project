@@ -125,11 +125,14 @@ router.beforeEach(async (to, from, next) => {
             next(`/login?redirect=${to.path}&params=${JSON.stringify(to.query ? to.query : to.params)}`);
             Session.clear();
             NProgress.done();
-        }else if (token && to.path === '/login' && userInfos.value.pwd_change_count===0 ) {
-            next('/login');
-            NProgress.done();
-        } else if (token && to.path === '/login' && userInfos.value.pwd_change_count>0) {
-            next('/home');
+        }else if (token && to.path === '/login') {
+            // ⚠️ 已登录的人再来登录页：按"是否必须改密"分流。
+            //    原先这里是两次严格相等判断（pwd_change_count === 0 / > 0），而刷新后
+            //    pwd_change_count 可能是 **null**（store 初始值、user_info 还没回来）→
+            //    两个分支都不命中 → 一路落到下面的 frameOutRoutes 分支 next()，
+            //    于是"已经登录的人手输 /#/login 会看到登录页"。
+            //    现在 null / 未知一律当"已登录且不需要强制改密"，直接送首页。
+            next(userInfos.value.pwd_change_count === 0 ? '/login' : '/home');
             NProgress.done();
         }else if(token &&  frameOutRoutes.includes(to.path) ){
             next()

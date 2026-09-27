@@ -72,9 +72,16 @@ export const platformApi = {
 	datasets: () => request({ url: '/datasets', method: 'get' }),
 	datasetDb: () => request({ url: '/datasets/db', method: 'get' }),
 	registerDataset: (data: any) => request({ url: '/datasets/db', method: 'post', data }),
-	// 原先这里还声明了 updateDataset(id, data) / deleteDataset(id, force)，对应后端的
-	// PUT/DELETE /datasets/db/<id>。两者从来没有被任何页面调用过，后端那组路由也已删除，
-	// 留着只会让人以为"登记信息可以改/可以删"。要改登记就重新 registerDataset（幂等）。
+	// ⚠️ 删除数据集分两个 scope，**互不牵连**（与模型删除同一套约定）：
+	//    · 'files'  只删 data/datasets/<名>/ 这个上传目录（内置/项目内数据集不在那儿，删不到）
+	//    · 'record' 只删 Datasets 表那一行；被训练/推理任务引用时后端回 409 并说明原因
+	//    force=true 会连带处理引用（**会把引用它的推理任务连同明细删掉**），所以界面默认不传，
+	//    避免手滑删掉历史记录 —— 需要时用 API/控制台显式加。
+	deleteDataset: (name: string, scope: 'files' | 'record', force = false) =>
+		request({ url: `/datasets/${encodeURIComponent(name)}?scope=${scope}${force ? '&force=1' : ''}`, method: 'delete' }),
+	// 说明：原先这里还声明过 updateDataset(id, data)，对应后端的 PUT /datasets/db/<id>。
+	// 它从未被任何页面调用、后端那组路由也已删除，留着只会让人以为"登记信息可以改"。
+	// 要改登记就重新 registerDataset（幂等）。
 	tablePreview: (path: string, rows = 20, column = '') =>
 		request({ url: `/datasets/table?${q({ path, rows, column })}`, method: 'get' }),
 	signal: (params: { dataset: string; file: string; column?: string; points?: number; start?: number }) =>

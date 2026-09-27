@@ -18,6 +18,7 @@
  "/inference-tasks/<x>",
  "/datasets",
  "/datasets/db",
+ "/datasets/<x>",
  "/datasets/table",
  "/datasets/signal",
  "/datasets/upload",

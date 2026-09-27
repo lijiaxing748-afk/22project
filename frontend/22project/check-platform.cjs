@@ -53,7 +53,20 @@ const AUTH_LAYOUT_FILES = [
 ].filter((rel) => fs.existsSync(path.join(ROOT, rel)));
 
 const FILES = [...platformPages(), ...AUTH_LAYOUT_FILES];
-const ALSO = ['src/api/platform/index.ts', 'src/api/system/user.ts', 'src/views/system/login/api.ts'];
+const ALSO = [
+	'src/api/platform/index.ts',
+	'src/api/system/user.ts',
+	'src/views/system/login/api.ts',
+	// ⚠️ 下面这几个是**登录/部署链路**的核心文件，原先完全不在校验范围内（第 4 节才补上内容检查）。
+	//    放进来至少能保证"import 都能解析"——改坏一个路径就会在这里报出来，而不是等浏览器白屏。
+	'src/utils/platformRequest.ts',
+	'src/utils/service.ts',
+	'src/utils/httpError.ts',
+	'src/utils/logout.ts',
+	'src/utils/relogin.ts',
+	'src/router/index.ts',
+	'src/stores/userInfo.ts',
+];
 
 let errors = 0;
 const ok = (m) => console.log('  ✅ ' + m);
@@ -94,9 +107,12 @@ for (const rel of FILES) {
 }
 
 console.log('\n=== 2) import 路径校验 ===');
+// ⚠️ 只扫**代码行**：注释掉的 import 不该被当成真实依赖（`// import { env } from "/src/utils/util.env"`
+//    这种模板遗留的注释会让校验报"引用不存在"，而那是假警报 —— 实测踩过一次）。
 const IMPORT_RE = /from\s+['"]([^'"]+)['"]/g;
 const checkFile = (rel) => {
-	const src = fs.readFileSync(path.join(ROOT, rel), 'utf8');
+	const raw = fs.readFileSync(path.join(ROOT, rel), 'utf8');
+	const src = raw.split('\n').filter((line) => !/^\s*(\/\/|\*|\/\*)/.test(line)).join('\n');
 	const aliasRoot = path.join(ROOT, 'src');
 	let m;
 	while ((m = IMPORT_RE.exec(src))) {

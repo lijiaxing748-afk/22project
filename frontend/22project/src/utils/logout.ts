@@ -22,7 +22,7 @@
  *      根路径下没有令牌时，路由守卫会把人送到 `/login`（见 `router/index.ts`）。
  */
 import { ElMessageBox } from 'element-plus';
-import { Session } from '/@/utils/storage';
+import { Local, Session } from '/@/utils/storage';
 import { request } from '/@/utils/service';
 
 /**
@@ -63,5 +63,11 @@ export async function doLogout(opts: { confirm?: boolean } = {}): Promise<void> 
 	}
 
 	Session.clear();
+	// ⚠️ 还要清掉**上一个用户**留在 localStorage 里的个性化数据：字典、按钮权限、系统配置。
+	//    这三个 store 都开了 persist（默认用 store id 当 key），不清的话换账号登录后、
+	//    在路由表重建之前，按钮权限与字典仍是上一个人的 —— 后端虽然会拦，界面上却会露出不该有的入口。
+	//    ⚠️ 只删这三个 key，**不要**用 Local.clear()：令牌不在 Local（在 Cookie，不受影响），
+	//    但主题/布局偏好也存在 Local，全清会把使用者的界面设置一起重置。
+	['Dictionary', 'BtnPermission', 'SystemConfig'].forEach((key) => Local.remove(key));
 	window.location.href = '/';
 }

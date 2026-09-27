@@ -10,6 +10,17 @@
 				<el-select v-model="current" style="width: 420px" @change="() => {}">
 					<el-option v-for="k in datasetKeys" :key="k" :label="k" :value="k" />
 				</el-select>
+				<el-button class="ml" size="small" type="danger" plain :disabled="!current" @click="removeDatasetFiles">
+					删除上传文件
+				</el-button>
+				<el-button size="small" type="danger" plain :disabled="!current" @click="removeDatasetRecord">
+					删除库表登记行
+				</el-button>
+				<div class="hint">
+					⚠️ 两个动作<strong>互不牵连</strong>：前者只删上传目录 <code>data/datasets/&lt;名&gt;/</code>，
+					后者只删库表那一行（磁盘不动）。内置/项目内数据集不在上传目录里，删不到也不需要删。
+					登记行被训练/推理任务引用时后端会拒绝并说明原因，不会替你把历史记录删掉。
+				</div>
 				<el-row :gutter="16" class="mt">
 					<el-col :xs="12" :md="6" v-for="k in kpis" :key="k.label">
 						<el-card shadow="never">
@@ -205,6 +216,54 @@ const loadDatasets = async () => {
 	if (!current.value || !datasets.value[current.value]) current.value = datasetKeys.value[0];
 };
 const loadDatasetDb = async () => { dbDatasets.value = ((await platformApi.datasetDb()) as any).datasets || []; };
+
+/**
+ * 删除当前数据集的**上传文件**（data/datasets/<名>/），不动库表。
+ *
+ * ⚠️ 两个删除动作是分开的两个按钮、两次确认，因为它们删的是两样东西、都不可撤销：
+ *    这里删文件，下面那个删登记行。合成一个按钮最容易让人以为"删了就干净了"。
+ */
+const removeDatasetFiles = async () => {
+	const name = current.value;
+	if (!name) return;
+	try {
+		await ElMessageBox.confirm(`确认删除数据集 ${name} 的**上传文件**（data/datasets/${name}/）？此操作不可撤销。`, '危险操作', { type: 'warning' });
+	} catch {
+		return;                                  // 用户点了取消：MessageBox 用 reject 表示取消，必须接住
+	}
+	try {
+		const res: any = await platformApi.deleteDataset(name, 'files');
+		ElMessage.success(`已删除上传目录，释放 ${res.freed_kb} KB${res.hint ? '；' + res.hint : ''}`);
+		await loadDatasets();
+	} catch (e: any) {
+		ElMessage.error(e?.message || '删除上传文件失败');
+	}
+};
+
+/**
+ * 删除当前数据集的**库表登记行**，不动磁盘。
+ *
+ * ⚠️ 刻意**不传 force**：被训练/推理任务引用时后端会回 409 并说明原因；
+ *    真要用 force 连带删掉引用它的推理任务，请走 API/控制台显式操作。
+ *    界面不做"一键级联"——那会静默删掉一整批历史记录。
+ */
+const removeDatasetRecord = async () => {
+	const name = current.value;
+	if (!name) return;
+	try {
+		await ElMessageBox.confirm(`确认删除数据集 ${name} 的**库表登记行**？磁盘上的文件不会动。`, '危险操作', { type: 'warning' });
+	} catch {
+		return;
+	}
+	try {
+		const res: any = await platformApi.deleteDataset(name, 'record');
+		ElMessage.success(`已删除登记行${res.hint ? '；' + res.hint : ''}`);
+		await loadDatasets();
+		await loadDatasetDb();
+	} catch (e: any) {
+		ElMessage.error(e?.message || '删除登记行失败');
+	}
+};
 
 const preview = async (datasetKey: string, filename?: string) => {
 	if (!filename) return;

@@ -118,15 +118,46 @@ def begin_artifact(name: str) -> tuple[Path, Path]:
 def commit_artifact(root: Path, stage: Path) -> None:
     """把暂存目录里的文件搬进产物目录，并清掉旧产物。
 
-    ⚠️ 调用这一刻起旧的产物就被删了，所以只能在新内容**已经完整写好**之后调。
+    ⚠️ 调用这一刻起旧产物就要被替换了，所以只能在新内容**已经完整写好**之后调。
+    ⚠️ 顺序是"旧产物先挪进 `.trash-<时间戳>/`（**不删**）→ 新文件搬上来 → 再删 trash"。
+       原先是"先把旧文件全删光、再搬新的"，中间只要抛异常或进程被杀，**上一份好产物就没了**
+       且产物目录里只剩半份新文件（两个失败面叠在一起、没有任何依据可恢复）。
+       现在旧产物在真正删除前一直躺在 trash 里：搬新文件中途失败会自动**从 trash 复原**；
+       进程恰好被杀也只会留下一个 `.trash-*` 目录 —— 旧权重还在里面，捞得回来。
+       （`.trash-*` 与 `.staging-*` 一样是点开头的隐藏目录，`list_artifacts`/`_find_weight` 都会跳过，
+       不会被误当成产物；成功路径下它会被立即删掉，只有异常/崩溃才可能残留。）
     用 rename 而不是 copy：同一磁盘上的重命名是原子的，不会留下半个文件。
     """
-    for old in root.iterdir():
-        if old == stage:
-            continue
-        shutil.rmtree(old, ignore_errors=True) if old.is_dir() else old.unlink(missing_ok=True)
-    for item in stage.iterdir():
-        item.rename(root / item.name)
+    olds = [p for p in root.iterdir() if p != stage]
+    trash = root / f".trash-{datetime.now().strftime('%Y%m%d-%H%M%S-%f')}"
+    moved_old: list[tuple[Path, Path]] = []          # (在 trash 里的位置, 原位置)
+    moved_new: list[Path] = []                       # 已搬到 root 的新文件
+    try:
+        if olds:
+            trash.mkdir()
+            for item in olds:
+                dest = trash / item.name
+                item.rename(dest)
+                moved_old.append((dest, item))
+        for item in list(stage.iterdir()):
+            dest = root / item.name
+            item.rename(dest)
+            moved_new.append(dest)
+    except Exception:
+        # 复原到"提交前"的样子：新文件退回暂存，旧产物从 trash 搬回原位
+        for dest in reversed(moved_new):
+            try:
+                dest.rename(stage / dest.name)
+            except OSError:
+                pass
+        for src, dst in reversed(moved_old):
+            try:
+                src.rename(dst)
+            except OSError:
+                pass
+        shutil.rmtree(trash, ignore_errors=True)
+        raise                                        # 交给 save_artifact 的 except 去 abort(stage)
+    shutil.rmtree(trash, ignore_errors=True)
     stage.rmdir()
 def abort_artifact(stage: Path) -> None:
     """放弃这次写入：只删暂存目录，**旧产物不受影响**。"""

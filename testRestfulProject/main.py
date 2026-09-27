@@ -16,17 +16,19 @@ import traceback
 from datetime import datetime
 from pathlib import Path
 from flask import Flask, request
-from flask_restful import Api
 # 让 `adtk/`、`1DCNN/` 这些原项目目录可以被 import（trainer 里按需插入，这里兜个底）
 sys.path.append(str(Path(__file__).parent))
-from model_service.api import register_api                    # noqa: E402
+from model_service.api import ModelPlatformApi, register_api   # noqa: E402
 from model_service.dvadmin import register_dvadmin            # noqa: E402
 from model_service.config import LOG_DIR                      # noqa: E402
 from model_service.db import database                          # noqa: E402
 from model_service.web import register_frontend                # noqa: E402
 
 app = Flask(__name__)
-api = Api(app)
+# ⚠️ 用 ModelPlatformApi 而不是原生 Api：未捕获异常否则会回框架自带的**英文**
+#    {"message": "Internal Server Error"}，而 Flask 的 errorhandler 够不着
+#    （flask_restful 先把异常接管了）。见 model_service/api.py 里那个类的说明。
+api = ModelPlatformApi(app)
 
 # ---------------------------------------------------------------------------
 # 全局异常兜底：把**完整 traceback**同时写到控制台和 data/logs/error-<日期>.log

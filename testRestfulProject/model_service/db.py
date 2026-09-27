@@ -378,6 +378,11 @@ class Database:
                 row = cur.fetchone()
                 if row and int(row[0]):
                     self._pwd_change_col = True
+                    # ⚠️ 只读 SELECT 在 autocommit=False 的连接上**会开一个事务**（REPEATABLE READ 快照）。
+                    #    这里直接 return 就把事务留在了连接上 —— 正是本文件顶部那段"脏快照 bug"的成因
+                    #    （也解释了下面那条注释里"开着事务的空闲连接"是怎么来的）。
+                    #    按本文件的规矩：只读块也必须结束事务，所以显式 rollback 再返回。
+                    conn.rollback()
                     return                                   # 列已存在（绝大多数启动都走这里）
                 # ⚠️ 必须给个**短的锁等待上限**，否则这一步会把整个启动挂死：
                 #    MySQL 8 里 ALTER 要拿排他元数据锁，而"开着事务的空闲连接"（长跑着的
@@ -919,9 +924,10 @@ class Database:
         """某模型被哪些表引用了多少行——删之前必须先看这个，否则外键会直接拒绝。
 
         逐表 COUNT 而不是一条 UNION：前端要按表逐项展示，一条 UNION 只能给出总数。
-        ⚠️ 计数口径与 delete_model 的级联口径**不完全一致**：这里按 InferenceResults.ModelID 数，
-        而 force 删除走的是"结果 ← 任务"的子查询。如果某条结果行的 ModelID 与它所属任务的 ModelID 不同，
-        它既不会被级联删掉、又会在外键上挡住 Models 行的删除（表现为"计数说是 0、删却删不掉"）。
+        ⚠️ InferenceResults 那一项取的是**并集**（直接挂在该模型上的 + 挂在该模型任务下的），
+        与 delete_model(force) 的级联口径对齐 —— 原先只数 InferenceResults.ModelID，会出现
+        "计数说 0、真删却被外键挡住"。代价是可能**保守**（把不会被删的行也算进来 → deletable=false），
+        这是有意的取舍：宁可提示"不可删"，也不要让人点了删除再撞外键 1451。
         模型名不存在时抛 DBError 而不是返回空引用——"不存在"和"存在但没人引用"必须能区分。
         """
         self.ensure_schema()
@@ -933,10 +939,80 @@ class Database:
             # 五张表的引用列都叫 ModelID，所以列名不随表变化，只有表名是变量
             for table in ("Trainings", "ModelInvocations", "ModelDeployments",
                           "InferenceTasks", "InferenceResults"):
+                if table == "InferenceResults":
+                    # ⚠️ 这一项**故意取并集**：delete_model(force) 删结果走的是"结果 ← 任务"子查询，
+                    #    而这里如果只数 InferenceResults.ModelID，就会出现"计数说 0、真删却删不掉"
+                    #    （某条结果的 ModelID 与它所属任务的 ModelID 不同时，既不被级联删掉、又在
+                    #    外键上挡住 Models 行的删除）。所以把"直接挂在该模型上的"和"挂在它任务下的"
+                    #    都算进来 —— 宁可保守地说"不可删"，也不要让 deletable=true 之后再撞外键。
+                    refs[table] = self._count(
+                        cur,
+                        "SELECT COUNT(*) FROM InferenceResults "
+                        f"WHERE ModelID = {self.placeholder} OR InferenceTaskID IN "
+                        f"(SELECT InferenceTaskID FROM InferenceTasks WHERE ModelID = {self.placeholder})",
+                        (mid, mid))
+                    continue
                 refs[table] = self._count(
                     cur, f"SELECT COUNT(*) FROM {table} WHERE ModelID = {self.placeholder}", (mid,))
             total = sum(refs.values())
             return {"ModelID": mid, "references": refs, "total": total, "deletable": total == 0}
+    def dataset_references(self, name: str) -> dict:
+        """某数据集被哪些表引用了多少行 —— 删登记行前必须先看这个。
+
+        `Datasets` 被两张表引用（`Trainings.DatasetID`、`InferenceTasks.TargetDatasetID`），
+        且两个外键都是 `ON DELETE NO ACTION` —— 有引用时直接 DELETE 会被外键当场拒绝。
+        数据集名有唯一索引（UQ_Datasets_DatasetName），所以按名字查是确定的。
+        名字不存在时抛 DBError（"不存在"与"存在但没人引用"必须能区分）。
+        """
+        self.ensure_schema()
+        with self.cursor() as cur:
+            did = self._find_id(cur, "Datasets", "DatasetID", "DatasetName", name)
+            if did is None:
+                raise DBError(f"数据集 {name} 不存在于 Datasets 表")
+            refs = {
+                "Trainings": self._count(
+                    cur, f"SELECT COUNT(*) FROM Trainings WHERE DatasetID = {self.placeholder}", (did,)),
+                "InferenceTasks": self._count(
+                    cur, f"SELECT COUNT(*) FROM InferenceTasks WHERE TargetDatasetID = {self.placeholder}", (did,)),
+            }
+            total = sum(refs.values())
+            return {"DatasetID": did, "references": refs, "total": total, "deletable": total == 0}
+
+    def delete_dataset(self, name: str, force: bool = False) -> dict:
+        """删 `Datasets` 表登记行。被引用时默认拒绝（DBError → 409），force=True 才处理引用行。
+
+        ⚠️ 两列的可空性**不同**，所以不能用同一招（照抄 delete_model 的一刀切级联会写错）：
+           · `Trainings.DatasetID` **可空** → 置 NULL：训练记录保留（那是一次真实发生过的训练），
+             只是不再指向这个数据集；
+           · `InferenceTasks.TargetDatasetID` **NOT NULL** → 置不了空，只能把引用它的推理任务
+             **连同明细**一起删掉（顺序：结果 → 任务，反了会被外键拒绝）。
+             这属于不可逆的连带删除，所以返回值里必须**如实回报删了多少行**，
+             界面才能告诉用户"连带删了 N 条推理记录"，而不是默默干掉。
+        ⚠️ 本函数只动库表，**不碰磁盘**：上传目录与数据集登记行是两件事（见 api.DatasetDelete 的说明）。
+        """
+        self.ensure_schema()
+        refs = self.dataset_references(name)
+        if refs["total"] and not force:
+            raise DBError(f"数据集 {name} 仍被引用（{refs['references']}）：训练记录可以解除关联，"
+                          f"推理任务必须先删。确认后可用 force=true 连带处理")
+        did = refs["DatasetID"]
+        cascaded: dict[str, int] = {}
+        with self.cursor(commit=True) as cur:
+            if force:
+                if refs["references"]["InferenceTasks"]:
+                    # 子查询与 DELETE 同句是有意的：分两条会在中间留下"任务已删、结果还在"的窗口
+                    cur.execute("DELETE FROM InferenceResults WHERE InferenceTaskID IN "
+                                f"(SELECT InferenceTaskID FROM InferenceTasks "
+                                f"WHERE TargetDatasetID = {self.placeholder})", (did,))
+                    cascaded["InferenceResults"] = max(cur.rowcount, 0)
+                    cur.execute(f"DELETE FROM InferenceTasks WHERE TargetDatasetID = {self.placeholder}", (did,))
+                    cascaded["InferenceTasks"] = max(cur.rowcount, 0)
+                if refs["references"]["Trainings"]:
+                    cur.execute(f"UPDATE Trainings SET DatasetID = NULL WHERE DatasetID = {self.placeholder}", (did,))
+                    cascaded["Trainings_unlinked"] = max(cur.rowcount, 0)
+            cur.execute(f"DELETE FROM Datasets WHERE DatasetID = {self.placeholder}", (did,))
+        return {"deleted": name, "DatasetID": did, "cascaded": cascaded, "references": refs["references"]}
+
     def model_exists(self, name: str) -> bool:
         """Models 表里有没有这个名字（改名查重、上传登记都会用）。
 

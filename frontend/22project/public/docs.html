@@ -822,7 +822,8 @@ Roles ─► Users ─► OperationLogs</code></pre>
         <tr><td>POST</td><td><code>/datasets/db</code></td><td class="c"><span class="badge b-warn">dataset:write</span></td><td>登记一个数据集（幂等）</td></tr>
         <tr><td>GET</td><td><code>/datasets/table</code></td><td class="c"><span class="badge b-mute">匿名</span></td><td>表格预览（列名 + 前 N 行）</td></tr>
         <tr><td>GET</td><td><code>/datasets/signal</code></td><td class="c"><span class="badge b-mute">匿名</span></td><td>取一段信号（画波形用）</td></tr>
-        <tr><td>POST</td><td><code>/datasets/upload</code></td><td class="c"><span class="badge b-warn">dataset:write</span></td><td>上传表格数据集</td></tr>
+        <tr><td>POST</td><td><code>/datasets/upload</code></td><td class="c"><span class="badge b-warn">dataset:write</span></td><td>上传表格数据集。<strong>只有真有文件落盘才建目录</strong>：全是非法扩展名时回 400，且不留下空目录</td></tr>
+        <tr><td>DELETE</td><td><code>/datasets/&lt;数据集名&gt;</code></td><td class="c"><span class="badge b-warn">dataset:write</span></td><td>删数据集。<strong>两个 scope 互不牵连</strong>：<code>?scope=files</code> 只删上传目录 <code>data/datasets/&lt;名&gt;/</code>（内置/项目内数据集不在那儿，删不到）；<code>?scope=record</code> 只删 <code>Datasets</code> 表那一行（磁盘不动）。登记行被训练/推理任务引用时回 <strong>409</strong> 并列出引用数；<code>&amp;force=1</code> 才连带处理（训练记录解除关联、引用它的推理任务连同明细删除，响应如实回报删了几行）</td></tr>
         <tr><td>GET</td><td><code>/figures</code> · <code>/figures/&lt;路径&gt;</code></td><td class="c"><span class="badge b-mute">匿名</span></td><td>图库清单 / 直接取 PNG（读图是匿名，靠前端路由守卫挡）</td></tr>
         <tr><td>DELETE</td><td><code>/figures/&lt;路径&gt;</code></td><td class="c"><span class="badge b-info">需登录</span></td><td><strong>删除单张图</strong>（图库页每张图的「删除」按钮）；不限身份，见下方说明</td></tr>
       </tbody>
@@ -953,7 +954,7 @@ Roles ─► Users ─► OperationLogs</code></pre>
     平台只有 <strong><code>admin</code>（管理员）</strong> 与 <strong><code>user</code>（普通用户）</strong> 两种身份，
     差别<strong>只有两项</strong>：<strong>用户管理</strong>、<strong>查看操作日志</strong>。
     这两项都涉及<strong>别人的账号</strong>（能改别人的角色与口令、能看别人干了什么），所以只给管理员。
-    其余操作两种身份都能做：训练、推理、发布、上传模型与数据集、删除发布包，
+    其余操作两种身份都能做：训练、推理、发布、上传模型与数据集、删除发布包、删数据集（上传文件 / 登记行）、删除模型产物，
     <strong>以及删除模型产物</strong>——它看着危险，但影响面只在本机这一套产物上、重跑训练就能再生，
     而各部署点的账号库彼此独立，删本机的模型影响不到任何别人的账号或数据。
   </p>
@@ -1331,6 +1332,29 @@ venv\Scripts\python.exe serve.py
       <span class="tag">并发</span>
       <h4>不排队，训练同步阻塞</h4>
       <p>没有任务队列。<code>/train</code> 会占住一个工作线程直到训练结束，多人同时训练会明显变慢。</p>
+    </div>
+    <div class="card">
+      <span class="tag">健壮性</span>
+      <h4>异常路径的三处收紧 ✅</h4>
+      <p>
+        ① <strong>未捕获异常不再是英文</strong>：flask_restful 会<strong>先于 Flask</strong> 接管自己路由里的异常，
+        <code>@app.errorhandler(500)</code> 根本够不着 —— 原先回的是框架自带的英文
+        <code>{"message": "Internal Server Error"}</code>。现在统一成中文
+        <code>{"error": "服务端处理失败（详细原因见后端控制台）"}</code>，
+        并且<strong>堆栈照旧写进日志</strong>（排查线索不能丢）。404/405 的中文文案另配。
+      </p>
+      <p>
+        ② <strong>替换产物先给自己留后路</strong>：不再"先把旧文件删光、再搬新的"，而是把旧产物先挪进
+        <code>.trash-&lt;时间戳&gt;/</code>（<strong>不删</strong>）→ 搬新文件上来 → 再删 trash。
+        中途失败会自动从 trash 复原；进程恰好被杀也只会留下一个 <code>.trash-*</code>
+        （旧权重还在里面，捞得回来）。它和 <code>.staging-*</code> 一样是隐藏目录，不会被当成产物。
+      </p>
+      <p>
+        ③ <strong>上传的 <code>.pkl</code> 是"能传上来、不能用"</strong>：推理侧拒绝反序列化
+        <strong>不可信来源</strong>的 pickle（那等于"上传一个 pkl 就能在服务端执行代码"）。
+        上传响应现在会当场给出这条警告 —— 要么改传 <code>.keras</code> / <code>.pt2</code>，
+        要么确认来源可信后设 <code>MODEL_ALLOW_UNTRUSTED_PICKLE=1</code> 重启服务。
+      </p>
     </div>
     <div class="card">
       <span class="tag">鉴权</span>

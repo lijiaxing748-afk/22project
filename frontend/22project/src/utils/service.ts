@@ -1,12 +1,11 @@
 import axios from 'axios';
 import { get } from 'lodash-es';
-import { ElMessage, ElMessageBox } from 'element-plus';
-import type { Action } from 'element-plus';
+// ⚠️ 本文件**不再**直接 import element-plus：登录失效的提示统一交给 relogin.forceRelogin，
+//    其余错误走 tools.errorCreate/errorLog（它们内部自己取 uiContext 弹通知）。
+//    留着 ElMessage / ElMessageBox / Action 只会让人以为"这个实例还会自己弹别的框"。
 
 // @ts-ignore
 import { errorLog, errorCreate } from './tools.ts';
-// import { env } from "/src/utils/util.env";
-// import { useUserStore } from "../store/modules/user";
 import { Session } from '/@/utils/storage';
 import qs from 'qs';
 import { getBaseURL } from './baseUrl';
@@ -127,20 +126,20 @@ function createService() {
 		},
 		(error) => {
 			const status = get(error, 'response.status');
+			// ⚠️ 已经被 forceRelogin 统一收尾过的情况（它自己会弹框 + 清令牌 + 回登录页），
+			//    末尾就**不要**再走 errorLog 弹一次通知 —— 同一个错误弹两次框只会让人更困惑。
+			let handledByRelogin = false;
 			switch (status) {
 				case 400:
 					error.message = '请求错误';
 					break;
 				case 401:
-					// Local.clear();
-					Session.clear();
+					// ⚠️ 收尾统一走 forceRelogin（与 platformRequest 同一份实现）：提示 + 清令牌 + 回登录页。
+					//    原先是这里弹一个框、末尾 errorLog 再弹一次通知（同一件事弹两遍），
+					//    而且只 reload 不把令牌清干净。
 					error.message = '登录授权过期，请重新登录';
-					ElMessageBox.alert(error.message, '提示', {
-						confirmButtonText: 'OK',
-						callback: (action: Action) => {
-							window.location.reload();
-						},
-					});
+					forceRelogin(error.message);
+					handledByRelogin = true;
 					break;
 				case 403:
 					error.message = '拒绝访问';
@@ -178,7 +177,7 @@ function createService() {
 			//    而下一行的 errorLog 会把它直接弹成通知 —— 界面上就是一句英文。
 			//    这里按"这条文案里有没有中文"兜一层；不列状态码，axios 以后改文案也不会漏。
 			if (!isLocalized(error.message)) error.message = describeHttpError(error);
-			errorLog(error);
+			if (!handledByRelogin) errorLog(error);
 			if (status === 401) {
 				// const userStore = useUserStore();
 				// userStore.logout();

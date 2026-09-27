@@ -27,6 +27,7 @@ from __future__ import annotations
 import json
 import platform
 import re
+import shutil
 import sys
 import traceback
 from datetime import datetime
@@ -34,7 +35,7 @@ from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 # Response / redirect 已随零构建控制台（console.html + GET /ui）一起删掉，如无新用途别再 import
 from flask import request, send_from_directory
-from flask_restful import Resource
+from flask_restful import Api, Resource
 from . import datasets as ds
 from . import exporter
 from . import tabular
@@ -600,6 +601,67 @@ class DatasetList(Resource):
                          "file_count": info.get("file_count", 0), "classes": info.get("classes", 0)})
             out[key] = info
         return out, 200
+def delete_dataset_files(name: str) -> dict:
+    """删掉 `data/datasets/<名>/` 这个**上传目录**（只删这一个目录，不动库表）。
+
+    ⚠️ 安全边界：只允许删上传根下的**一个目录名**。name 先过 `_sanitize_name`，
+       再 resolve 后校验父目录正好是 upload_dir —— `..`、绝对路径、多级路径一律拒绝，
+       否则一个 `?scope=files` 就能删到工作区别的地方去。
+    ⚠️ 内置/项目内数据集（CWRU-0HP、0HP 等）的 DataPath 指向 `1DCNN/…`，**不在** data/datasets 下，
+       所以这个接口碰不到它们 —— 这是有意的：文件删除只针对"上传上来的那一份"。
+    """
+    safe = _sanitize_name(name, "")
+    if not safe:
+        raise InvalidInput(f"数据集名不合法：{name!r}")
+    root = config.upload_dir.resolve()
+    target = (root / safe).resolve()
+    if target.parent != root:
+        raise InvalidInput(f"数据集名不合法：{name!r}")
+    if not target.is_dir():
+        raise FileNotFoundError(
+            f"没有这个上传目录：{safe}（内置/项目内数据集不在 data/datasets 下，删不掉也不需要删）")
+    freed = sum(p.stat().st_size for p in target.rglob("*") if p.is_file())
+    shutil.rmtree(target)
+    return {"deleted": safe, "freed_kb": round(freed / 1024, 1)}
+
+
+class DatasetDelete(Resource):
+    """DELETE /datasets/<name>?scope=files|record —— 删上传的数据集文件 / 删库表登记行。
+
+    ⚠️ 两种 scope **互不牵连**（与模型删除同一套约定）：
+        · scope=files  只删 `data/datasets/<名>/`，不动库表；
+        · scope=record 只删 `Datasets` 表那一行，不动磁盘。
+       所以响应里都带一句 hint 明说"另一边没动"，别让用户以为删干净了。
+    ⚠️ 登记行被引用时（Trainings.DatasetID / InferenceTasks.TargetDatasetID，两个外键都是
+       ON DELETE NO ACTION）默认 409；确认后可用 `&force=1` 连带处理 —— 但两列可空性不同，
+       处理方式也不同，详见 db.delete_dataset 的说明。
+    """
+    @require_perm("dataset:write")
+    def delete(self, name):
+        scope = (request.args.get("scope") or "").strip()
+        try:
+            if scope == "files":
+                result = delete_dataset_files(name)
+                log_operation("delete_dataset_files", target=name, detail=result)
+                result["hint"] = "只删了上传目录；Datasets 表登记行还在。要一起清理用 ?scope=record"
+                return result, 200
+            if scope == "record":
+                force = request.args.get("force") in ("1", "true", "True")
+                result = database.delete_dataset(name, force=force)
+                log_operation("delete_dataset_record", target=name,
+                              detail={"force": force, **{k: v for k, v in result.items() if k != "error"}})
+                if "error" not in result:
+                    result["hint"] = "只删了库表登记行；磁盘上的上传目录没有动。要删文件用 ?scope=files"
+                return result, 200
+            raise InvalidInput("删除必须指定 ?scope=files（删上传目录）或 ?scope=record（删库表登记行）")
+        except FileNotFoundError as exc:
+            return {"error": str(exc)}, 404
+        except DBError as exc:
+            return {"error": str(exc)}, 409
+        except ValueError as exc:                    # 含 InvalidInput（ValueError 子类）
+            return {"error": str(exc)}, 400
+
+
 class DatasetUpload(Resource):
     """上传表格文件到 data/datasets/<数据集名>/（一个文件 = 一个类别）。"""
     MAX_MB = 80
@@ -614,7 +676,9 @@ class DatasetUpload(Resource):
             name = Path(files[0].filename or "dataset").stem
         safe_name = _sanitize_name(name, "dataset")
         target = config.upload_dir / safe_name
-        target.mkdir(parents=True, exist_ok=True)
+        # ⚠️ 目录**延迟到真有文件要落盘时**才建：原先在这里无条件 mkdir，而扩展名过滤在下面的循环里，
+        #    于是一次"全是非法扩展名"的上传会留下一个空数据集目录（接口回 400、磁盘却多了东西），
+        #    界面上还会多出一个空类别。实测复现过（上传 evil.exe）。
         saved, skipped, overwritten = [], [], []
         for item in files:
             filename = Path(item.filename or "").name
@@ -629,6 +693,9 @@ class DatasetUpload(Resource):
             if len(blob) > self.MAX_MB * 1024 * 1024:
                 skipped.append({"filename": filename, "reason": f"超过 {self.MAX_MB}MB"})
                 continue
+            # 确认这个文件真的要收下，才建数据集目录（见上面那段说明：避免空目录残留）
+            if not target.exists():
+                target.mkdir(parents=True, exist_ok=True)
             destination = target / filename
             replaced = destination.is_file()               # 同名会被静默覆盖，这里至少回报出来
             destination.write_bytes(blob)
@@ -1146,6 +1213,10 @@ class ArtifactDetail(Resource):
             if scope == "artifact":
                 result = delete_artifact(_artifact_key(model_name))
                 log_operation("delete_model", target=model_name, detail=result)
+                # ⚠️ 两种 scope **互不牵连**（这是有意的：一个不可恢复、一个带外键引用检查），
+                #    所以在响应里明说"另一边没动"，别让用户以为已经删干净了。
+                result["hint"] = ("只删了磁盘产物；Models 表登记行还在，此后查看该模型会显示产物缺失。"
+                                  "要连登记行一起清理，用 ?scope=record")
                 return result, 200
             if scope == "record":
                 force = request.args.get("force") in ("1", "true", "True")
@@ -1153,6 +1224,9 @@ class ArtifactDetail(Resource):
                 log_operation("delete_model_record", target=model_name,
                               detail={"force": force, **{k: v for k, v in result.items()
                                                          if k != "error"}})
+                if "error" not in result:
+                    result["hint"] = ("只删了库表登记行；磁盘上的产物、图库目录与已发布的包都**没有**动。"
+                                      "要删产物用 ?scope=artifact")
                 return result, 200
             raise InvalidInput("删除必须指定 ?scope=artifact（删磁盘产物）或 ?scope=record（删库表登记行）")
         except FileNotFoundError as exc:
@@ -1318,7 +1392,13 @@ class ModelUpload(Resource):
                             "推荐用 torch.export 导出）、pickle 的 .pkl"}, 400
         # 2) 产物目录：一个模型一份，**重新上传 = 直接替换旧产物**（没有版本号可选）。
         #    先写进暂存目录，写完整了才换上去 —— 否则一次失败的上传会把上一份好产物毁掉。
-        root, stage = begin_artifact(safe)
+        try:
+            root, stage = begin_artifact(safe)
+        except ValueError as exc:
+            # ⚠️ registry._model_dir() 会拒绝含 `..`、以点开头、带路径分隔符之类的名字（防目录穿越）。
+            #    这一行原先在 try 之外：名字不合法时冒成未捕获的 ValueError → **HTTP 500**。
+            #    这属于参数错，必须回 400 并说清原因，否则用户只看到"服务器内部错误"。
+            return {"error": f"模型名不能用于落盘：{exc}"}, 400
         replaced = (root / "meta.json").is_file()
         # 3) 落盘
         try:
@@ -1343,6 +1423,15 @@ class ModelUpload(Resource):
         warnings = []
         if replaced:
             warnings.append(f"这个模型之前已有产物，已被本次上传替换（旧产物不再保留）")
+        if Path(weights[0]).suffix.lower() in (".pkl", ".pickle"):
+            # ⚠️ 上传的 .pkl 一律 trusted=False，而推理侧**明确拒绝反序列化不可信来源的 .pkl**
+            #    （那等于"上传一个 pkl 就能在服务端执行代码"的入口，见 inference 里的安全闸门）。
+            #    也就是说 .pkl 是"能传上来、不能用"：必须在上传这一刻就讲清楚，
+            #    别等用户传完了、点推理才被拒（那时他只会以为是平台坏了）。
+            warnings.append(
+                "⚠️ 这是 pickle（.pkl）产物：出于安全考虑，**推理会直接拒绝**不可信来源的 .pkl。"
+                "要么改传 .keras / .pt2（自带结构、无需反序列化），"
+                "要么确认来源可信后设置 MODEL_ALLOW_UNTRUSTED_PICKLE=1 并重启服务")
         if not meta.get("input_len"):
             warnings.append("没能自动识别输入长度（input_len），推理时按默认 784 处理；"
                             "想固定长度就在产物目录的 meta.json 里补一个 input_len")
@@ -2207,6 +2296,10 @@ _ROUTES = (
     (DatasetSignal, ("/datasets/signal",)),
     (DatasetUpload, ("/datasets/upload",)),
     (TablePreview, ("/datasets/table",)),
+    # ⚠️ 这条是**变量段**路由，排在 /datasets/db、/datasets/signal、/datasets/upload、/datasets/table
+    #    这些静态段之后：Werkzeug 本来就更偏爱静态规则，显式排后面能让人一眼看出顺序意图，
+    #    免得以后有人再加 `/datasets/<name>/xxx` 时把静态路由顶掉。
+    (DatasetDelete, ("/datasets/<name>",)),
     (SystemInfo, ("/system",)),
     (SystemLogs, ("/system/logs",)),
     (SystemLogFile, ("/system/logs/<name>",)),
@@ -2262,6 +2355,33 @@ def _route_index() -> dict[str, str]:
                 show = show.replace(flask_form, readable)
             out[show] = f"{out[show]}；{desc}" if show in out else desc
     return out
+class ModelPlatformApi(Api):
+    """flask_restful.Api 的**中文兜底**版本。
+
+    ⚠️ 为什么必须在这一层接：flask_restful 会**先于 Flask** 处理自己路由里抛的异常
+    （它把 app.handle_exception/handle_user_exception 换成了 Api.error_router），
+    所以 `@app.errorhandler(Exception)` / `@app.errorhandler(500)` 根本轮不到 ——
+    未捕获异常最终变成框架自带的英文 `{"message": "Internal Server Error"}`，
+    而全站其它提示都是中文（"服务端内部错误"）。
+    这里只把"**非** HTTPException 的 500"换成中文，并**保留框架记堆栈的行为**
+    （排查全靠它，丢了这个线索更糟）；HTTPException 仍走框架原逻辑
+    （404/405 的中文文案在 register_api 里通过 api.errors 配好了）。
+
+    ⚠️ 父类的 handle_error 会返回 `self.make_response(...)`；这里直接返回 (dict, 500) 元组也一样有效
+    （error_router 的返回值就是给 Flask 当视图返回值用的）。
+    """
+
+    def handle_error(self, e):                                   # noqa: ANN001
+        from flask import current_app
+        from werkzeug.exceptions import HTTPException
+
+        if isinstance(e, HTTPException):
+            return super().handle_error(e)
+        # 堆栈照旧进日志：别为了中文提示把排查线索弄丢
+        current_app.log_exception(sys.exc_info())
+        return {"error": "服务端处理失败（详细原因见后端控制台）"}, 500
+
+
 def register_api(api) -> None:
     """把 _ROUTES 里的资源挂到 flask_restful.Api 上（由 main.py 调用）。"""
     for resource, paths in _ROUTES:

@@ -72,7 +72,7 @@ import { DictionaryStore } from '/@/stores/dictionary';
 import { SystemConfigStore } from '/@/stores/systemConfig';
 import { BtnPermissionStore } from '/@/plugin/permission/store.permission';
 import { errorMessage } from '/@/utils/message';
-import {getBaseURL} from "/@/utils/baseUrl";
+// ⚠️ 这里原先还 import 了 getBaseURL，只用于那个不存在的"申请试用"地址；现已不需要。
 
 export default defineComponent({
 	name: 'loginAccount',
@@ -132,7 +132,11 @@ export default defineComponent({
 			});
 		};
 		const applyBtnClick = async () => {
-			window.open(getBaseURL('/api/system/apply_for_trial/'));
+			// ⚠️ 原先这里是 `window.open(getBaseURL('/api/system/apply_for_trial/'))` ——
+			//    后端**没有**这个接口（模板遗留），点下去就是一个 404 页面。
+			//    本平台不需要"申请试用"：自助注册就是入口（登录页的「注册」页签），
+			//    或者让管理员在「用户管理」里开号。这里直接把话讲清楚，不再跳一个不存在的地址。
+			ElMessage.info('本平台没有"申请试用"流程：请用登录页的「注册」页签自助开号，或联系管理员开号');
 		};
     const refreshCaptcha = async () => {
 			state.ruleForm.captcha=''
