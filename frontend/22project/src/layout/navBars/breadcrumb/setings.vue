@@ -432,7 +432,6 @@
 <script setup lang="ts" name="layoutBreadcrumbSeting">
 import { nextTick, onUnmounted, onMounted, computed, reactive } from 'vue';
 import { ElMessage } from 'element-plus';
-import { useI18n } from 'vue-i18n';
 import { storeToRefs } from 'pinia';
 import { useThemeConfig } from '/@/stores/themeConfig';
 import { useChangeColor } from '/@/utils/theme';
@@ -444,7 +443,9 @@ import other from '/@/utils/other';
 import mittBus from '/@/utils/mitt';
 
 // 定义变量内容
-const { locale } = useI18n();
+// ⚠️ 这里原来还解构了 `locale`，用它把本地存储里的语言赋给 i18n。
+//    那个"从存储恢复语言"的逻辑已删除（原因见 onMounted 里的长注释），
+//    locale 不再需要；模板里的 `$t(...)` 走的是全局注入，不依赖这个解构。
 const storesThemeConfig = useThemeConfig();
 const { themeConfig } = storeToRefs(storesThemeConfig);
 const { copyText } = commonFunction();
@@ -667,7 +668,19 @@ onMounted(() => {
 			// 开启水印
 			onWartermarkChange();
 			// 语言国际化
-			if (Local.get('themeConfig')) locale.value = Local.get('themeConfig').globalI18n;
+			// ⚠️ 这里原先是一行 `if (Local.get('themeConfig')) locale.value = Local.get('themeConfig').globalI18n;`
+			//    它是"整个界面莫名变英文"的元凶，已删除。两个后果：
+			//      ① 把**本地存储里**的值直接赋给 i18n，**不校验合法性**。本项目已收敛成
+			//         中文单语言（右上角语言下拉里只剩「简体中文」一项），可浏览器里残留的
+			//         `themeConfig.globalI18n: 'en'` 仍会把框架文案翻成英文
+			//         （登录/注册页的提示语、标签页右键菜单、本设置面板的标题…），
+			//         而业务页面是硬编码中文 → 中英混排，看着就像坏了；
+			//         更糟的是界面上**没有**切回中文的入口，用户只能手动清缓存。
+			//      ② 更早版本存下来的 themeConfig 里没有 globalI18n 这个键时，
+			//         这里会赋成 **undefined** → el-config-provider 拿不到语言包，
+			//         Element Plus 退回**内置英文**（分页 "Total"、表格 "No Data"…）。
+			//    语言由**产品**决定（见 i18n/index.ts 里写死的 zh-cn），不是可持久化的用户偏好 ——
+			//    本面板里能改的是配色/布局/动效那些真正的偏好。
 			// 初始化菜单样式等
 			initSetStyle();
 		}, 100);

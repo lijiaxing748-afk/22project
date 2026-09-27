@@ -20,6 +20,7 @@ import other from '/@/utils/other';
 import { Local, Session } from '/@/utils/storage';
 import mittBus from '/@/utils/mitt';
 import setIntroduction from '/@/utils/setIconfont';
+import { DEFAULT_LOCALE } from '/@/i18n/index';
 
 // 引入组件
 const LockScreen = defineAsyncComponent(() => import('/@/layout/lockScreen/index.vue'));
@@ -77,7 +78,21 @@ onMounted(() => {
         return
     }
 		if (Local.get('themeConfig')) {
-			storesThemeConfig.setThemeConfig({ themeConfig: Local.get('themeConfig') });
+			const saved = Local.get('themeConfig') as any;
+			// ⚠️ 两点写法上的讲究：
+			//    ① 用**合并**而不是整体替换：本地存的是**旧版本**的 themeConfig 时，
+			//       整体替换会把后来新增的键从 store 里抹掉，下游取到 undefined
+			//       就会出现"语言/尺寸莫名回默认"这类问题。合并后：老键以本地为准，新增键保留默认值。
+			//    ② `globalI18n` **强制归一到当前语言**（DEFAULT_LOCALE，见 i18n/index.ts）：
+			//       早期版本切过语言的话，存储里会留 `globalI18n: 'en'`。它现在虽然已经**失效**
+			//       （语言在 i18n 创建时写死、"从存储恢复语言"那行也删了），但留在 store 里是个假值 ——
+			//       任何人读 `themeConfig.globalI18n` 都会得到"界面并没在用"的答案，早晚误导人。
+			//       这里就地修好，并在值确实不对时回写一次存储，下次启动就是干净的。
+			//       ⚠️ 特意**不**用"升版本号 → Local.clear() + 刷新"那套：那会把用户调好的
+			//          配色/布局一起清掉，代价比收益大。
+			const merged = { ...themeConfig.value, ...saved, globalI18n: DEFAULT_LOCALE };
+			storesThemeConfig.setThemeConfig({ themeConfig: merged });
+			if (saved.globalI18n !== DEFAULT_LOCALE) Local.set('themeConfig', merged);
 			document.documentElement.style.cssText = Local.get('themeConfigStyle');
 		}
 		// 获取缓存中的全屏配置

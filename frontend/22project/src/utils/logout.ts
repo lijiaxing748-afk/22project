@@ -22,7 +22,6 @@
  *      根路径下没有令牌时，路由守卫会把人送到 `/login`（见 `router/index.ts`）。
  */
 import { ElMessageBox } from 'element-plus';
-import { i18n } from '/@/i18n/index';
 import { Session } from '/@/utils/storage';
 import { request } from '/@/utils/service';
 
@@ -34,13 +33,17 @@ import { request } from '/@/utils/service';
  */
 export async function doLogout(opts: { confirm?: boolean } = {}): Promise<void> {
 	const { confirm = true } = opts;
-	const t = (key: string) => i18n.global.t(key);
 
 	if (confirm) {
 		try {
-			await ElMessageBox.confirm(t('message.user.logOutMessage'), t('message.user.logOutTitle'), {
-				confirmButtonText: t('message.user.logOutConfirm'),
-				cancelButtonText: t('message.user.logOutCancel'),
+			// ⚠️ 文案**写死中文**，不走 i18n：这里以前用的是 `i18n.global.t('message.user.logOut*')`，
+			//    而 i18n 的语言是从本地存储恢复的 —— 浏览器里残留 `globalI18n: 'en'` 时，
+			//    这个确认框会变成 "Are you sure you want to log out?" 之类。
+			//    业务侧的自定义文案一律硬编码中文（与平台各页面一致）：
+			//    文案来源越少，"界面突然变英文"这种问题就越不可能出现。
+			await ElMessageBox.confirm('此操作将退出登录，是否继续？', '提示', {
+				confirmButtonText: '确定',
+				cancelButtonText: '取消',
 				type: 'warning',
 				// 点遮罩/按 Esc 直接关掉的话，用户会分不清"到底退没退"，所以都关掉
 				closeOnClickModal: false,

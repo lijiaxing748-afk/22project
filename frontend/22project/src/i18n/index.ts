@@ -1,7 +1,4 @@
 import { createI18n } from 'vue-i18n';
-import pinia from '/@/stores/index';
-import { storeToRefs } from 'pinia';
-import { useThemeConfig } from '/@/stores/themeConfig';
 
 // 定义语言国际化内容
 
@@ -65,8 +62,28 @@ for (const key in itemize) {
 }
 
 // 读取 pinia 默认语言
-const stores = useThemeConfig(pinia);
-const { themeConfig } = storeToRefs(stores);
+// ⚠️ 下面这组 import 与 store 读取原先是给 `locale: themeConfig.value.globalI18n` 用的。
+//    语言改成写死 zh-cn 之后它们就没用了（见下方 DEFAULT_LOCALE 的长注释），一并删掉，
+//    免得留下"看起来还在从 store 取语言"的误导。
+
+/**
+ * ⚠️ 语言**写死 zh-cn**，不再从 `themeConfig` / 本地存储取。
+ *
+ * 本项目是**中文单语言**产品：
+ *   · 业务页面（模型管理、数据集、发布、系统管理…）全部是硬编码中文；
+ *   · 右上角的语言下拉已经收敛到只剩「简体中文」一项（见 layout/.../user.vue）。
+ * 但 `themeConfig` 会**整体**从 localStorage 恢复，于是：
+ *   · 浏览器里残留的 `globalI18n: 'en'`（早期版本切过语言留下的）会让框架文案变英文
+ *     —— 登录/注册页的提示语、标签页右键菜单、布局设置面板的标题都是走 i18n 的；
+ *     而业务页仍是中文，界面就成了中英混排，看着像坏了，且**没有入口**切回去。
+ *   · 更早版本存下来的对象里没有 `globalI18n` 键时，取到的是 `undefined`，
+ *     el-config-provider 拿不到语言包 → Element Plus 退回**内置英文**
+ *     （分页 "Total"、表格 "No Data"）—— 又一个"莫名英文"的来源。
+ *
+ * 语言在这里定一次，`fallbackLocale` 也指到同一个键，避免任何一条路径回落到别的语言。
+ * 想再支持多语言时，把语言做成**受控**的：从白名单里取值 + 校验，别直接信任存储。
+ */
+export const DEFAULT_LOCALE = 'zh-cn';
 
 // 导出语言国际化
 // https://vue-i18n.intlify.dev/guide/essentials/fallback.html#explicit-fallback-with-one-locale
@@ -76,7 +93,7 @@ export const i18n = createI18n({
 	missingWarn: false,
 	silentFallbackWarn: true,
 	fallbackWarn: false,
-	locale: themeConfig.value.globalI18n,
-	fallbackLocale: zhcnLocale.name,
+	locale: DEFAULT_LOCALE,
+	fallbackLocale: DEFAULT_LOCALE,
 	messages,
 });
