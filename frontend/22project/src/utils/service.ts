@@ -11,6 +11,7 @@ import { Local, Session } from '/@/utils/storage';
 import qs from 'qs';
 import { getBaseURL } from './baseUrl';
 import { successMessage } from './message.js';
+import { describeHttpError, isLocalized } from '/@/utils/httpError';
 /**
  * @description 创建请求实例
  */
@@ -173,6 +174,11 @@ function createService() {
 				default:
 					break;
 			}
+			// ⚠️ 上面的 switch 只覆盖了常见状态码；没覆盖到的（405 / 409 / 418 / 502…）会留着
+			//    axios 的**英文**原文（"Request failed with status code 405"），
+			//    而下一行的 errorLog 会把它直接弹成通知 —— 界面上就是一句英文。
+			//    这里按"这条文案里有没有中文"兜一层；不列状态码，axios 以后改文案也不会漏。
+			if (!isLocalized(error.message)) error.message = describeHttpError(error);
 			errorLog(error);
 			if (status === 401) {
 				// const userStore = useUserStore();

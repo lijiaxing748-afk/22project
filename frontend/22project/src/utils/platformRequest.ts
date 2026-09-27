@@ -15,6 +15,7 @@
  */
 import axios from 'axios';
 import { Session } from '/@/utils/storage';
+import { describeHttpError } from '/@/utils/httpError';
 
 const platformRequest = axios.create({
 	baseURL: import.meta.env.VITE_API_URL as string,
@@ -34,7 +35,11 @@ platformRequest.interceptors.response.use(
 	(error) => {
 		const data = error?.response?.data;
 		const status = error?.response?.status;
-		const msg = (data && (data.error || data.msg)) || error?.message || '请求失败';
+		// ⚠️ 这里**不要**再用 `error?.message`：axios 的原文是英文
+		//    （"Request failed with status code 405"、"Network Error"），而后端没回 JSON body 时
+		//    （405 / 502 / HTML 错误页）必然走到它，界面上就会冒出英文提示。
+		//    统一交给 describeHttpError：后端文字 → 状态码中文 → 网络层中文，见其文件头。
+		const msg = describeHttpError(error);
 		// ⚠️ 鉴权失败要在这里**统一处理**，不能只把错误往后抛：
 		//    令牌过期(401)时如果页面各自处理，就会出现"有的地方弹提示、有的地方
 		//    静默失败"，用户不知道该重新登录。清缓存 + 跳登录页只在 401 时做。
@@ -47,6 +52,8 @@ platformRequest.interceptors.response.use(
 		const err = new Error(msg);
 		(err as any).payload = data;
 		(err as any).status = status;
+		// 原始 axios 错误留在 cause 上：提示是给用户的中文，排查时还能在控制台看到英文原文
+		(err as any).cause = error;
 		return Promise.reject(err);
 	}
 );

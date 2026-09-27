@@ -87,15 +87,18 @@
 										<el-tag v-if="row.is_signal" size="small" type="success" class="ml">信号列</el-tag>
 									</template>
 								</el-table-column>
-								<el-table-column prop="dtype" label="dtype" width="100" />
+								<!-- 表头统一用中文：这张表是我们自己算的统计量（如 pandas describe），
+								     不是用户文件里的原始列名，没有理由显示成 dtype/mean。
+								     下面「前 N 行」那张表的 :label="c" 才是**原始列名**，必须保持原样。 -->
+								<el-table-column prop="dtype" label="类型" width="100" />
 								<el-table-column label="数值列" width="80"><template #default="{ row }">{{ row.numeric ? '是' : '否' }}</template></el-table-column>
 								<el-table-column prop="non_null" label="非空" width="80" />
 								<el-table-column prop="nulls" label="缺失" width="80" />
-								<el-table-column prop="unique" label="unique" width="80" />
-								<el-table-column prop="min" label="min" width="110" />
-								<el-table-column prop="max" label="max" width="110" />
-								<el-table-column prop="mean" label="mean" width="110" />
-								<el-table-column prop="std" label="std" width="110" />
+								<el-table-column prop="unique" label="唯一值" width="80" />
+								<el-table-column prop="min" label="最小" width="110" />
+								<el-table-column prop="max" label="最大" width="110" />
+								<el-table-column prop="mean" label="均值" width="110" />
+								<el-table-column prop="std" label="标准差" width="110" />
 							</el-table>
 							<div class="hint mt">前 {{ previewData.head_rows }} 行</div>
 							<el-table :data="headRows" size="small" max-height="240">
