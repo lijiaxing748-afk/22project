@@ -16,8 +16,10 @@ verify_token / authenticate，**把真实异常打出来**，定位问题在哪�
 """
 from __future__ import annotations
 
+import base64
 import json
 import sys
+import time
 import traceback
 from pathlib import Path
 
@@ -86,9 +88,19 @@ def main() -> int:
             print(f"  [OK] 该 token 校验通过 -> {p}")
         except auth.TokenError as exc:
             print(f"  [BAD] TokenError: {exc}  (expired={exc.expired})")
-            # 继续往下刨，看 itsdangerous 到底报什么
+            # 继续往下刨：把 JWT 三段拆开看（**只解码、不验签**，纯诊断用）
             try:
-                auth._serializer().loads(token_arg, max_age=config.token_ttl_hours * 3600)
+                segs = str(token_arg).split(".")
+                if len(segs) != 3:
+                    print(f"  [真实原因] 段数 = {len(segs)}，不是合法 JWT（应正好 3 段）")
+                else:
+                    hdr = json.loads(base64.urlsafe_b64decode(segs[0] + "==="))
+                    pld = json.loads(base64.urlsafe_b64decode(segs[1] + "==="))
+                    print(f"  [解码] 头部 = {hdr}")
+                    print(f"  [解码] 载荷 = {pld}")
+                    print(f"  [解码] exp 是否已过 = {float(pld.get('exp') or 0) < time.time()}")
+                    print(f"  [验签] 用本进程的密钥重算签名是否一致 = "
+                          f"{auth._jwt_signature(segs[0] + '.' + segs[1]) == segs[2]}")
             except Exception as inner:  # noqa: BLE001
                 print(f"  [真实异常] {type(inner).__name__}: {inner}")
         except Exception:  # noqa: BLE001
@@ -97,9 +109,9 @@ def main() -> int:
         print("  (未传 token 参数，跳过。用法: python tools\\diagnose-token.py <token>)")
 
     hr("4. 关键怀疑点：签发进程 vs 校验进程的 secret_key 是否一致")
-    print("  itsdangerous 的签名密钥来自 config.secret_key。")
+    print("  JWT（HS256）的签名密钥来自 config.secret_key。")
     print("  如果服务是**多进程/多 worker**启动，且 secret_key 是每次启动随机生成的，")
-    print("  那么 worker A 签发的 token 拿到 worker B 校验就会 BadSignature → 被判失效。")
+    print("  那么 worker A 签发的 token 拿到 worker B 校验就会签名不匹配 → 被判失效。")
     print()
     print(f"  当前进程读到的 secret_key = {config.secret_key!r}")
     env_path = ROOT / "db.env"

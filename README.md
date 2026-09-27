@@ -124,6 +124,11 @@ npm run dev        # → http://127.0.0.1:8080
 
 默认账号：`admin` / `Admin@2026`。**登录是真校验的**——`model_service/dvadmin.py::login()`
 会查 `Users` 表、用 `auth.verify_password()` 校验 pbkdf2 哈希、再校验 `IsActive`，通过才签发令牌；
+令牌是**标准 JWT（HS256）**——`sub`/`exp`/`iat`/`jti` 标准声明，外加 `role`（角色）与 `tv`（令牌版本号）两个私有声明。
+校验顺序是「三段 → **先验签** → 算法白名单只认 HS256 → 时间检查」，能挡 `alg=none` 与算法混淆伪造。
+✅ 已用第三方库 **PyJWT** 交叉验证：它能解出本平台签发的令牌、错误密钥会被它拒。
+⚠️ 刻意**不引第三方 JWT 库**（离线交付不想多塞 wheel），HS256 用标准库 `hmac` 实现；
+密钥是 `MODEL_SECRET_KEY`（长度需 ≥32 字节，部署前用 `python -c "import secrets;print(secrets.token_hex(32))"` 生成）。
 业务接口另挂权限装饰器（如 `train:run`、`model:delete`）。
 
 **只有两种身份**：`admin`（管理员）与 `user`（普通用户）。差别只有两项——

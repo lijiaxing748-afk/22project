@@ -14,10 +14,18 @@
    "这个角色到底能干什么"变得只能查库才能回答。所以 `_ROLE_PERMS` 直接写在
    下面，一眼看得到全部权限。
 
-2. **令牌是自签的，无状态，不落库。**
-   工厂单机部署、单进程运行，没有多实例共享会话的需求。用 itsdangerous
-   签一个带过期时间的 JSON 就够，省掉 sessions 表的读写在每个请求上的开销。
-   代价是"无法主动踢下线"——所以留了 `token_version` 的口子：改密码时
+2. **令牌是自签的 JWT（HS256），无状态，不落库。**
+   工厂单机部署、单进程运行，没有多实例共享会话的需求。签一个**标准 JWT**
+   （`sub`/`role`/`tv`/`iat`/`exp`，HMAC-SHA256 签名）就够，省掉 sessions 表的
+   读写在每个请求上的开销。
+   ⚠️ 用标准 JWT 而不是自造格式：令牌是**对外可见**的（前端存 localStorage、
+   图片链接上带 `?token=`），标准格式意味着任何 JWT 库都能直接解出"这是谁、
+   什么时候过期"，排查不用猜；`alg` 显式写在头部，也不会再出现"看起来像 JWT
+   其实不是"的困惑。
+   ⚠️ 刻意**不引第三方库**（PyJWT）：本项目离线交付，多一个依赖就要多塞一个
+   wheel 进离线包；HS256 的密码学只有一行 HMAC，标准库足够，而真正容易出错的
+   地方（算法混淆、`alg=none`、时间比较）在 `verify_token` 里显式处理了。
+   代价是"无法主动踢下线"——所以留了 `tv`（令牌版本号）的口子：改密码时
    递增版本号，旧令牌立即失效（见 verify_token 的 tv 校验）。
 
 3. **鉴权失败一律 401 + 明确原因，不静默放行。**
@@ -26,12 +34,15 @@
 """
 from __future__ import annotations
 
+import base64
 import functools
+import hashlib
+import hmac
 import json
-from datetime import datetime
+import secrets
+import time
 
 from flask import g, request
-from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 from werkzeug.security import check_password_hash, generate_password_hash
 
 from .config import config
@@ -148,28 +159,73 @@ def verify_password(stored_hash: str | None, plain: str | None) -> bool:
         return False
 
 
-# ---------------------------------------------------------------- 令牌
+# ---------------------------------------------------------------- 令牌（标准 JWT / HS256）
 
-def _serializer() -> URLSafeTimedSerializer:
-    """按当前配置造序列化器。每次现造，避免 config 在测试里被改后拿到旧实例。"""
-    return URLSafeTimedSerializer(config.secret_key, salt="model-platform-auth")
+JWT_ALG = "HS256"
+# 允许的时钟偏移（秒）。只用于两处：容忍"刚过期"与"签发时间略微在未来"
+# （客户端/服务端时钟没完全对齐时，否则会出现"刚登录就被判过期"）。
+JWT_LEEWAY = 30
+
+
+def _b64u_encode(raw: bytes) -> str:
+    """base64url 编码并去掉 '=' 填充 —— JWT 规定不许带填充。"""
+    return base64.urlsafe_b64encode(raw).rstrip(b"=").decode("ascii")
+
+
+def _b64u_decode(text: str) -> bytes:
+    """base64url 解码（把被去掉的 '=' 补回来）。非 base64 内容会抛异常，由调用方兜住。"""
+    return base64.urlsafe_b64decode(text + "=" * (-len(text) % 4))
+
+
+def _jwt_json(obj: dict) -> bytes:
+    """JWT 里的 JSON 用**紧凑分隔符**（不带空格），保证同一份声明编码结果稳定。"""
+    return json.dumps(obj, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+
+
+def _jwt_signature(signing_input: str) -> str:
+    """算 HS256 签名：HMAC-SHA256(secret_key, "<header>.<payload>")，再 base64url。
+
+    ⚠️ signing_input 用 UTF-8 编码，**不要**用 ascii：段里出现非 ASCII 字符时
+       `.encode("ascii")` 会抛 UnicodeEncodeError，而这是**攻击者可控**的输入
+       （随便发个带中文的令牌就能让接口 500）。UTF-8 下签名照样算得出来、只是对不上，
+       自然被拒。
+    """
+    mac = hmac.new(config.secret_key.encode("utf-8"), signing_input.encode("utf-8"), hashlib.sha256)
+    return _b64u_encode(mac.digest())
+
+
+def _token_ttl_seconds() -> int:
+    """令牌有效期（秒），来自 MODEL_TOKEN_TTL_HOURS。下限 1 秒，防止配成 0/负数后"签出来就过期"。"""
+    return max(1, int(float(config.token_ttl_hours) * 3600))
 
 
 def issue_token(user: dict) -> str:
-    """签发令牌。user 是数据库里的一行（至少含 Username / RoleKey / TokenVersion）。
+    """签发**标准 JWT**（HS256）。user 是数据库一行（至少含 Username / RoleKey / TokenVersion）。
 
     载荷刻意做小：令牌是每个请求都带的，塞太多字段纯属浪费带宽。
-    只放"我是谁、我什么角色、令牌版本号"三件事——权限由服务端按角色现算，
-    **不写进令牌**：写进去的话，改了权限还得等令牌过期才生效。
+    只放"我是谁、我什么角色、令牌版本号、什么时候签发/过期"——
+    权限由服务端按角色现算，**不写进令牌**：写进去的话改了权限还得等令牌过期才生效。
+
+    声明：
+        sub    谁（用户名）—— 标准声明
+        exp    过期时间（unix 秒）—— 标准声明
+        iat    签发时间（unix 秒）—— 标准声明
+        jti    令牌唯一 id —— 标准声明，排查时可据此认出"同一次登录签的那张令牌"
+        role   本平台私有声明：角色键（admin / user）
+        tv     本平台私有声明：令牌版本号，改密码时递增，旧令牌立刻失效
     """
+    now = int(time.time())
+    header = {"alg": JWT_ALG, "typ": "JWT"}
     payload = {
-        "u": user.get("Username"),
-        "r": user.get("RoleKey"),
-        # 令牌版本：改密码时递增，让旧令牌立刻失效。没这个字段时按 0 处理。
+        "sub": user.get("Username"),
+        "role": user.get("RoleKey"),
         "tv": int(user.get("TokenVersion") or 0),
-        "iat": int(datetime.now().timestamp()),
+        "iat": now,
+        "exp": now + _token_ttl_seconds(),
+        "jti": secrets.token_hex(8),
     }
-    return _serializer().dumps(payload)
+    segments = f"{_b64u_encode(_jwt_json(header))}.{_b64u_encode(_jwt_json(payload))}"
+    return f"{segments}.{_jwt_signature(segments)}"
 
 
 class TokenError(Exception):
@@ -181,22 +237,56 @@ class TokenError(Exception):
 
 
 def verify_token(token: str | None) -> dict:
-    """校验令牌并返回载荷。失败抛 TokenError（带上"过期"与"签名错"的区分）。
+    """校验 JWT 并返回**内部形状**的载荷（`u` / `r` / `tv`）。失败抛 TokenError。
 
-    ⚠️ 区分过期与签名错误是有用的：签名错说明令牌被伪造或密钥换过，
-    前端应该直接清掉本地令牌重新登录；而过期只是"该续期了"。
-    两者对用户来说动作一样（都要重登），但对排查问题差别很大。
+    校验顺序**本身就是安全设计**，别调换：
+        ① 结构：必须正好三段（header.payload.signature）
+        ② **先验签、再看内容** —— 不验签就解析，等于直接相信攻击者递过来的 JSON
+        ③ 算法白名单：`header.alg` 必须是 HS256
+           （挡掉 `alg=none`，以及"RS256→HS256"这类算法混淆伪造）
+        ④ 时间：`exp` 已过期、`iat` 在未来 → 拒绝（各留 JWT_LEEWAY 秒余量）
+
+    ⚠️ 返回值用 `u`/`r`/`tv` 这套**内部**字段名，而不是 JWT 侧的 `sub`/`role`：
+       `authenticate()` 等既有调用方按这套读，改名会让"令牌里没有用户名"这种
+       静默失败重新出现。两套名字的映射只在这一层做。
+    ⚠️ 区分"过期"与"签名错"（`expired` 标志）：签名错说明令牌被伪造或密钥换过，
+       过期只是"该续期了"。对用户的动作一样（都要重登），排查时差别很大。
     """
     if not token:
         raise TokenError("未提供登录令牌")
+    parts = str(token).strip().split(".")
+    if len(parts) != 3:
+        raise TokenError("登录令牌无效（不是合法的 JWT：应该正好 3 段）")
+    h_b64, p_b64, signature = parts
+    signing_input = f"{h_b64}.{p_b64}"
+    # ② 先验签。用 compare_digest 做**固定时间比较**：普通 == 在第一个不同的字节处就返回，
+    #    理论上可被用来逐字节猜签名。两端都转 bytes，避免 compare_digest 对非 ASCII 字符串报错。
+    if not hmac.compare_digest(_jwt_signature(signing_input).encode("ascii"),
+                               signature.encode("utf-8", "replace")):
+        raise TokenError("登录令牌无效（签名校验不通过），请重新登录")
     try:
-        return _serializer().loads(token, max_age=config.token_ttl_hours * 3600)
-    except SignatureExpired:
-        raise TokenError("登录已过期，请重新登录", expired=True)
-    except BadSignature:
-        raise TokenError("登录令牌无效（可能服务端密钥已更换），请重新登录")
+        header = json.loads(_b64u_decode(h_b64))
+        payload = json.loads(_b64u_decode(p_b64))
     except Exception as exc:
         raise TokenError(f"登录令牌无法解析：{exc}")
+    if not isinstance(header, dict) or not isinstance(payload, dict):
+        raise TokenError("登录令牌无法解析（头部或载荷不是 JSON 对象）")
+    # ③ 算法白名单。这一步不能省：alg=none 的令牌是**无签名**的，
+    #    若不校验算法，攻击者把 alg 改成 none、再随便填 sub=admin 就会被放行。
+    if str(header.get("alg", "")).strip().upper() != JWT_ALG:
+        raise TokenError(f"登录令牌算法不受支持：{header.get('alg')!r}（只接受 {JWT_ALG}）")
+    now = int(time.time())
+    exp = payload.get("exp")
+    # bool 是 int 的子类，要单独排掉：True 会被 isinstance(exp, int) 放过
+    if not isinstance(exp, (int, float)) or isinstance(exp, bool):
+        raise TokenError("登录令牌缺少 exp（过期时间）")
+    if now > float(exp) + JWT_LEEWAY:
+        raise TokenError("登录已过期，请重新登录", expired=True)
+    iat = payload.get("iat")
+    if isinstance(iat, (int, float)) and not isinstance(iat, bool) and float(iat) > now + JWT_LEEWAY:
+        raise TokenError("登录令牌的签发时间在未来，拒绝使用")
+    return {"u": payload.get("sub"), "r": payload.get("role"), "tv": payload.get("tv"),
+            "iat": iat, "exp": exp, "jti": payload.get("jti")}
 
 
 # ---------------------------------------------------------------- 请求上下文

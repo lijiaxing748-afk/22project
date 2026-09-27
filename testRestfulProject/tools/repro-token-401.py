@@ -32,7 +32,7 @@ if not tok:
     print("    !! 没拿到 token，后续无法进行")
     sys.exit(1)
 print(f"    token = {tok[:45]}...")
-print(f"    token 段数 = {len(tok.split('.'))}  (itsdangerous 是 3 段)")
+print(f"    token 段数 = {len(tok.split('.'))}  (标准 JWT 是 3 段：header.payload.signature)")
 
 # 2. 用 Bearer 访问 user_info（模拟 curl）
 print()
