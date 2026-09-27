@@ -7,11 +7,12 @@ import type { Action } from 'element-plus';
 import { errorLog, errorCreate } from './tools.ts';
 // import { env } from "/src/utils/util.env";
 // import { useUserStore } from "../store/modules/user";
-import { Local, Session } from '/@/utils/storage';
+import { Session } from '/@/utils/storage';
 import qs from 'qs';
 import { getBaseURL } from './baseUrl';
 import { successMessage } from './message.js';
-import { describeHttpError, isLocalized } from '/@/utils/httpError';
+import { describeHttpError, isLocalized, isSessionExpiredText } from '/@/utils/httpError';
+import { forceRelogin } from '/@/utils/relogin';
 /**
  * @description 创建请求实例
  */
@@ -84,16 +85,12 @@ function createService() {
 						// window.location.reload();
 						break;
 					case 401:
-						// Local.clear();
-						Session.clear();
-						dataAxios.msg = '登录认证失败，请重新登录';
-						ElMessageBox.alert(dataAxios.msg, '提示', {
-							confirmButtonText: 'OK',
-							callback: (action: Action) => {
-								// window.location.reload();
-							},
-						});
-						errorCreate(dataAxios.msg || '登录认证失败，请重新登录');
+						// ⚠️ dvadmin 兼容层其实**从不**回这个 401 —— 它把"登录失效"塞在 code=4000 里（见下面）。
+						//    这里保留是为了兜住别的路径。收尾统一走 forceRelogin：
+						//    提示一句中文 + 清令牌 + 回登录页，与 platformRequest 共用同一份实现。
+						//    （原先这里是弹框但**不跳转**，用户卡在失效页面里；platformRequest 那边
+						//      是静默跳转、一句提示都没有 —— 同一件事两种相反行为，已统一。）
+						forceRelogin('登录认证失败，请重新登录');
 						break;
 					case 2000:
 						// @ts-ignore
@@ -112,15 +109,10 @@ function createService() {
 						// 这里按**文案**把这类鉴权失败与业务失败区分开：只有真的"登录没了"
 						// 才清缓存回登录页；"没有查看用户列表的权限""两次输入的新密码不一致"
 						// 这类业务性 4000 必须留在原地（他还是有效用户）。
-						if (/登录已失效|请先登录|登录认证失败|令牌无效|重新登录/.test(String(dataAxios.msg || ''))) {
-							Session.clear();
-							ElMessageBox.alert(dataAxios.msg, '提示', { confirmButtonText: 'OK' })
-								.then(() => {
-									window.location.href = '/';
-								})
-								.catch(() => {
-									window.location.href = '/';
-								});
+						// ⚠️ 判定与收尾都**共用一份**（httpError.isSessionExpiredText + relogin.forceRelogin）：
+						//    两个 axios 实例以前对同一个 4000 各写一套、行为相反，就是那么来的。
+						if (isSessionExpiredText(dataAxios.msg)) {
+							forceRelogin(String(dataAxios.msg || '登录已失效，请重新登录'));
 							break;
 						}
 						errorCreate(dataAxios.msg || '操作失败');

@@ -152,5 +152,75 @@ if (Array.isArray(prev) && JSON.stringify(prev) === JSON.stringify(norm)) {
 }
 fs.writeFileSync(manifest, JSON.stringify(norm, null, 1));
 
+console.log('\n=== 4) 登录链路与部署前缀 ===');
+// ⚠️ 为什么单独一节：前三节扫的是「页面 + 接口清单」，而下面这些文件**不在**那个范围里，
+//    却决定"整站进不进得去"。两条真实事故（2026-09 都发生过）：
+//      · platformRequest 不检查 dvadmin 信封的 code —— 令牌过期时那 6 个接口回的是
+//        `HTTP 200 + {"code":4000,"msg":"登录已失效，请重新登录"}`（见 dvadmin.py），
+//        只看状态码就会把它当成功数据交给页面：一行红字、既不跳登录也不清令牌，
+//        用户卡在"已失效却仍显示在线"的界面里；
+//      · .env.production 的 `VITE_API_URL='/api'` —— 接口字面量本身已带 /api，
+//        axios 拼成 /api/api/login/，`npm run build` 出来的产物全站 404
+//        （.env.singleport 的注释里早就写明这个坑，只是模板带来的 .env.production 没跟着改）。
+const AUTH_UTILS = [
+	'src/utils/platformRequest.ts',
+	'src/utils/service.ts',
+	'src/utils/httpError.ts',
+	'src/utils/logout.ts',
+	'src/utils/relogin.ts',
+];
+const readUtil = (rel) => (fs.existsSync(path.join(ROOT, rel)) ? fs.readFileSync(path.join(ROOT, rel), 'utf8') : null);
+const missingUtils = AUTH_UTILS.filter((rel) => readUtil(rel) === null);
+if (missingUtils.length) bad('登录链路文件缺失：' + missingUtils.join(', '));
+else ok(`登录链路文件都在（${AUTH_UTILS.length} 个）`);
+
+if (/export function forceRelogin/.test(readUtil('src/utils/relogin.ts') || '')) {
+	ok('forceRelogin 只有一份实现（src/utils/relogin.ts）');
+} else {
+	bad('src/utils/relogin.ts 里没有 forceRelogin —— 登录失效的收尾会退回"两个实例各写一份"的老路');
+}
+if (/export function isSessionExpiredText/.test(readUtil('src/utils/httpError.ts') || '')) {
+	ok('会话失效判定集中在 httpError.isSessionExpiredText');
+} else {
+	bad('httpError.ts 缺 isSessionExpiredText —— 两个 axios 实例又会各写一份正则');
+}
+const prSrc = readUtil('src/utils/platformRequest.ts') || '';
+for (const sym of ['isSessionExpiredText', 'forceRelogin']) {
+	if (prSrc.includes(sym)) ok(`platformRequest 用到了 ${sym}`);
+	else bad(`platformRequest 没用到 ${sym}：信封里的"登录已失效"会被当成成功数据，用户卡在失效页面`);
+}
+// 判定正则只允许出现在 httpError.ts 一处；别处再写一份就是"两个实例行为相反"的来源
+const REGEX_LITERAL = '/登录已失效|请先登录';
+const dupRegex = ['src/utils/service.ts', 'src/utils/platformRequest.ts'].filter((rel) => (readUtil(rel) || '').includes(REGEX_LITERAL));
+if (dupRegex.length) bad(dupRegex.join(', ') + ' 自己写了一份会话失效正则 —— 必须用 httpError.isSessionExpiredText');
+else ok('会话失效正则没有第二份（两个实例共用一份判定）');
+
+console.log('\n--- 部署前缀（.env*）---');
+for (const name of fs.readdirSync(ROOT).filter((f) => f.startsWith('.env'))) {
+	const m = fs.readFileSync(path.join(ROOT, name), 'utf8').match(/^\s*VITE_API_URL\s*=\s*(.+)$/m);
+	if (!m) continue;
+	const val = m[1].replace(/\s*#.*$/, '').trim();            // 去掉行尾注释再判断
+	if (/^['"]?\/api\/?['"]?$/.test(val)) {
+		bad(`${name}: VITE_API_URL=${val} —— 接口字面量已带 /api，会叠成 /api/api/… 全站 404`);
+	} else {
+		ok(`${name}: VITE_API_URL=${val}`);
+	}
+}
+
+console.log('\n--- 提示文案不暴露接口地址 ---');
+// 用户可见的提示里不许出现 config.url / request.url（"不暴露接口"约定，见 public/docs.html §09）
+const leak = [];
+for (const rel of [...FILES, ...ALSO, ...AUTH_UTILS]) {
+	const src = readUtil(rel);
+	if (!src) continue;
+	src.split('\n').forEach((line, i) => {
+		if (/errorCreate\(|ElMessage|ElNotification|\.message\s*=/.test(line) && /config\.url|request\.url/.test(line)) {
+			leak.push(`${rel}:${i + 1}`);
+		}
+	});
+}
+if (leak.length) bad('提示文案里拼了接口地址：' + leak.join(', '));
+else ok('所有用户可见提示都不带接口地址');
+
 console.log(`\n结论：${errors ? errors + ' 处错误' : '全部通过 ✅'}`);
 process.exit(errors ? 1 : 0);

@@ -15,7 +15,8 @@
  */
 import axios from 'axios';
 import { Session } from '/@/utils/storage';
-import { describeHttpError } from '/@/utils/httpError';
+import { describeHttpError, isSessionExpiredText } from '/@/utils/httpError';
+import { forceRelogin } from '/@/utils/relogin';
 
 const platformRequest = axios.create({
 	baseURL: import.meta.env.VITE_API_URL as string,
@@ -31,7 +32,29 @@ platformRequest.interceptors.request.use((config) => {
 });
 
 platformRequest.interceptors.response.use(
-	(response) => response.data, // 裸 JSON 直接返回，不校验信封
+	(response) => {
+		const data = response.data;
+		// ⚠️ 平台业务接口回裸 JSON，但**有一部分接口走 dvadmin 兼容层的 `{code,data,msg}` 信封**，
+		//    而那个信封**失败也回 HTTP 200**：令牌无效时这 6 个接口（/api/system/user/、/role/、
+		//    /user/create/、/user/<id>/、/reset_password/、/operation_log/）回的是
+		//    `200 + {"code":4000,"msg":"登录已失效，请重新登录"}`（见 dvadmin.py，实测复现）。
+		//    只看 HTTP 状态码，这里就会把它当成**成功数据**交给页面 ——
+		//    页面只显示一行红字，令牌不清、也不跳登录页，用户卡在"已失效却仍显示在线"的界面里。
+		//    所以信封里的"登录已失效"必须与 401 同样收尾。
+		// ⚠️ 只在**确实是鉴权失效**时才动令牌：code=4000 同时被"没有查看用户列表的权限"
+		//    这类业务拒绝复用，那些必须留在原页（按文案区分，见 httpError.isSessionExpiredText）。
+		if (data && typeof data.code === 'number' && data.code !== 2000 && isSessionExpiredText(data.msg)) {
+			const text = String(data.msg || '登录已失效，请重新登录');
+			forceRelogin(text);
+			const expired = new Error(text);
+			(expired as any).payload = data;
+			(expired as any).status = response.status;
+			return Promise.reject(expired);
+		}
+		// 其余一律原样返回：**不解包**。调用方（如 user/index.vue）自己读 `.data` / `.code`，
+		// 在这里偷偷解包会让那些页面全部读空，而且它们自己判断权限失败的分支也会失效。
+		return data;
+	},
 	(error) => {
 		const data = error?.response?.data;
 		const status = error?.response?.status;
@@ -40,14 +63,14 @@ platformRequest.interceptors.response.use(
 		//    （405 / 502 / HTML 错误页）必然走到它，界面上就会冒出英文提示。
 		//    统一交给 describeHttpError：后端文字 → 状态码中文 → 网络层中文，见其文件头。
 		const msg = describeHttpError(error);
-		// ⚠️ 鉴权失败要在这里**统一处理**，不能只把错误往后抛：
-		//    令牌过期(401)时如果页面各自处理，就会出现"有的地方弹提示、有的地方
-		//    静默失败"，用户不知道该重新登录。清缓存 + 跳登录页只在 401 时做。
+		// ⚠️ 鉴权失败在这里**统一处理**，不能只把错误往后抛：
+		//    令牌过期(401)时如果页面各自处理，就会出现"有的地方弹提示、有的地方静默失败"。
+		//    ⚠️ 以前这里是**静默**清令牌 + 跳转 —— 用户被踢回登录页却不知道发生了什么，
+		//       现在改走 forceRelogin（弹一句中文 + 清令牌 + 回登录页，两个实例共用一份实现）。
 		//    403（已登录但权限不够）**不跳登录页**——页面得留着，否则操作员点一下
 		//    "训练"就被弹出去，体验很莫名。提示交给调用方或下面这行。
 		if (status === 401) {
-			Session.clear();
-			window.location.href = '/';
+			forceRelogin(msg || '登录已失效，请重新登录');
 		}
 		const err = new Error(msg);
 		(err as any).payload = data;

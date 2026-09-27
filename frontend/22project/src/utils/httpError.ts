@@ -87,3 +87,20 @@ export function describeHttpError(error: any): string {
 export function isLocalized(text: any): boolean {
 	return /[\u4e00-\u9fa5]/.test(String(text ?? ''));
 }
+
+/**
+ * 这条后端文案是不是在说"登录态已经没了"。
+ *
+ * 为什么要按**文案**判：dvadmin 兼容层把"登录已失效"和"没有查看用户列表的权限"
+ * 这类业务拒绝塞在**同一个 `code=4000`** 里（见 dvadmin.py 里那十几处
+ * `{"code":4000,"msg":...}`），单看 code 分不出"该踢回登录页"还是"留在原地提示"。
+ *
+ * ⚠️ 这是本文件里唯一一处"靠中文文案做逻辑判断"的地方，属于**已知的脆弱耦合**：
+ *    后端改了这句中文，这里就失效（症状：令牌确实过期了，却谁也不跳登录页）。
+ *    更稳的做法是后端给"鉴权失败"单独一个 code（例如 4010）。在改成那样之前，
+ *    两个 axios 实例（service.ts / platformRequest.ts）都必须从**这里**取判断 ——
+ *    别再各写一份正则，那正是"两个实例行为相反"的由来。
+ */
+export function isSessionExpiredText(text: any): boolean {
+	return /登录已失效|请先登录|登录认证失败|令牌无效|重新登录/.test(String(text ?? ''));
+}
