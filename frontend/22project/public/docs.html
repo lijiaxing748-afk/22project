@@ -766,7 +766,7 @@ Roles ─► Users ─► OperationLogs</code></pre>
         <tr><td>GET</td><td><code>/api</code> · <code>/</code></td><td class="c"><span class="badge b-mute">匿名</span></td><td>接口索引（<strong>匿名只回一句"需要登录后查看"</strong>）</td></tr>
         <tr><td>GET</td><td><code>/health</code></td><td class="c"><span class="badge b-mute">匿名</span></td><td>体检（<strong>匿名只回存活/库连通/鉴权开关</strong>，不给路径与库名）</td></tr>
         <tr><td>GET</td><td><code>/system</code></td><td class="c"><span class="badge b-mute">匿名</span></td><td>运行环境与依赖信息</td></tr>
-        <tr><td>POST</td><td><code>/system/maintenance</code></td><td class="c"><span class="badge b-warn">匿名 ⚠️</span></td><td>维护动作（当前只支持清空图库）——<strong>见 §13 已知限制</strong></td></tr>
+        <tr><td>POST</td><td><code>/system/maintenance</code></td><td class="c"><span class="badge b-info">需登录</span></td><td>维护动作（当前只支持清空图库）；<strong>破坏性操作，会写 maintenance 操作日志</strong></td></tr>
         <tr><td>GET</td><td><code>/system/logs</code> · <code>/system/logs/&lt;名&gt;</code></td><td class="c"><span class="badge b-mute">匿名</span></td><td>日志清单 / 读某个日志</td></tr>
         <tr><td>GET</td><td><code>/models</code></td><td class="c"><span class="badge b-mute">匿名</span></td><td>模型清单（登记信息 + 产物 + 指标）</td></tr>
         <tr><td>POST</td><td><code>/models</code></td><td class="c"><span class="badge b-warn">model:write</span></td><td>新建模型登记行</td></tr>
@@ -777,10 +777,10 @@ Roles ─► Users ─► OperationLogs</code></pre>
         <tr><td>GET</td><td><code>/models/&lt;模型&gt;/overview</code></td><td class="c"><span class="badge b-mute">匿名</span></td><td>模型档案页：登记 + 产物参数 + 最近训练 + 引用</td></tr>
         <tr><td>GET</td><td><code>/models/&lt;模型&gt;/references</code></td><td class="c"><span class="badge b-mute">匿名</span></td><td>被哪些表引用多少行（删除前先查）</td></tr>
         <tr><td>POST</td><td><code>/train</code></td><td class="c"><span class="badge b-warn">train:run</span></td><td>发起训练（同步阻塞）</td></tr>
-        <tr><td>GET</td><td><code>/trainings</code></td><td class="c"><span class="badge b-mute">匿名</span></td><td>训练记录列表</td></tr>
+        <tr><td>GET</td><td><code>/trainings</code></td><td class="c"><span class="badge b-info">需登录</span></td><td>训练记录列表 —— <strong>按账号隔离</strong>：普通用户只看自己的，管理员看全部（见下方说明）</td></tr>
         <tr><td>POST</td><td><code>/predict</code></td><td class="c"><span class="badge b-warn">predict:run</span></td><td>发起推理</td></tr>
-        <tr><td>GET</td><td><code>/inference-tasks</code></td><td class="c"><span class="badge b-mute">匿名</span></td><td>推理任务列表</td></tr>
-        <tr><td>GET</td><td><code>/inference-tasks/&lt;id&gt;</code></td><td class="c"><span class="badge b-mute">匿名</span></td><td>单个任务的逐样本明细</td></tr>
+        <tr><td>GET</td><td><code>/inference-tasks</code></td><td class="c"><span class="badge b-info">需登录</span></td><td>推理任务列表 —— <strong>按账号隔离</strong>：普通用户只看自己的</td></tr>
+        <tr><td>GET</td><td><code>/inference-tasks/&lt;id&gt;</code></td><td class="c"><span class="badge b-info">需登录</span></td><td>单个任务的逐样本明细 —— <strong>别人的任务返回 404</strong>（按 ID 也隔离，防越权直读）</td></tr>
         <tr><td>GET</td><td><code>/exports</code></td><td class="c"><span class="badge b-mute">匿名</span></td><td>全平台发布汇总（发布页数据源）</td></tr>
         <tr><td>GET</td><td><code>/models/&lt;模型&gt;/exports</code></td><td class="c"><span class="badge b-mute">匿名</span></td><td>该模型的发布历史</td></tr>
         <tr><td>POST</td><td><code>/models/&lt;模型&gt;/exports</code></td><td class="c"><span class="badge b-warn">export:run</span></td><td>打包发布</td></tr>
@@ -842,7 +842,7 @@ Roles ─► Users ─► OperationLogs</code></pre>
         <tr><td><code>GET /api/captcha/</code></td><td class="c"><span class="badge b-mute">匿名</span></td><td>验证码图片（默认关闭；登录前必须可取，否则登不进去）</td></tr>
         <tr><td><code>GET /api/init/dictionary/</code> · <code>/api/init/settings/</code></td><td class="c"><span class="badge b-mute">匿名</span></td><td>字典 / 系统设置桩</td></tr>
         <tr><td><code>GET /api/system/menu_button/menu_button_all_permission/</code></td><td class="c"><span class="badge b-mute">匿名</span></td><td>按钮权限清单</td></tr>
-        <tr><td><code>POST /api/system/file/</code></td><td class="c"><span class="badge b-warn">匿名 ⚠️</span></td><td>文件/头像上传，落 <code>data/uploads/</code>——<strong>见 §13</strong></td></tr>
+        <tr><td><code>POST /api/system/file/</code></td><td class="c"><span class="badge b-info">需登录</span></td><td>文件/头像上传，落 <code>data/uploads/</code>（原先匿名可写，已补登录校验）</td></tr>
         <tr><td><code>GET /media/&lt;路径&gt;</code></td><td class="c"><span class="badge b-mute">匿名</span></td><td>上传件静态访问（头像 <code>&lt;img src&gt;</code> 指向这里）</td></tr>
         <tr><td><code>POST /api/logout/</code></td><td class="c"><span class="badge b-info">需登录</span></td><td>退出（令牌无状态，前端删除本地令牌即可）</td></tr>
         <tr><td><code>GET /api/system/menu/web_router/</code></td><td class="c"><span class="badge b-info">需登录</span></td><td>动态菜单（按当前角色过滤）</td></tr>
@@ -933,6 +933,38 @@ Roles ─► Users ─► OperationLogs</code></pre>
     否则一键就能把最后一个管理员锁在门外。新建账号与自助注册一律<strong>默认普通用户</strong>，
     要管理员权限只能由现有管理员去改。
   </p>
+
+  <h3>哪些是按账号隔离的</h3>
+  <div class="tw">
+    <table>
+      <thead><tr><th>资源</th><th class="c">可见范围</th><th>说明</th></tr></thead>
+      <tbody>
+        <tr><td><strong>模型</strong>（产物、参数、指标、下载）</td>
+            <td class="c"><span class="badge b-ok">共享</span></td>
+            <td>平台级资源：任何登录用户都能看、能训练、能发布、能下载 —— 一个实验室/工厂共用一套模型</td></tr>
+        <tr><td><strong>训练记录</strong>（<code>/trainings</code>）</td>
+            <td class="c"><span class="badge b-info">按账号</span></td>
+            <td>普通用户<strong>只看得到自己发起的训练</strong>；<strong>管理员看全部</strong></td></tr>
+        <tr><td><strong>推理流水</strong>（<code>/inference-tasks</code> 与逐样本明细）</td>
+            <td class="c"><span class="badge b-info">按账号</span></td>
+            <td>同上；而且<strong>按 ID 也隔离</strong> —— 拿别人的任务 ID 直接读明细会 404（防越权直读）</td></tr>
+        <tr><td>数据集 / 发布包 / 图库 / 接口索引</td>
+            <td class="c"><span class="badge b-ok">共享</span></td>
+            <td>平台级资源（发布包挂在模型上，图是模型产物的一部分）</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>
+    实现要点：<code>Trainings.CreatedBy</code> / <code>InferenceTasks.CreatedBy</code> 记录<strong>真实发起账号</strong>
+    （以前写的是常量 <code>model_service</code>，等于没记），列表与明细查询按它过滤；
+    发布流水的 <code>DeployedBy</code> 也改成<strong>服务端从当前登录用户取</strong>，不再信任请求体里传的值。
+    ⚠️ 三个流水接口因此都<strong>要求登录</strong> —— 不要求登录的话，匿名请求没有账号，过滤条件无从谈起。
+  </p>
+  <div class="warn">
+    <b>历史流水的归属不明</b>
+    <p>改造之前写下的训练/推理记录，<code>CreatedBy</code> 是常量 <code>model_service</code>，
+      所以<strong>普通用户看不到它们</strong>（管理员仍能看到全部）。记录本身没丢。</p>
+  </div>
 
   <h3>已登录之后：个人资料与修改密码在哪</h3>
   <p>
@@ -1229,12 +1261,21 @@ venv\Scripts\python.exe serve.py
     </div>
     <div class="card">
       <span class="tag">鉴权</span>
-      <h4>两个写接口目前没有鉴权 ⚠️</h4>
-      <p>逐个核对源码发现：<code>POST /system/maintenance</code>（清空图库）与
-        <code>POST /api/system/file/</code>（上传文件到 <code>data/uploads/</code>）
-        <strong>对匿名请求开放</strong>，没有登录检查。这与本项目"前端隐藏按钮只是体验、真正拦截在后端"
-        的自我要求不一致，建议补上 <code>@require_login</code>（维护类操作建议再加一个管理员权限点）。
-        影响范围：前者会丢掉已生成的图（图可由重训/重推再生），后者可被用来占用磁盘。</p>
+      <h4>两个匿名可写的接口已补上登录检查 ✅</h4>
+      <p>原先 <code>POST /system/maintenance</code>（清空图库）与 <code>POST /api/system/file/</code>
+        （上传文件到 <code>data/uploads/</code>）<strong>对匿名请求开放</strong>，没有任何登录检查。
+        现已各补一道登录校验，并且维护操作会写一条 <code>maintenance</code> 操作日志（能追到是谁按的）。</p>
+      <p>顺带说清剩下的边界：<strong>只读</strong>的业务接口仍是匿名可读的（内网共享的定位，
+        见 §09 的「认证」列），但<strong>所有会改数据的接口都要求登录</strong>。</p>
+    </div>
+    <div class="card">
+      <span class="tag">隔离</span>
+      <h4>历史流水没有归属账号，普通用户看不到 ⚠️</h4>
+      <p><code>Trainings.CreatedBy</code> / <code>InferenceTasks.CreatedBy</code> 这两个字段以前
+        <strong>写的是常量 <code>model_service</code></strong>（不是真实账号），现在已改成写真实账号。
+        代价是：<strong>改造之前产生的历史流水</strong>归属不明，
+        按账号隔离后<strong>普通用户看不到它们</strong>（管理员仍能看到全部）。
+        这些历史记录本身没丢，用管理员账号进「训练记录 / 推理任务」即可查到。</p>
     </div>
     <div class="card">
       <span class="tag">鉴权</span>

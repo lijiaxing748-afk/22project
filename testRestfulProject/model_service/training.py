@@ -509,7 +509,8 @@ def _train_adtk(opts: dict) -> dict:
 # ================================================================== 统一入口
 # 内部键 → 训练函数的分派表：键必须与 ALIASES 的值、data/models/<目录名> 三处严格一致（见文件头 ALIASES 的说明）
 _TRAINERS = {"1dcnn": _train_1dcnn, "cwt_cnn": _train_cwt_cnn, "adtk": _train_adtk}
-def train(model: str | None = None, options: dict | None = None) -> dict:
+def train(model: str | None = None, options: dict | None = None,
+          created_by: str | None = None) -> dict:
     """训练一个模型：跑训练 → 落盘产物 → 出图 → 按外键顺序写库，最后返回一份可读报告。
 
     四步走，任何一步失败都**不会**让接口静默成功：
@@ -520,6 +521,11 @@ def train(model: str | None = None, options: dict | None = None) -> dict:
         ④ 写库 Datasets → Models → Trainings（连失败也写一行 Status=失败，便于追溯）
 
     注意 `/train` 是**同步阻塞**的：本函数返回时训练已经结束（1DCNN 10 轮约 15 秒）。
+
+    `created_by` = **发起这次训练的操作账号**，写进 `Trainings.CreatedBy`，训练流水按它做账号隔离。
+    ⚠️ 由**调用方**（api.py 从当前登录用户取）传进来，本函数不自己去读 flask 上下文：
+       这样命令行工具（tools/diagnose-500.py 等）直接调 train() 也不会因为"没有请求上下文"而炸。
+       不传时退化成常量 "model_service"（老行为），归属不明。
     """
     options = dict(options or {})
     name = normalize_model(model)
@@ -608,6 +614,8 @@ def train(model: str | None = None, options: dict | None = None) -> dict:
             loss=metrics.get("test_loss"),
             model_path=artifact_dict.get("weights"),
             status=result["status"],
+            # 归属账号：训练流水按它隔离，所以这里必须是**真实账号**（调用方传进来）
+            created_by=created_by or "model_service",
             started=started.strftime("%Y-%m-%d %H:%M:%S"),
             completed=completed.strftime("%Y-%m-%d %H:%M:%S"),
             remark=json.dumps({

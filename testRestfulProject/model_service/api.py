@@ -38,7 +38,7 @@ from flask_restful import Resource
 from . import datasets as ds
 from . import exporter
 from . import tabular
-from .auth import authenticate, log_operation, require_login, require_perm
+from .auth import authenticate, current_user, log_operation, perms_of, require_login, require_perm
 from .config import config
 from .db import DBError, database
 from .figures import FIG_DIR, clear_figures, delete_figure, list_figures
@@ -55,6 +55,34 @@ _PACKAGES = ("numpy", "pandas", "scikit-learn", "scipy", "matplotlib", "h5py", "
              "keras-nightly", "torch")
 MAX_EPOCHS = 200          # 防止一条 HTTP 请求把服务占住几小时
 MAX_LIMIT = 500           # 单次 /predict 最多多少窗口
+
+
+# ------------------------------------------------------------ 账号归属（流水隔离）
+def _actor() -> str | None:
+    """当前请求的操作账号名（写 `CreatedBy` / `DeployedBy` 用）。取不到就是 None。
+
+    ⚠️ 写入路径**必须**用它，绝不能信请求体里的 `created_by` / `deployed_by`：
+       那些字段是客户端可控的，等于让操作人自己填"我是谁"，审计与隔离都会失效
+       （实测过：普通用户发布时传 `deployed_by: "冒充的别人"`，库里就存了那个值）。
+    """
+    return ((current_user() or {}).get("Username") or "").strip() or None
+
+
+def _owner_scope() -> str | None:
+    """训练/推理**流水**的可见范围。
+
+    返回 `None` = 不过滤（管理员：平台管理需要能看到全部流水）；
+    返回账号名 = 只看这个账号自己的流水。
+
+    ⚠️ 用它的接口**必须同时挂 `@require_login`**，否则匿名请求没有账号，
+       会走到"取不到账号名"的分支 —— 本函数在那种情况返回一个**匹配不到任何行**的哨兵值，
+       绝不退化成"不过滤"（那等于把所有人的流水都公开）。
+    """
+    user = current_user() or {}
+    if "user:manage" in perms_of(user.get("RoleKey")):
+        return None
+    # 拿不到账号名时给一个不可能匹配的哨兵：宁可"什么都看不到"，也不能"看到所有人的"
+    return (user.get("Username") or "").strip() or "\x00__unknown_actor__"
 # .pkl 校验时最多解码多少个 pickle 操作码：解码是纯 Python，畸形大文件的尾巴不能拖住请求
 _PICKLE_MAX_OPS = 20000
 # ---------------- 「这是不是一个模型」探测 ----------------
@@ -717,7 +745,7 @@ class Train(Resource):
             # （含 InvalidInput —— 它是 ValueError 子类，两者都是"参数错 → 400 + 同一句话"，
             #   所以上面不需要再单独写一档 except InvalidInput）
             return {"error": str(exc)}, 400
-        result = train(name, options)
+        result = train(name, options, created_by=_actor())
         http = 200 if result["status"] == "成功" else 500
         if (result.get("db") or {}).get("written") is False:
             # 产物可能已经落盘、但库里没有 Trainings 行 —— 调用方必须知道，别只看 status
@@ -729,10 +757,16 @@ class Train(Resource):
         _log_train_result(name, result)
         return result, http
 class TrainingList(Resource):
-    """GET /trainings?limit=N —— 最近训练记录（读库）。"""
+    """GET /trainings?limit=N —— 最近训练记录（读库）。
+
+    ⚠️ **按账号隔离**：普通用户只看得到自己发起的训练，管理员看全部。
+       所以这里挂 `@require_login` —— 不要求登录的话，匿名请求没有账号，
+       过滤条件无从谈起（见 _owner_scope 的说明）。
+    """
+    @require_login
     def get(self):
-        return _recent_list("trainings", database.recent_trainings)
-def _recent_list(key: str, fetch):
+        return _recent_list("trainings", database.recent_trainings, _owner_scope())
+def _recent_list(key: str, fetch, owner: str | None):
     """`GET /xxx?limit=N`（默认 20、上限 200）的"最近 N 条"读库接口，/trainings 与 /inference-tasks 共用。
 
     两个接口的方法体本来 12 行逐字重复，只差"取哪个 dict 键 / 调哪个 db 方法"。
@@ -753,7 +787,7 @@ def _recent_list(key: str, fetch):
     except InvalidInput as exc:
         return {"error": str(exc)}, 400
     try:
-        return {key: fetch(limit), "dialect": database.dialect}, 200
+        return {key: fetch(limit, owner), "dialect": database.dialect}, 200
     except DBError as exc:
         # 读库失败 → 503 且带上 dialect：前端提示"数据库不可用"，而不是显示成"没有记录"
         return {"error": str(exc), "dialect": database.dialect}, 503
@@ -834,6 +868,7 @@ class Predict(Resource):
                     client_ip=request.remote_addr,
                     column=body.get("column"),
                     sheet=body.get("sheet"),
+                    created_by=_actor(),
                 )
             except Exception as exc:                 # 失败也要留一条调用记录，再原样抛出
                 _log_failed_inference(name, exc, request.remote_addr, body)
@@ -851,17 +886,24 @@ class Predict(Resource):
                                   + str((payload.get("db") or {}).get("error")))
         return payload, 200
 class InferenceTaskList(Resource):
-    """GET /inference-tasks?limit=N —— 最近推理任务（读库）。"""
+    """GET /inference-tasks?limit=N —— 最近推理任务（读库）。按账号隔离，同 TrainingList。"""
+    @require_login
     def get(self):
-        return _recent_list("tasks", database.recent_inference_tasks)
+        return _recent_list("tasks", database.recent_inference_tasks, _owner_scope())
 class InferenceTaskDetail(Resource):
-    """GET /inference-tasks/<id> —— 单个任务 + 它的 InferenceResults 明细。"""
+    """GET /inference-tasks/<id> —— 单个任务 + 它的 InferenceResults 明细。
+
+    ⚠️ 同样按账号隔离，而且是**按 ID 也隔离**：光过滤列表不够，知道别人的
+       InferenceTaskID 就能直接读明细（典型的 IDOR）。不是自己的任务返回 404，
+       与"任务真的不存在"同一个响应 —— 不泄露"这个 ID 存在"。
+    """
+    @require_login
     def get(self, task_id):
         # ⚠️ 路由是 /inference-tasks/<int:task_id>：Werkzeug 的 int 转换器已经保证进来的是整数，
         # 非整数路径（/inference-tasks/abc）根本不会进这个方法，会直接 404。
         # 这里的 _int() 属于防御性统一写法（默认 None 时 DB 查不到自然走下面的 404）
         try:
-            task = database.inference_task(_int(task_id, None, "task_id"))
+            task = database.inference_task(_int(task_id, None, "task_id"), created_by=_owner_scope())
         except DBError as exc:
             return {"error": str(exc)}, 503
         if task is None:
@@ -1623,7 +1665,7 @@ class ModelExport(Resource):
                     "artifact_key": key,
                 },
                 deploy_status="已导出",
-                deployed_by=str(body.get("deployed_by") or "model_service"),
+                deployed_by=str(_actor() or "model_service"),
                 remark=str(body.get("description") or "").strip() or None)
         except DBError as exc:
             exporter.delete_package(key, result.package.name)
@@ -1661,7 +1703,7 @@ def _record_failed_export(model_id, training_id, device_id, version, error, body
         database.insert_deployment(
             model_id, training_id, device_id, version=version, version_alias=None,
             environment="test", deploy_status="失败", error_message=error,
-            deployed_by=str(body.get("deployed_by") or "model_service"))
+            deployed_by=str(_actor() or "model_service"))
     except Exception:                                              # noqa: BLE001
         pass
 
@@ -2000,7 +2042,12 @@ class SystemLogFile(Resource):
         return {"name": name, "size_kb": round(path.stat().st_size / 1024, 1),
                 "total_lines": len(lines), "returned": len(lines[-tail:]), "lines": lines[-tail:]}, 200
 class Maintenance(Resource):
-    """POST /system/maintenance —— 维护操作（危险，前端红按钮 + 二次确认）。"""
+    """POST /system/maintenance —— 维护操作（危险，前端红按钮 + 二次确认）。
+
+    ⚠️ 这个接口**原来完全没有鉴权**（匿名就能调，只要 target=figures 就会删光所有图）。
+       现在挂 `@require_login`：维护是破坏性操作，至少要能追到是谁按的。
+    """
+    @require_login
     def post(self):
         # ⚠️ 白名单式分发：只有下面**显式写出来**的 target 才会被执行，绝不按字符串去拼函数名。
         # 新增维护动作时必须同时改这里的 if 和返回里的 supported 列表，
@@ -2008,7 +2055,11 @@ class Maintenance(Resource):
         target = (_body().get("target") or "").strip()
         if target == "figures":
             # 目前唯一的动作：清空图库（只删 data/figures 下的 png，不动模型产物、不动库表）
-            return clear_figures(), 200
+            cleared = clear_figures()
+            # 破坏性操作必须留痕：require_login 已把当前用户放进 flask.g，这里能追到人
+            log_operation("maintenance", target="figures",
+                          detail={"removed": cleared.get("removed"), "freed_kb": cleared.get("freed_kb")})
+            return cleared, 200
         # 白名单式：只认已知的 target，别的明确报错并回可选值
         return {"error": f"不支持的维护目标：{target!r}", "supported": ["figures"]}, 400
 # ------------------------------------------------------------------ 路由表

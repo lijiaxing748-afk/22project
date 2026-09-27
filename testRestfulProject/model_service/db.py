@@ -728,12 +728,14 @@ class Database:
         """
         cols = [d[0] for d in cur.description]
         return [{c: _jsonable(v) for c, v in zip(cols, row)} for row in cur.fetchall()]
-    def _select_limited(self, cols: str, tail: str, limit: int) -> list[dict]:
+    def _select_limited(self, cols: str, tail: str, limit: int, params: tuple = ()) -> list[dict]:
         """`SELECT <cols> <tail> LIMIT <n>` 的共用收口（recent_trainings 等三处同构）。
 
-        这三处的差别只有"选哪些列 / JOIN 谁 / 按什么排序"，前后几行一字不差地重复了三遍。
+        这三处的差别只有"选哪些列 / JOIN 谁 / 按什么排序 / 有没有归属过滤"，
+        前后几行一字不差地重复了三遍。
         ⚠️ LIMIT 是 f-string 拼**数字**不是占位符（LIMIT 后只能跟字面量），安全性靠这里
         int() 再强转一道；cols / tail 是各方法写死的字面量，没有外部输入。
+        params 只用来传"归属账号"那一个过滤值（走占位符，不拼字符串）。
         """
         self.ensure_schema()
         # ⚠️ SQL 必须在进 cursor 之前算好：`int(limit)` 转不动时要像以前一样"还没连库就抛"。
@@ -741,7 +743,9 @@ class Database:
         #    而不是原来的 ValueError/TypeError —— 异常类型被换掉了。
         sql = f"SELECT {cols} {tail} LIMIT {int(limit)}"
         with self.cursor() as cur:
-            cur.execute(sql)
+            # 没有过滤条件时**不要**传空元组：pymysql 见到 args 不是 None 就会走
+            # `query % args` 的格式化路径，SQL 里但凡有个字面量 % 就会炸。
+            cur.execute(sql, params if params else None)
             return self._rows_to_dicts(cur)
     def latest_training(self, model_name: str | None = None, only_success: bool = True) -> dict | None:
         """取最近一次训练——它同时是推理任务的外键锚点（TrainingID）。
@@ -779,31 +783,43 @@ class Database:
             cur.execute(f"SELECT * FROM Trainings WHERE TrainingID = {self.placeholder}", (training_id,))
             rows = self._rows_to_dicts(cur)
         return rows[0] if rows else None
-    def recent_trainings(self, limit: int = 20) -> list[dict]:
+    def recent_trainings(self, limit: int = 20, created_by: str | None = None) -> list[dict]:
         """最近的训练记录（带模型名、数据集名，供列表页直接显示）。
 
         ⚠️ 两个 JOIN 都必须是 LEFT：DatasetID 可空（数据集被删时置空），
         INNER JOIN 会让这些训练整条从列表里消失。
+
+        `created_by` 是**账号隔离**用的过滤：传账号名就只看那个账号的训练流水，
+        传 None 表示不过滤（管理员看全部）。归属值由 `insert_training` 落库时写入，
+        过去它写死成常量 "model_service"，所以**老数据**的 CreatedBy 不是真实账号、按账号过滤会漏掉——
+        见 api._owner_scope() 的说明。
         """
-        return self._select_limited(
-            "t.TrainingID, t.TrainName, t.Epochs, t.BatchSize, t.Accuracy, t.Loss, t.Status, t.ModelPath, "
-            "t.StartedDate, t.CompletedDate, t.CreatedDate, m.ModelName, d.DatasetName",
-            "FROM Trainings t LEFT JOIN Models m ON m.ModelID = t.ModelID "
-            "LEFT JOIN Datasets d ON d.DatasetID = t.DatasetID ORDER BY t.TrainingID DESC",
-            limit)
-    def recent_inference_tasks(self, limit: int = 20) -> list[dict]:
-        """最近的推理任务（带模型名，供列表页直接显示）。
+        cols = ("t.TrainingID, t.TrainName, t.Epochs, t.BatchSize, t.Accuracy, t.Loss, t.Status, "
+                "t.ModelPath, t.StartedDate, t.CompletedDate, t.CreatedDate, t.CreatedBy, m.ModelName, d.DatasetName")
+        tail = ("FROM Trainings t LEFT JOIN Models m ON m.ModelID = t.ModelID "
+                "LEFT JOIN Datasets d ON d.DatasetID = t.DatasetID ")
+        params: tuple = ()
+        if created_by:
+            tail += f"WHERE t.CreatedBy = {self.placeholder} "
+            params = (created_by,)
+        tail += "ORDER BY t.TrainingID DESC"
+        return self._select_limited(cols, tail, limit, params)
+    def recent_inference_tasks(self, limit: int = 20, created_by: str | None = None) -> list[dict]:
+        """最近的推理任务（带模型名，供列表页直接显示）。过滤语义同 recent_trainings。
 
         ⚠️ 同 recent_trainings：LEFT JOIN ModelName 是必要的——上传/占位模型可能不在 Models 里，
         INNER JOIN 会让这些任务凭空消失。
         """
-        return self._select_limited(
-            "k.InferenceTaskID, k.TaskName, k.TaskType, k.Status, k.Progress, k.TrainingID, "
-            "k.TargetDatasetID, k.ResultSummary, k.CreatedDate, k.CompletedDate, m.ModelName",
-            "FROM InferenceTasks k LEFT JOIN Models m ON m.ModelID = k.ModelID "
-            "ORDER BY k.InferenceTaskID DESC",
-            limit)
-    def inference_task(self, task_id: int) -> dict | None:
+        cols = ("k.InferenceTaskID, k.TaskName, k.TaskType, k.Status, k.Progress, k.TrainingID, "
+                "k.TargetDatasetID, k.ResultSummary, k.CreatedDate, k.CompletedDate, k.CreatedBy, m.ModelName")
+        tail = "FROM InferenceTasks k LEFT JOIN Models m ON m.ModelID = k.ModelID "
+        params: tuple = ()
+        if created_by:
+            tail += f"WHERE k.CreatedBy = {self.placeholder} "
+            params = (created_by,)
+        tail += "ORDER BY k.InferenceTaskID DESC"
+        return self._select_limited(cols, tail, limit, params)
+    def inference_task(self, task_id: int, created_by: str | None = None) -> dict | None:
         """取一个推理任务及其全部结果明细（明细挂在返回值的 results 里）。
 
         任务行与明细行分成两条 SELECT，然后手工把 results 挂进 tasks[0]，而不是 JOIN 成一张宽表：
@@ -811,10 +827,19 @@ class Database:
         ⚠️ 一次把该任务的**全部结果行**返回，没有分页也没有 LIMIT——几千个窗口就是几千行 JSON，
         明细页会明显变慢；要支持大任务得在这里加 offset/limit 并让接口透传。
         任务不存在返回 None（接口层转 404），明细为空就是 results: []，不额外报错。
+
+        `created_by` 传入时做**归属校验**：不是这个账号的任务就返回 None（接口层统一 404）。
+        ⚠️ 刻意不返回 403/409 那种"存在但不属于你"的提示 —— 那等于告诉调用方
+        "这个 ID 是真实存在的"，属于多余的探测信息（同 figures 删除那边的处理）。
         """
         self.ensure_schema()
         with self.cursor() as cur:
-            cur.execute(f"SELECT * FROM InferenceTasks WHERE InferenceTaskID = {self.placeholder}", (task_id,))
+            sql = f"SELECT * FROM InferenceTasks WHERE InferenceTaskID = {self.placeholder}"
+            params: list = [task_id]
+            if created_by:
+                sql += f" AND CreatedBy = {self.placeholder}"
+                params.append(created_by)
+            cur.execute(sql, tuple(params))
             tasks = self._rows_to_dicts(cur)
             if not tasks:
                 return None

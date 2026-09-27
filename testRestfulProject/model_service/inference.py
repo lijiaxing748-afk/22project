@@ -360,12 +360,15 @@ def _resolve_anchor(model_name: str, training_id: int | None) -> tuple[dict | No
     return row, (int(row["TrainingID"]) if row else None)
 def _write_db(model_name: str, artifact, payload: dict, input_info: dict, predictions: list[dict],
               training_id: int | None, duration_ms: int, client_ip: str | None, request_params: dict,
-              output_path: str | None = None) -> dict:
+              output_path: str | None = None, created_by: str | None = None) -> dict:
     """把一次推理写进三张表：InferenceTasks（1 行）+ InferenceResults（n 行）+ ModelInvocations（1 行）。
 
     这是"尽力而为"的写法：任何数据库异常都被收进返回值的 `written/error` 里，
     **不让推理请求因此失败**（推理本身已经算完了，结果也已经返回给调用方）。
     调用方/前端看 `db.written` 判断有没有落库，落库失败时 api 层还会补一个 `warning` 字段。
+
+    `created_by` = 发起这次推理的账号，写进 `InferenceTasks.CreatedBy`（推理流水按它做账号隔离）。
+    由 predict() 从入参一路传下来 —— 本模块不自己读 flask 上下文，命令行调用才不会炸。
     """
     from .training import db_model_name
     try:
@@ -423,6 +426,8 @@ def _write_db(model_name: str, artifact, payload: dict, input_info: dict, predic
             "model_id": model_id, "input_path": source_path, "output_path": output_path, "progress": 100,
             "started": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "completed": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            # 归属账号：推理流水按它隔离（由调用方从当前登录用户取，本模块不读 flask 上下文）
+            "created_by": created_by or "model_service",
         }, rows)
         database.insert_invocation(
             model_id=model_id, training_id=anchor, api_endpoint="/predict",
@@ -440,7 +445,8 @@ def _write_db(model_name: str, artifact, payload: dict, input_info: dict, predic
 def predict(model: str | None = None, samples=None, path: str | None = None, index: int = 0,
             limit: int = 1, training_id: int | None = None,
             top_k: int = 3, write_db: bool = True, client_ip: str | None = None,
-            column: str | None = None, sheet: str | int | None = None) -> dict:
+            column: str | None = None, sheet: str | int | None = None,
+            created_by: str | None = None) -> dict:
     """推理入口：解析模型 → 取产物 → 切窗校验 → 分派引擎 → 落库，返回结果 + 落库回执。
 
     失败语义：输入非法抛 InvalidInput(→400)、产物缺失抛 FileNotFoundError(→409)，
@@ -521,5 +527,5 @@ def predict(model: str | None = None, samples=None, path: str | None = None, ind
                                   {"model": name, "path": path,
                                    "samples": f"{matrix.shape[0]}x{matrix.shape[1]}" if samples is not None else None,
                                    "index": index, "limit": limit},
-                                  output_path=figure_result["dir"])
+                                  output_path=figure_result["dir"], created_by=created_by)
     return payload

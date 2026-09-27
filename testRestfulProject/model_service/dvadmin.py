@@ -380,10 +380,18 @@ def build_blueprint() -> Blueprint:
         控制台报出来的却是 "CORS policy: Response to preflight request doesn't pass
         access control check"。真正的"接口没实现"被跨域错误盖住，现象只是"头像换不上去"，
         排查时极易往 CORS 配置上跑偏（这也是后来加 `_preflight()` 兜底的原因）。
+
+        ⚠️ 2026-09 补登录校验：它原先**匿名就能写**（任何人往 `data/uploads/` 里塞文件）。
+           "能不能写服务器磁盘"不该匿名决定 —— 传文件至少要能追到人。
         """
         import time
         from pathlib import Path
         from .config import config
+        # 认证写在函数体内（本文件的既有约定，见文件头：这一层没有装饰器）
+        user = auth.authenticate()
+        if not user:
+            return jsonify({"code": 4000, "data": None, "msg": "登录已失效，请重新登录"}), 200
+        g.current_user = user
         item = request.files.get("file") or request.files.get("files")
         if item is None and request.files:
             item = next(iter(request.files.values()))
