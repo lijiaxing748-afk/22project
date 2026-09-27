@@ -226,25 +226,43 @@ def archive_legacy_versions() -> dict:
       · 若 <名>/ 下有 vN 子目录：把**编号最大**的那个的内容搬上来当唯一产物，
         其余 vN 目录整个搬到 data/archive/model_versions/<名>/ 下（**不删**）。
       · 归档位置放在 model_dir **之外**，避免它自己被当成一个模型列出来。
+      · 混合态（根目录已有扁平产物、同时残留 vN）只归档 vN，**不动**扁平产物 —— 见下面的守卫。
     """
     moved, archived = [], []
     if not config.model_dir.is_dir():
         return {"migrated": moved, "archived": archived}
     archive_root = config.model_dir.parent / "archive" / "model_versions"
+
+    def _archive(old, name: str) -> None:
+        """把一个旧版本目录整个搬到归档区（目标已存在就先删，保持"最后一份为准"）。"""
+        dest = archive_root / name / old.name
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        if dest.exists():
+            shutil.rmtree(dest, ignore_errors=True)
+        old.rename(dest)
+        archived.append(f"{name}/{old.name}")
+
     for root in sorted(p for p in config.model_dir.iterdir()
                        if p.is_dir() and not p.name.startswith(".")):
         versions = sorted((d for d in root.iterdir() if d.is_dir() and re.match(r"^v\d+$", d.name)),
                           key=lambda d: int(d.name[1:]))
         if not versions:
             continue                                  # 已经是新布局
+        # ⚠️⚠️ 混合态守卫：根目录下**已经有文件** ⇒ 这台机器早就完成过扁平化，
+        #    剩下的 vN 只是没清干净的遗留。此时绝不能执行"把编号最大的 vN 搬上来"：
+        #      · Linux/macOS 上 Path.rename 对已存在的目标是**静默覆盖** —— 会拿一个
+        #        更旧的 v2 盖掉更新的扁平产物，而且不报任何错（数据静默回退）；
+        #      · Windows 上 os.rename 会抛 FileExistsError，整个迁移直接崩。
+        #    实测 data/models/adtk 就是这个形态：扁平产物 trained_at=2026-09-15，
+        #    残留 v1/v2 分别是 09-13 20:12 / 20:52 —— 跑一次旧逻辑就把 09-15 的换掉了。
+        #    所以混合态只归档，扁平产物原样保留。
+        if any(item.is_file() for item in root.iterdir()):
+            for old in versions:
+                _archive(old, root.name)
+            continue
         keep, drop = versions[-1], versions[:-1]
         for old in drop:
-            dest = archive_root / root.name / old.name
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            if dest.exists():
-                shutil.rmtree(dest, ignore_errors=True)
-            old.rename(dest)
-            archived.append(f"{root.name}/{old.name}")
+            _archive(old, root.name)
         for item in list(keep.iterdir()):
             item.rename(root / item.name)
         keep.rmdir()

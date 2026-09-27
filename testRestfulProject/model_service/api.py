@@ -756,10 +756,6 @@ def _recent_list(key: str, fetch):
     except DBError as exc:
         # 读库失败 → 503 且带上 dialect：前端提示"数据库不可用"，而不是显示成"没有记录"
         return {"error": str(exc), "dialect": database.dialect}, 503
-class TrainingList(Resource):
-    """GET /trainings?limit=N —— 最近训练记录（读库）。"""
-    def get(self):
-        return _recent_list("trainings", database.recent_trainings)
 def _log_failed_inference(name: str, exc: Exception, client_ip: str | None, body: dict) -> None:
     """推理失败时也写一条 `ModelInvocations`（is_success=0）。
 

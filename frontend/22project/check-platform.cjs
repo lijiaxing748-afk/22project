@@ -15,13 +15,27 @@ const ROOT = __dirname;
 const sfc = require(path.join(ROOT, 'node_modules/@vue/compiler-sfc'));
 const sass = require(path.join(ROOT, 'node_modules/sass'));
 
-const FILES = [
-	'src/views/platform/home/index.vue',
-	'src/views/platform/model/index.vue',
-	'src/views/platform/dataset/index.vue',
-	'src/views/platform/visual/index.vue',
-	'src/views/platform/system/index.vue',
-];
+/**
+ * 平台页清单：**自动发现** `src/views/platform/**\/index.vue`。
+ *
+ * ⚠️ 这里以前是手写的 5 个页面，于是 lab 线新增的 publish / user / log 三个页面
+ *    根本没被校验到（清单漂了也不会有人发现）。改成扫描目录，新增页面自动纳入。
+ *    新增页面后如果 SFC 编译不过，本脚本会直接报出来。
+ */
+function platformPages() {
+	const base = path.join(ROOT, 'src/views/platform');
+	const out = [];
+	const walk = (dir) => {
+		for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+			const full = path.join(dir, e.name);
+			if (e.isDirectory()) walk(full);
+			else if (e.name === 'index.vue') out.push(path.relative(ROOT, full).replace(/\\/g, '/'));
+		}
+	};
+	if (fs.existsSync(base)) walk(base);
+	return out.sort();
+}
+const FILES = platformPages();
 const ALSO = ['src/api/platform/index.ts'];
 
 let errors = 0;
@@ -87,13 +101,39 @@ const checkFile = (rel) => {
 [...FILES, ...ALSO].forEach(checkFile);
 if (!errors) ok('所有 import（/@/ 别名、外部依赖）都能解析');
 
-console.log('\n=== 3) 后端契约一致性（页面用到的接口是否都在 flask 侧存在）===');
+console.log('\n=== 3) 前端接口清单同步校验（platform-api-paths.json）===');
+// ⚠️ 本节原来的标题是「后端契约一致性（页面用到的接口是否都在 flask 侧存在）」，
+//    但代码只是把 URL console.log 了一遍、**没有任何断言** —— 也就是它永远不会失败，
+//    名不副实（README 却据此宣称"后端接口契约一致性"已校验）。
+//    真要做"前端调用的路径在 Flask 里到底存不存在"，得读 Python 侧的 _ROUTES；
+//    本脚本是 Node、沙箱里又不允许起子进程（spawn EPERM），所以那一层交给后端自测
+//    （testRestfulProject/_selftest_*.py、tools/verify-*.py）。
+//    这里改成做一件**能做到、也必须做**的断言：生成物与源码是否同步。
+//    platform-api-paths.json 是要入库的生成物；改了 src/api/platform/index.ts 却忘了
+//    重新生成 —— lab 线加完用户管理/操作日志接口后就是这么漏的。
 const apiSrc = fs.readFileSync(path.join(ROOT, 'src/api/platform/index.ts'), 'utf8');
 const urls = [...apiSrc.matchAll(/url:\s*(?:`([^`]+)`|'([^']+)')/g)].map((m) => (m[1] || m[2]));
 const norm = [...new Set(urls.map((u) => '/' + u.replace(/^\//, '').split('?')[0].replace(/\$\{[^}]+\}/g, '<x>')))];
 console.log('  前端调用的接口：');
 norm.forEach((u) => console.log('    ' + u));
-fs.writeFileSync(path.join(ROOT, 'platform-api-paths.json'), JSON.stringify(norm, null, 1));
+
+const manifest = path.join(ROOT, 'platform-api-paths.json');
+let prev = null;
+if (fs.existsSync(manifest)) {
+	try { prev = JSON.parse(fs.readFileSync(manifest, 'utf8')); } catch { prev = null; }
+}
+if (Array.isArray(prev) && JSON.stringify(prev) === JSON.stringify(norm)) {
+	ok(`platform-api-paths.json 与源码同步（${norm.length} 条）`);
+} else {
+	// 先把差异说清楚（读的是"改写前"的快照），再同步写回
+	const added = prev ? norm.filter((u) => !prev.includes(u)) : norm;
+	const removed = prev ? prev.filter((u) => !norm.includes(u)) : [];
+	bad('platform-api-paths.json 与 src/api/platform/index.ts 不同步（生成物必须一起提交）');
+	if (added.length) console.log('    源码有、清单缺：' + added.join(', '));
+	if (removed.length) console.log('    清单有、源码无：' + removed.join(', '));
+	console.log('    已自动同步；请把 platform-api-paths.json 一起提交后重跑本脚本');
+}
+fs.writeFileSync(manifest, JSON.stringify(norm, null, 1));
 
 console.log(`\n结论：${errors ? errors + ' 处错误' : '全部通过 ✅'}`);
 process.exit(errors ? 1 : 0);

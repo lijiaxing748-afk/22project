@@ -6,7 +6,12 @@ __pycache__/
 .pytest_cache/
 
 # 本地数据库配置（含账号密码，不入库；克隆后按 项目交接文档.md §1 自己建一份 db.env）
-db.env
+# ⚠️ 必须是 `db.env*` 而不是 `db.env`：只写 `db.env` 时，任何备份/变体
+#    （db.env.bak-20260919、db.env.old、db.env.save …）都**不在忽略范围内**，
+#    一次 `git add -A` 就会把明文口令提交到公开仓库，而且 tools/make-update-package.ps1
+#    的排除规则也漏掉它们，会随优盘带到实验室。所以按前缀整体忽略，再单独放行模板。
+db.env*
+!db.env.example
 .env
 .env.local
 

@@ -9,11 +9,14 @@ import vueJsx from '@vitejs/plugin-vue-jsx'
  * 生成 public/version-build（生产环境版本校验用）。
  *
  * 原来是 `import { generateVersionFile } from '/@/utils/upgrade'`，但那个模块里用了
- * `import.meta.env`；本工程的 package.json 没有 "type": "module"，配置文件会被打包成 CJS，
- * 于是每次启动都会报：
+ * `import.meta.env`；vite 把**配置文件本身打成 CJS** 时会报：
  *   "[WARNING] import.meta is not available with the cjs output format"
  * 这里就地实现同样的逻辑（只用 process.env.npm_package_version，行为不变），
- * 配置里就不再引用带 import.meta 的模块，警告随之消失。
+ * 配置里不再引用带 import.meta 的模块，警告随之消失。
+ *
+ * ⚠️ 原注释在这里还写了"本工程的 package.json 没有 type: module"——**这句是错的**：
+ *    package.json 第 4 行就是 `"type": "module"`。该警告的真实成因与配置文件的打包格式
+ *    判定有关，跟那句话无关。结论（就地实现）依然成立，故只修正错误的前提描述。
  */
 function generateVersionFile() {
 	const packageVersion = process.env.npm_package_version ?? '0.0.0';

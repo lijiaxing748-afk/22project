@@ -11,6 +11,8 @@ Web服务器 ─▶ flask_restful 接口(Web访问) ─┬─▶ 算法模型1(1
 
 改造前这条链是**断的**：两个训练脚本跑完就把模型丢在内存里，仓库里没有任何权重文件，
 `Trainings.ModelPath` 无值可填，也没有任何推理代码，SQL 里那 8 张表更是一行都没被写过。
+（"8 张"是当时的 T-SQL 口径；现在 `schema_mysql.sql` 是 **11 张表** —— 8 张业务表 +
+`Roles`/`Users`/`OperationLogs` 3 张鉴权表。）
 本模块把断点补上，并且**每一环都能被验证**。
 
 ---
@@ -44,7 +46,7 @@ Web服务器 ─▶ flask_restful 接口(Web访问) ─┬─▶ 算法模型1(1
 | GET | `/figures` | 已生成的图（训练曲线/混淆矩阵/每类指标/预测分布/预测波形） |
 | GET | `/figures/<路径>` | 直接返回 PNG（浏览器打开即可看） |
 
-> 上面这张表与 `register_api()` 一一对应（共 24 条）。**`/todos` 已不存在**：它随 flask_restful
+> 上面这张表与 `register_api()` 一一对应（共 **28** 条）。**`/todos` 已不存在**：它随 flask_restful
 > 官方示例一起删除，接口索引里也不再列它。三条 `GET/PUT/DELETE /datasets/db/<id>` 单行增删改
 > 路由同样已删除（全项目零调用，前端只保留 `datasetDb` / `registerDataset`）——
 > 现在**唯一**的权威清单是运行中的 `GET /api`（**已登录**才有内容，见上表）。
@@ -239,8 +241,10 @@ data/figures/<模型>/training_curves.png        准确率/损失（训练集 vs
 | `sql/schema_mysql.sql` | **唯一保留**的建表脚本（MySQL 专用） |
 
 > ⚠️ 这句以前写的是「`sql/schema*.sql` 未改动，新增一份 `schema_sqlite.sql`」——两份都不在了：
-> `sql/` 目录下现在**只有 `schema_mysql.sql`**（T-SQL 版 `schema.sql` 与 SQLite 版都随各自方言分支
-> 一起删除）。如果看到别处还提到 `schema.sql`，那是没跟着清的墓碑注释。
+> `sql/` 目录下现在只有 **`schema_mysql.sql`**（建表，T-SQL 版 `schema.sql` 与 SQLite 版
+> `schema_sqlite.sql` 都已删除，2026-09 实际清掉了文件，不再只是注释里说说）和
+> **`auth-migration.sql`**（给升级前建好的 8 表老库补 `Roles`/`Users`/`OperationLogs`）。
+> 如果看到别处还提到 `schema.sql` / `schema_sqlite.sql`，那是没跟着清的墓碑文档。
 
 服务侧**没有**复用 `1DCNN/preprocessing.py` 的切片逻辑，而是新增 `datasets.py`，差异都是刻意的：
 
@@ -274,5 +278,7 @@ data/figures/<模型>/training_curves.png        准确率/损失（训练集 vs
      必然失败，代码会自动回退到 h5py 直写的 `.h5`；失败的 `.keras` 半成品会被显式删除，
      否则它（只有 config.json、没有权重）会被权重查找误命中。
    - pip 在这类环境下也装不了包（同样的临时目录限制），本次 `pymysql` 是直接解包 wheel 到
-     site-packages 安装的。（`pyodbc` / `pywin32` 那次是为了当时还没删的 SQL Server 分支装的，
-     现已不需要，`requirements.txt` 里也没有它们。）
+     site-packages 安装的。（`pyodbc` 是为了当时还没删的 SQL Server 分支装的，现已不需要，
+     `requirements.txt` 里**没有**它。⚠️ 但 `pywin32` 不同：它仍被 `createdoc.py`（用 win32com
+     驱动 Word 生成文档）使用，`requirements.txt` 里有 `pywin32==312; sys_platform == "win32"`
+     —— 旧版本这里写成"两个都没有"，是错的。）

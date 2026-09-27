@@ -19,7 +19,11 @@
    特点:
      - CREATE TABLE IF NOT EXISTS，可重复执行
      - 外键在建表时内联（依赖顺序已排好）
-     - 种子数据用 INSERT IGNORE，依赖唯一键去重
+     - 种子数据尽量可重复执行：有业务唯一键的用 INSERT IGNORE；
+       没有唯一键的表（EdgeDevices）必须改用 "INSERT ... SELECT ... WHERE NOT EXISTS"
+       ⚠️ 教训：EdgeDevices 只有主键、没有业务唯一键（DeviceType 上也不能加唯一键 ——
+          同型号真实设备可以有多台），早期误用 INSERT IGNORE，结果**每重跑一次本脚本
+          就多插一行**同名占位设备（实测实验室那台库积了 3 行）。
    T-SQL → MySQL 映射:
      [int] IDENTITY(1,1)   -> INT AUTO_INCREMENT
      [nvarchar](n)         -> VARCHAR(n)
@@ -349,10 +353,20 @@ VALUES
    加一行种子数据没有这个问题，而且语义也成立——"导出到本地"本来就是一种投放目标。
 
    DeviceType='local' 是这里唯一的判别依据：界面/接口看到它就知道这不是真设备，
-   而是"发布包落在了服务器磁盘上"。 */
-INSERT IGNORE INTO `EdgeDevices` (`DeviceName`, `DeviceType`, `Location`, `EdgeStatus`, `Status`,
-                                  `IsActive`, `Remark`, `CreatedDate`)
-VALUES ('本地导出', 'local', '本机文件系统', '可用', '可用', 1,
-        '不是真实边缘设备：仅为「模型发布」记录 ModelDeployments.DeviceID（该列是 NOT NULL 外键）。'
-        '发布包落在 data/exports/<模型>/ 下供下载。',
-        CURRENT_TIMESTAMP(6));
+   而是"发布包落在了服务器磁盘上"。
+
+   ⚠️ 这里**不能**用 INSERT IGNORE：EdgeDevices 只有主键 DeviceID，没有任何业务唯一键
+   （DeviceType 上也不能加 —— 同型号真实设备可以有多台），所以 INSERT IGNORE 根本不会去重，
+   每重跑一次本脚本就多插一行同名占位设备。曾实测被插成 3 行（DeviceID 1/2/3）。
+   改用 "INSERT ... SELECT ... WHERE NOT EXISTS"：重复执行只在第一次插入。
+   （内层再套一个派生表 _probe，是为了避开 MySQL "不能在子查询里引用被插入的表" 的限制。） */
+INSERT INTO `EdgeDevices` (`DeviceName`, `DeviceType`, `Location`, `EdgeStatus`, `Status`,
+                           `IsActive`, `Remark`, `CreatedDate`)
+SELECT '本地导出', 'local', '本机文件系统', '可用', '可用', 1,
+       '不是真实边缘设备：仅为「模型发布」记录 ModelDeployments.DeviceID（该列是 NOT NULL 外键）。'
+       '发布包落在 data/exports/<模型>/ 下供下载。',
+       CURRENT_TIMESTAMP(6)
+  FROM (SELECT 1) AS `_one`
+ WHERE NOT EXISTS (SELECT 1
+                     FROM (SELECT `DeviceID` FROM `EdgeDevices`
+                            WHERE `DeviceType` = 'local' LIMIT 1) AS `_probe`);

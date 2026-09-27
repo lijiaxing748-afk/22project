@@ -31,7 +31,7 @@
 | **模型管理** | 模型清单（登记信息 + 产物参数 + 指标）、**上传模型**（文件夹或单文件，自动识别框架/输入长度/类别数）、训练（三个模型可选）、推理（按窗口，看类别+置信度或异常分数）、训练记录、推理任务与结果明细、模型档案、改名、删除产物 |
 | **数据集管理** | CWRU 内置数据集体检、表格数据集上传（一文件一类别）、信号列预览与统计 |
 | **数据展示** | 波形/频谱等可视化，训练与推理自动出的图（混淆矩阵、训练曲线、异常时序） |
-| **系统管理** | 运行环境与依赖、8 张表行数、日志查看、接口索引、维护（清空图库/删除模型产物） |
+| **系统管理** | 运行环境与依赖、11 张表行数、日志查看、接口索引、维护（清空图库/删除模型产物） |
 
 **工程上的几个亮点**（都是踩坑后补的）：
 
@@ -58,12 +58,12 @@
                                         │  ├ inference.py  推理 + 落库              │
         ┌────────────────┐              │  ├ datasets.py   CWRU .mat 读取/切窗     │
         │ MySQL          │◀────────────▶│  ├ tabular.py    表格数据集              │
-        │ model_management│   8 张表     │  ├ registry.py   产物管理                │
+        │ model_management│   11 张表    │  ├ registry.py   产物管理                │
         │ Datasets/Models│              │  └ figures.py    出图(无头 matplotlib)   │
         │ Trainings/...  │              └──────────────────────────────────────────┘
         └────────────────┘                        │
                                                   ▼
-                              data/models/<模型>/{model.h5|model.pt|detector.pkl,
+                              data/models/<模型>/{model.keras|model.pt|detector.pkl,
                                                  scaler.npz, meta.json}
 ```
 
@@ -87,7 +87,7 @@
 
 ```sql
 CREATE DATABASE model_management DEFAULT CHARSET utf8mb4;
--- 建表（8 张表 + 外键 + 索引 + 种子数据，可重复执行）
+-- 建表（11 张表 = 8 张业务表 + 3 张鉴权表，14 条外键 + 索引 + 种子数据，可重复执行）
 source D:\22project\testRestfulProject\sql\schema_mysql.sql;
 ```
 
@@ -122,7 +122,14 @@ npm install        # 首次
 npm run dev        # → http://127.0.0.1:8080
 ```
 
-默认账号：任意用户名 + 任意密码（兼容层不校验），进入后左侧是 5 个业务菜单。
+默认账号：`admin` / `Admin@2026`。**登录是真校验的**——`model_service/dvadmin.py::login()`
+会查 `Users` 表、用 `auth.verify_password()` 校验 pbkdf2 哈希、再校验 `IsActive`，通过才签发令牌；
+业务接口另挂角色权限装饰器（如 `train:run`、`model:delete`）。
+
+> ⚠️ 本文档此前写的"任意用户名 + 任意密码（兼容层不校验）"是**错的**，那是早期兼容层的桩行为，
+> 早已被真正的鉴权取代（见 `项目技术详解.md` 的 Bug 台账）。
+> 未配 `MODEL_BOOTSTRAP_ADMIN_PASSWORD` 时，首次启动还会连带建 `engineer` / `Engineer@2026`、
+> `operator` / `Operator@2026` 两个演示号——**交付工厂前请删掉它们或改掉口令**。
 
 ### 两个地址
 
@@ -145,7 +152,7 @@ npm run dev        # → http://127.0.0.1:8080
 
 | 模型 | 类型 | 框架 | 数据源 | 产物 | 说明 |
 |---|---|---|---|---|---|
-| `1DCNN` | 分类（CWRU 10 类） | TensorFlow / Keras | `.mat` 或表格 | `model.h5` + `scaler.npz` | 复用原项目网络结构，测试准确率 **0.9457** |
+| `1DCNN` | 分类（CWRU 10 类） | TensorFlow / Keras | `.mat` 或表格 | `model.keras` + `scaler.npz` | 复用原项目网络结构，测试准确率 **0.9457** |
 | `cwt_cnn` | 分类（同任务，PyTorch 实现） | PyTorch | `.mat` 或表格 | `model.pt` + `scaler.npz` | 全批量训练，测试准确率 **0.6680** |
 | `adtk` | **无监督异常检测** | adtk（PcaAD） | 只需一段"正常"基线 | `detector.pkl` | 窗口级 PCA 重构误差，见下 |
 
@@ -191,21 +198,25 @@ curl -X POST http://127.0.0.1:5000/predict -H "Content-Type: application/json" -
 D:\22project\
 ├─ testRestfulProject\                   后端
 │  ├─ main.py                            唯一入口：注册两层路由 + 启动
-│  ├─ model_service\                     业务包（11 个模块，见下）
-│  │  ├─ api.py                          业务接口（裸 JSON）
+│  ├─ model_service\                     业务包（15 个 .py，见下）
+│  │  ├─ api.py                          业务接口（裸 JSON，28 条路由）
 │  │  ├─ dvadmin.py                      前端兼容层（{code,data,msg} 信封 + CORS）
+│  │  ├─ auth.py / captcha.py            令牌鉴权 / 登录验证码
 │  │  ├─ training.py                     train() 入口 + 三个 trainer
 │  │  ├─ inference.py                    推理 + 落库
 │  │  ├─ datasets.py / tabular.py        两套数据源
-│  │  ├─ registry.py                     产物管理（落盘/替换/删除）
-│  │  ├─ db.py                           8 张表的读写
+│  │  ├─ registry.py                     产物管理（落盘/替换/删除 + 旧版本归档）
+│  │  ├─ exporter.py                     模型发布包（打包/查看/删除 zip）
+│  │  ├─ db.py                           11 张表的读写
+│  │  ├─ web.py                          生产模式下托管前端 SPA
 │  │  └─ figures.py / config.py
+│  ├─ serve.py                           生产入口（waitress，默认 0.0.0.0:8080）
 │  ├─ 1DCNN\  cwt_cnn\  adtk\            原始算法脚本 + vendored adtk 库
 │  ├─ data\models\<模型>\                ★ 模型产物（一个模型一份，无版本号）
 │  ├─ data\datasets\<数据集>\            ★ 上传的表格数据集
-│  ├─ data\{figures,logs,uploads}\       图 / 训练日志 / 上传文件
-│  ├─ sql\schema_mysql.sql               建表脚本
-│  ├─ db.env.example                     数据库配置模板（db.env 已在 .gitignore）
+│  ├─ data\{figures,logs,uploads,exports}\  图 / 日志 / 上传 / 发布包
+│  ├─ sql\{schema_mysql,auth-migration}.sql 建表 / 老库补鉴权表
+│  ├─ db.env.example                     数据库配置模板（db.env* 已在 .gitignore）
 │  └─ _selftest_upload.py                后端自测：模型探测/上传/改名
 ├─ frontend\22project\                   前端（Vue3 + Vite + Element Plus）
 │  └─ src\{views\platform, api\platform, utils\platformRequest.ts}
@@ -217,12 +228,12 @@ D:\22project\
 
 ## 接口与数据库
 
-**业务接口**（裸 JSON，20+ 个）：`/health` `/models` `/models/upload` `/models/<名>/overview` `/datasets`
+**业务接口**（裸 JSON，**28 条**，权威清单见登录后的 `GET /api`）：`/health` `/models` `/models/upload` `/models/<名>/overview` `/datasets`
 `/datasets/upload` `/train` `/trainings` `/predict` `/inference-tasks` `/figures` `/system` …
 
-**兼容接口**（`{code,data,msg}` 信封）：登录、菜单、用户信息、字典、设置、部门、SSE 桩等 —— 只为让 dvadmin 前端跑起来。
+**兼容接口**（`{code,data,msg}` 信封）：登录、菜单、用户信息、用户管理、操作日志、字典、设置、部门、SSE 桩等 —— 只为让 dvadmin 前端跑起来。
 
-**MySQL 8 张表**：`Datasets` → `Models` → `Trainings` / `ModelDeployments` / `InferenceTasks` → `InferenceResults`，
+**MySQL 11 张表**（8 张业务 + 3 张鉴权，14 条外键）：`Datasets` → `Models` → `Trainings` / `ModelDeployments` / `InferenceTasks` → `InferenceResults`，
 外键顺序严格（训练写库失败会降级但显式回报，绝不静默）。
 
 完整的接口清单、字段表、外键关系见 [`项目交接文档.md`](项目交接文档.md) §3–§5。
@@ -260,7 +271,7 @@ cd D:\22project\testRestfulProject; venv\Scripts\python.exe _selftest_upload.py
 
 | 文档 | 内容 |
 |---|---|
-| [`项目交接文档.md`](项目交接文档.md) | 上手第一份：环境、接口清单、8 张表、磁盘布局、14+ 条踩坑记录、遗留问题、命令速查 |
+| [`项目交接文档.md`](项目交接文档.md) | 上手第一份：环境、接口清单、11 张表、磁盘布局、14+ 条踩坑记录、遗留问题、命令速查 |
 | [`项目技术详解.md`](项目技术详解.md) | 数据集格式细节、训练/推理/训练记录/推理任务四个模块逐步拆解、**30 条 Bug 台账**（位置 + 原因 + 修法 + 实测数据）、可读性改进清单 |
 | [`testRestfulProject/model_service/README.md`](testRestfulProject/model_service/README.md) | 后端业务包：接口约定、产物约定、与原始脚本的关系 |
 
