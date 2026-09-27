@@ -5,6 +5,16 @@
 			<el-scrollbar class="flex-auto" ref="layoutAsideScrollbarRef" @mouseenter="onAsideEnterLeave(true)" @mouseleave="onAsideEnterLeave(false)">
 				<Vertical :menuList="state.menuList" />
 			</el-scrollbar>
+			<!-- 左下角：退出登录。
+			     ⚠️ 放在滚动区**外面**：菜单再长它也不会被顶走，始终钉在侧边栏底部。 -->
+			<div class="aside-logout" v-if="showAsideLogout">
+				<el-tooltip content="退出登录" placement="right" :disabled="!isCollapse">
+					<el-button text class="aside-logout-btn" :class="{ 'is-collapse': isCollapse }" @click="onLogout">
+						<SvgIcon name="ele-SwitchButton" :size="16" />
+						<span class="aside-logout-text" v-show="!isCollapse">退出登录</span>
+					</el-button>
+				</el-tooltip>
+			</div>
 		</el-aside>
 	</div>
 </template>
@@ -18,6 +28,7 @@ import { useThemeConfig } from '/@/stores/themeConfig';
 import { useTagsViewRoutes } from '/@/stores/tagsViewRoutes';
 import mittBus from '/@/utils/mitt';
 import { useRoute } from 'vue-router';
+import { doLogout } from '/@/utils/logout';
 const route = useRoute();
 // 引入组件
 const Logo = defineAsyncComponent(() => import('/@/layout/logo/index.vue'));
@@ -74,6 +85,16 @@ const setShowLogo = computed(() => {
 	let { layout, isShowLogo } = themeConfig.value;
 	return (isShowLogo && layout === 'defaults') || (isShowLogo && layout === 'columns');
 });
+// 当前是否处于收起状态（收起时左下角按钮只留图标）
+const isCollapse = computed(() => !!themeConfig.value.isCollapse);
+// 是否渲染左下角的退出按钮。
+// ⚠️ columns 布局收起时 el-aside 只有 **1px**（一级菜单在那条窄栏里，这个 aside 只放二级菜单），
+//    此时按钮既看不见也点不到，干脆不渲染 —— 免得留一个能撑高布局、还可能引出滚动条的元素。
+const showAsideLogout = computed(
+	() => !(themeConfig.value.layout === 'columns' && themeConfig.value.isCollapse)
+);
+// 退出登录：确认框、通知服务端、清本地令牌、整页回登录页，都在 utils/logout.ts 里
+const onLogout = () => doLogout();
 // 关闭移动端蒙版
 const closeLayoutAsideMobileMode = () => {
 	const el = document.querySelector('.layout-aside-mobile-mode');
@@ -181,3 +202,40 @@ watch(
 	}
 );
 </script>
+
+<style scoped lang="scss">
+/* 侧边栏左下角的退出登录。
+   ⚠️ 颜色**全部走主题变量**（`--next-bg-menuBar*`），不要写死 Element Plus 的浅色变量：
+      菜单栏的颜色可以在「布局设置」里被改成深色/渐变（见 stores/themeConfig 的 menuBar），
+      写死浅色的话深色菜单下这个按钮会突兀地亮一块。
+      `--next-bg-menuBarActiveColor` 是个半透明叠加色，正好当 hover 底色和分隔线用，
+      在浅色和深色菜单栏上都成立。 */
+.aside-logout {
+	flex: 0 0 auto; // 不被上面的滚动区挤扁，钉在底部
+	padding: 8px;
+	border-top: 1px solid var(--next-bg-menuBarActiveColor);
+	user-select: none;
+}
+.aside-logout-btn {
+	width: 100%;
+	height: 38px;
+	justify-content: flex-start;
+	gap: 10px;
+	padding: 0 12px;
+	color: var(--next-bg-menuBarColor);
+	--el-button-text-color: var(--next-bg-menuBarColor);
+	--el-button-hover-text-color: var(--next-bg-menuBarColor);
+	--el-button-hover-bg-color: var(--next-bg-menuBarActiveColor);
+	--el-button-active-bg-color: var(--next-bg-menuBarActiveColor);
+
+	// 收起状态（64px）只显示图标：居中，别让图标贴着左边
+	&.is-collapse {
+		justify-content: center;
+		padding: 0;
+	}
+}
+// 收起时藏掉文字（v-show 已经控制渲染，这里再兜一层，避免宽度抖动时露出来）
+.aside-logout-btn.is-collapse .aside-logout-text {
+	display: none;
+}
+</style>

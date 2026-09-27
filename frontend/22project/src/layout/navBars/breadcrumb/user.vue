@@ -117,7 +117,7 @@
 <script setup lang="ts" name="layoutBreadcrumbUser">
 import { defineAsyncComponent, ref, computed, reactive, onMounted, unref, watch } from 'vue';
 import { useRouter } from 'vue-router';
-import { ElMessageBox, ElMessage } from 'element-plus';
+import { ElMessage } from 'element-plus';
 import screenfull from 'screenfull';
 import { useI18n } from 'vue-i18n';
 import { storeToRefs } from 'pinia';
@@ -126,6 +126,7 @@ import { useThemeConfig } from '/@/stores/themeConfig';
 import other from '/@/utils/other';
 import mittBus from '/@/utils/mitt';
 import { Session, Local } from '/@/utils/storage';
+import { doLogout } from '/@/utils/logout';
 import headerImage from '/@/assets/img/headerImage.png';
 import { InfoFilled } from '@element-plus/icons-vue';
 import { updateUserInfo, changePassword } from '/@/api/system/user';
@@ -134,7 +135,9 @@ import { updateUserInfo, changePassword } from '/@/api/system/user';
 const Search = defineAsyncComponent(() => import('/@/layout/navBars/breadcrumb/search.vue'));
 
 // 定义变量内容
-const { locale, t } = useI18n();
+// ⚠️ 这里原来还解构了 `t`，退出登录那段文案改由 utils/logout 统一处理后，脚本里已不再用它
+//    （模板用的是全局 `$t`），留着就是个死变量。
+const { locale } = useI18n();
 const router = useRouter();
 const stores = useUserInfo();
 const storesThemeConfig = useThemeConfig();
@@ -175,37 +178,11 @@ const onLayoutSetingClick = () => {
 };
 // 下拉菜单点击时
 const onHandleCommandClick = (path: string) => {
-	if (path === 'logOut') {		ElMessageBox({
-			closeOnClickModal: false,
-			closeOnPressEscape: false,
-			title: t('message.user.logOutTitle'),
-			message: t('message.user.logOutMessage'),
-			showCancelButton: true,
-			confirmButtonText: t('message.user.logOutConfirm'),
-			cancelButtonText: t('message.user.logOutCancel'),
-			buttonSize: 'default',
-			beforeClose: (action, instance, done) => {
-				if (action === 'confirm') {
-					instance.confirmButtonLoading = true;
-					instance.confirmButtonText = t('message.user.logOutExit');
-					setTimeout(() => {
-						done();
-						setTimeout(() => {
-							instance.confirmButtonLoading = false;
-						}, 300);
-					}, 700);
-				} else {
-					done();
-				}
-			},
-		})
-			.then(async () => {
-				// 清除缓存/token等
-				Session.clear();
-				// 使用 reload 时，不需要调用 resetRoute() 重置路由
-				window.location.reload();
-			})
-			.catch(() => {});
+	if (path === 'logOut') {
+		// 退出逻辑（确认框 → 通知服务端记一条日志 → 清本地令牌 → 整页回登录页）
+		// 抽到 `/@/utils/logout` 里，因为侧边栏左下角那个按钮要用**同一份**实现：
+		// 两处各写一遍的话，早晚出现"一处清了缓存、另一处忘了"的不一致。
+		doLogout();
 	} else if (path === 'wareHouse') {
 		window.open('https://gitee.com/huge-dream/django-vue3-admin');
 	} else if (path === 'profile') {
