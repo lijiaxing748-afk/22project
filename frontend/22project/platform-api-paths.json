@@ -24,5 +24,11 @@
  "/figures",
  "/system/logs",
  "/system/logs/<x>",
- "/system/maintenance"
+ "/system/maintenance",
+ "/api/system/user/",
+ "/api/system/role/",
+ "/api/system/user/create/",
+ "/api/system/user/<x>/",
+ "/api/system/user/<x>/reset_password/",
+ "/api/system/operation_log/"
 ]
