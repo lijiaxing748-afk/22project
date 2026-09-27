@@ -12,20 +12,27 @@
 
 		<el-row :gutter="16" class="mt">
 			<el-col :xs="24" :md="12">
+				<!-- 原「服务与数据库」卡片 → 改为项目说明文档入口。
+				     服务/库的实时状态仍然可见：上面四张 KPI 卡就读自同一个 /health。 -->
 				<el-card shadow="never">
-					<template #header><span>服务与数据库</span></template>
-					<el-descriptions :column="1" border size="small">
-						<el-descriptions-item label="服务状态">
-							<el-tag :type="health.service === 'ok' ? 'success' : 'danger'" size="small">{{ health.service || '未知' }}</el-tag>
-						</el-descriptions-item>
-						<el-descriptions-item label="数据库">{{ db.dialect || '—' }}（{{ db.ok ? '已连接' : '不可用' }}）</el-descriptions-item>
-						<el-descriptions-item label="连接目标">{{ db.target || '—' }}</el-descriptions-item>
-						<el-descriptions-item label="表行数">
-							<el-tag v-for="(v, k) in db.counts || {}" :key="k" size="small" class="tag-gap">{{ k }}: {{ v }}</el-tag>
-						</el-descriptions-item>
-						<el-descriptions-item label="模型产物">{{ artifacts.length }} 个模型</el-descriptions-item>
-						<el-descriptions-item label="出图目录">{{ health.figures?.dir || '—' }}</el-descriptions-item>
-					</el-descriptions>
+					<template #header>
+						<span>项目说明文档</span>
+						<el-tag size="small" type="info" style="margin-left: 8px">离线可看</el-tag>
+					</template>
+					<p class="doc-lede">
+						一页讲清这套平台：系统架构、三个模型的指标与超参、两套数据集、
+						训练 → 产物 → 推理 → 落库 → 展示的完整链路、11 张表、28 条接口、
+						角色权限、启动部署方式，以及当前已知限制。
+					</p>
+					<div class="doc-jump">
+						<el-button link type="primary" @click="openDocs('#arch')">系统架构</el-button>
+						<el-button link type="primary" @click="openDocs('#models')">三个模型</el-button>
+						<el-button link type="primary" @click="openDocs('#flow')">完整链路</el-button>
+						<el-button link type="primary" @click="openDocs('#api')">接口一览</el-button>
+						<el-button link type="primary" @click="openDocs('#deploy')">启动部署</el-button>
+						<el-button link type="primary" @click="openDocs('#limits')">已知限制</el-button>
+					</div>
+					<el-button type="primary" class="doc-open" @click="openDocs()">打开说明文档 →</el-button>
 				</el-card>
 			</el-col>
 			<el-col :xs="24" :md="12">
@@ -114,6 +121,24 @@ const kpis = computed(() => [
 
 const go = (path: string, tab?: string) => router.push({ path, query: tab ? { tab } : {} });
 
+/**
+ * 打开项目说明文档（新标签页）。
+ *
+ * ⚠️ 文档是 `frontend/22project/public/docs.html` 这份**静态单文件**：
+ *    Vite 会把 public/ 原样拷到 dist/，而后端 web.py 的 SPA 兜底（`/<path:path>`）
+ *    也是"真实存在的文件优先"，所以**开发模式与单端口生产都能直接打开**，
+ *    不需要后端加路由、也不需要注册菜单。
+ *    它自带样式、不引任何 CDN 或外部字体，可以拷到不能上网的实验室机器直接看。
+ *
+ * ⚠️ 用 `window.location.origin` 拼绝对地址，**不能**用相对路径：
+ *    当前地址是 `/platform/home`，`./docs.html` 会被解析成 `/platform/docs.html`（不存在）。
+ *    本项目各 .env 都把前端挂在根路径下，所以 origin + /docs.html 是对的；
+ *    若将来要部署到子路径，这里得跟着改成对应的 base。
+ */
+const openDocs = (hash = '') => {
+	window.open(`${window.location.origin}/docs.html${hash}`, '_blank', 'noopener');
+};
+
 const load = async () => {
 	const [h, m, t, k] = await Promise.all([
 		platformApi.health(),
@@ -140,4 +165,14 @@ onMounted(load);
 .quick .el-button { margin: 0 8px 8px 0; }
 .hint { font-size: 12px; color: var(--el-text-color-secondary); }
 .tag-gap { margin: 0 6px 6px 0; }
+/* ---- 项目说明文档卡片 ---- */
+.doc-lede {
+	font-size: 13px;
+	line-height: 1.8;
+	color: var(--el-text-color-regular);
+	margin: 0 0 10px;
+}
+.doc-jump { margin: 0 0 4px; }
+.doc-jump .el-button { margin: 0 10px 6px 0; }
+.doc-open { margin-top: 6px; }
 </style>

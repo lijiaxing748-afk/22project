@@ -1,0 +1,987 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>东风设备轴承故障诊断模型管理平台 · 项目说明</title>
+<!--
+  ⚠️ 本页是**完全自包含**的单文件文档：不引 CDN、不引外部字体、不引外部图片。
+     原因是这套系统要部署到**不能上网的实验室电脑**（离线部署包），
+     任何外链都会在那里变成空白或转圈。
+     字体只声明系统字体栈，图表全部用 CSS 画。
+-->
+<style>
+:root{
+  /* ---- 颜色令牌（暖色纸质底 + 单一强调色，避免纯白与蓝紫）---- */
+  --bg-base:#ECE9E0;
+  --surface:#FBFAF6;
+  --surface-2:#F4F1E8;
+  --line:#DCD6C8;
+  --line-strong:#C8C0AD;
+  --text:#141413;
+  --text-2:#6B6860;
+  --text-3:#8A8579;
+  --accent:#D97757;
+  --accent-soft:#F6E4DC;
+  --error:#C0453A;
+  --error-soft:#F7E1DE;
+  --ok:#3F7A55;
+  --ok-soft:#E2EEE6;
+  --info:#4A6B8A;
+  --info-soft:#E3EAF1;
+
+  /* ---- 字体：衬线标题 + 无衬线正文（离线安全，只用系统字体）---- */
+  --font-display:Georgia,"Times New Roman","Songti SC","SimSun",serif;
+  --font-body:-apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei","PingFang SC","Hiragino Sans GB",sans-serif;
+  --font-mono:"Cascadia Mono",Consolas,"Courier New",Monaco,monospace;
+
+  /* ---- 间距（4px 网格）---- */
+  --sp-2:8px; --sp-3:12px; --sp-4:16px; --sp-5:20px;
+  --sp-6:24px; --sp-8:32px; --sp-10:40px; --sp-12:48px;
+
+  --radius:10px;
+  --sidebar-w:264px;
+  --shadow:0 1px 2px rgba(20,20,19,.05),0 8px 24px -12px rgba(20,20,19,.14);
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+@media (prefers-reduced-motion:reduce){html{scroll-behavior:auto}*{animation:none!important;transition:none!important}}
+body{
+  margin:0;background:var(--bg-base);color:var(--text);
+  font-family:var(--font-body);font-size:15px;line-height:1.8;
+  -webkit-font-smoothing:antialiased;
+}
+a{color:var(--accent);text-decoration:none;border-bottom:1px solid transparent}
+a:hover{border-bottom-color:var(--accent)}
+code{font-family:var(--font-mono);font-size:.88em;background:var(--surface-2);
+  border:1px solid var(--line);border-radius:4px;padding:1px 5px;white-space:nowrap}
+pre{font-family:var(--font-mono);font-size:13px;line-height:1.7;background:#20201E;color:#EDEAE2;
+  border-radius:var(--radius);padding:var(--sp-4) var(--sp-5);overflow:auto;margin:var(--sp-4) 0}
+pre code{background:none;border:0;padding:0;color:inherit;white-space:pre}
+
+/* ============ 布局：左侧目录 + 右侧正文 ============ */
+.wrap{max-width:1240px;margin:0 auto;padding:0 var(--sp-6);
+  display:grid;grid-template-columns:var(--sidebar-w) minmax(0,1fr);gap:var(--sp-8);align-items:start}
+.toc{position:sticky;top:var(--sp-6);max-height:calc(100vh - 48px);overflow:auto;
+  padding:var(--sp-6) 0;font-size:13.5px}
+.toc-title{font-family:var(--font-display);font-size:15px;color:var(--text-2);
+  letter-spacing:.04em;margin:0 0 var(--sp-4);padding-bottom:var(--sp-3);border-bottom:1px solid var(--line)}
+.toc ol{list-style:none;margin:0;padding:0;counter-reset:t}
+.toc li{margin:1px 0}
+.toc a{display:block;padding:5px 10px;border-radius:6px;color:var(--text-2);
+  border-left:2px solid transparent;border-bottom:0}
+.toc a:hover{background:var(--surface);color:var(--text)}
+.toc a.on{color:var(--accent);background:var(--accent-soft);border-left-color:var(--accent);font-weight:600}
+main{padding:var(--sp-10) 0 var(--sp-12);min-width:0}
+
+/* ============ 封面 ============ */
+.hero{background:var(--surface);border:1px solid var(--line);border-radius:14px;
+  padding:var(--sp-10) var(--sp-8);box-shadow:var(--shadow);position:relative;overflow:hidden}
+.hero::after{content:"";position:absolute;right:-70px;top:-70px;width:220px;height:220px;border-radius:50%;
+  background:var(--accent-soft);opacity:.55}
+.eyebrow{font-family:var(--font-mono);font-size:12px;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--accent);font-weight:600;margin:0 0 var(--sp-3)}
+.hero h1{font-family:var(--font-display);font-size:clamp(26px,4vw,40px);line-height:1.25;
+  margin:0 0 var(--sp-4);letter-spacing:-.01em;position:relative}
+.lede{font-size:16px;color:var(--text-2);max-width:70ch;margin:0;position:relative}
+.chips{display:flex;flex-wrap:wrap;gap:var(--sp-2);margin-top:var(--sp-6);position:relative}
+.chip{font-size:12.5px;font-family:var(--font-mono);background:var(--surface-2);
+  border:1px solid var(--line);border-radius:999px;padding:4px 12px;color:var(--text-2)}
+.chip b{color:var(--text)}
+
+/* ============ 章节 ============ */
+section{margin-top:var(--sp-12);scroll-margin-top:var(--sp-6)}
+h2{font-family:var(--font-display);font-size:25px;line-height:1.3;margin:0 0 var(--sp-3);
+  padding-bottom:var(--sp-3);border-bottom:2px solid var(--line-strong);letter-spacing:-.01em}
+h2 .num{color:var(--accent);font-family:var(--font-mono);font-size:.72em;margin-right:10px;
+  font-weight:700;letter-spacing:.02em}
+h3{font-family:var(--font-display);font-size:18px;margin:var(--sp-8) 0 var(--sp-3)}
+h4{font-size:15px;margin:var(--sp-6) 0 var(--sp-2)}
+p{margin:var(--sp-3) 0}
+ul,ol{margin:var(--sp-3) 0;padding-left:1.5em}
+li{margin:5px 0}
+li::marker{color:var(--text-3)}
+strong{font-weight:650}
+
+/* ============ 表格 ============ */
+.tw{overflow:auto;margin:var(--sp-4) 0;border:1px solid var(--line);border-radius:var(--radius);background:var(--surface)}
+table{border-collapse:collapse;width:100%;font-size:13.5px;min-width:520px}
+th,td{text-align:left;padding:9px 14px;border-bottom:1px solid var(--line);vertical-align:top}
+th{background:var(--surface-2);font-weight:650;font-size:12.5px;color:var(--text-2);
+  letter-spacing:.02em;white-space:nowrap;position:sticky;top:0}
+tbody tr:last-child td{border-bottom:0}
+tbody tr:hover{background:var(--surface-2)}
+td.num,th.num{text-align:right;font-family:var(--font-mono);font-variant-numeric:tabular-nums}
+
+/* ============ 标注块 ============ */
+.note,.warn,.ok-box{border-radius:var(--radius);padding:var(--sp-4) var(--sp-5);margin:var(--sp-5) 0;
+  border:1px solid;font-size:14px}
+.note{background:var(--info-soft);border-color:#C6D4E0}
+.warn{background:var(--error-soft);border-color:#E7C4BF}
+.ok-box{background:var(--ok-soft);border-color:#C3DCCB}
+.note b,.warn b,.ok-box b{display:block;font-family:var(--font-mono);font-size:12px;
+  letter-spacing:.1em;text-transform:uppercase;margin-bottom:6px}
+.note b{color:var(--info)}
+.warn b{color:var(--error)}
+.ok-box b{color:var(--ok)}
+.note p:first-of-type,.warn p:first-of-type,.ok-box p:first-of-type{margin-top:0}
+.note p:last-child,.warn p:last-child,.ok-box p:last-child{margin-bottom:0}
+
+/* ============ 卡牌网格 ============ */
+.grid{display:grid;gap:var(--sp-4);margin:var(--sp-5) 0}
+.g2{grid-template-columns:repeat(auto-fit,minmax(280px,1fr))}
+.g3{grid-template-columns:repeat(auto-fit,minmax(212px,1fr))}
+.card{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);
+  padding:var(--sp-5);box-shadow:var(--shadow)}
+.card h4{margin:0 0 var(--sp-2);font-family:var(--font-display);font-size:16px}
+.card p{margin:0;font-size:13.5px;color:var(--text-2)}
+.card .tag{display:inline-block;font-family:var(--font-mono);font-size:11.5px;color:var(--accent);
+  background:var(--accent-soft);border-radius:4px;padding:1px 7px;margin-bottom:var(--sp-2)}
+
+/* 统计块 */
+.stat{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);padding:var(--sp-4) var(--sp-5)}
+.stat .v{font-family:var(--font-display);font-size:30px;line-height:1.1;font-variant-numeric:tabular-nums}
+.stat .v small{font-size:14px;color:var(--text-2);font-family:var(--font-body);margin-left:4px}
+.stat .k{font-size:12.5px;color:var(--text-2);margin-top:4px}
+
+/* ============ 架构图（纯 CSS，无图片）============ */
+.arch{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);
+  padding:var(--sp-6);margin:var(--sp-5) 0;overflow:auto}
+.arch-row{display:flex;align-items:stretch;justify-content:center;gap:var(--sp-4);flex-wrap:wrap}
+.box{flex:1 1 250px;min-width:210px;background:var(--surface-2);border:1px solid var(--line-strong);
+  border-radius:var(--radius);padding:var(--sp-4)}
+.box .bt{font-family:var(--font-mono);font-size:12px;letter-spacing:.08em;color:var(--accent);
+  text-transform:uppercase;font-weight:600;margin-bottom:6px}
+.box .bn{font-family:var(--font-display);font-size:16px;margin-bottom:6px}
+.box ul{margin:0;padding-left:1.1em;font-size:12.5px;color:var(--text-2);line-height:1.7}
+.arrow{text-align:center;color:var(--text-3);font-size:20px;margin:var(--sp-3) 0;
+  font-family:var(--font-mono);letter-spacing:.2em}
+.arrow span{display:block;font-size:11.5px;letter-spacing:0;color:var(--text-2);margin-top:2px}
+
+/* 流程步骤 */
+.steps{counter-reset:s;margin:var(--sp-5) 0;padding:0;list-style:none}
+.steps>li{counter-increment:s;position:relative;padding:0 0 0 46px;margin:0 0 var(--sp-5)}
+.steps>li::before{content:counter(s);position:absolute;left:0;top:0;width:30px;height:30px;
+  border-radius:50%;background:var(--accent);color:#fff;font-family:var(--font-mono);font-size:14px;
+  font-weight:700;display:flex;align-items:center;justify-content:center}
+.steps>li::after{content:"";position:absolute;left:15px;top:34px;bottom:-18px;width:1px;background:var(--line-strong)}
+.steps>li:last-child::after{display:none}
+.steps .st{font-family:var(--font-display);font-size:16px;display:block;margin-bottom:2px}
+.steps .sd{font-size:13.5px;color:var(--text-2)}
+
+/* 徽标 */
+.badge{display:inline-block;font-size:11.5px;font-family:var(--font-mono);border-radius:4px;
+  padding:1px 7px;border:1px solid;white-space:nowrap}
+.b-ok{color:var(--ok);background:var(--ok-soft);border-color:#C3DCCB}
+.b-warn{color:var(--error);background:var(--error-soft);border-color:#E7C4BF}
+.b-info{color:var(--info);background:var(--info-soft);border-color:#C6D4E0}
+.b-mute{color:var(--text-3);background:var(--surface-2);border-color:var(--line)}
+
+footer{margin-top:var(--sp-12);padding:var(--sp-6) 0 var(--sp-10);border-top:1px solid var(--line);
+  color:var(--text-3);font-size:12.5px}
+
+/* 小屏 */
+@media (max-width:1000px){
+  .wrap{grid-template-columns:1fr;gap:0;padding:0 var(--sp-4)}
+  .toc{position:static;max-height:none;border-bottom:1px solid var(--line);padding-bottom:var(--sp-4)}
+  .toc ol{display:flex;flex-wrap:wrap;gap:2px}
+  .toc a{padding:4px 8px;font-size:12.5px;border-left:0;border-bottom:2px solid transparent}
+  .toc a.on{border-left:0;border-bottom-color:var(--accent)}
+  main{padding-top:var(--sp-6)}
+  .hero{padding:var(--sp-8) var(--sp-5)}
+}
+
+/* 打印：给验收/归档留一份干净的纸质版 */
+@media print{
+  :root{--bg-base:#fff;--surface:#fff;--surface-2:#F6F6F4;--shadow:none}
+  .toc{display:none}
+  .wrap{display:block;max-width:none;padding:0}
+  main{padding:0}
+  .hero{box-shadow:none;border-color:#bbb}
+  pre{background:#F4F4F2;color:#111;border:1px solid #ddd}
+  section{break-inside:avoid;margin-top:28px}
+  table{min-width:0}
+  th{position:static}
+  a{color:inherit;border:0}
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<!-- ==================== 左侧目录 ==================== -->
+<nav class="toc" aria-label="目录">
+  <p class="toc-title">目录</p>
+  <ol id="toc-list">
+    <li><a href="#what">一、这是什么</a></li>
+    <li><a href="#arch">二、系统架构</a></li>
+    <li><a href="#models">三、三个模型</a></li>
+    <li><a href="#data">四、两套数据集</a></li>
+    <li><a href="#flow">五、一条完整链路</a></li>
+    <li><a href="#pages">六、页面功能导览</a></li>
+    <li><a href="#layout">七、目录与磁盘布局</a></li>
+    <li><a href="#db">八、数据库</a></li>
+    <li><a href="#api">九、接口一览</a></li>
+    <li><a href="#auth">十、角色与权限</a></li>
+    <li><a href="#deploy">十一、启动与部署</a></li>
+    <li><a href="#limits">十二、已知限制</a></li>
+  </ol>
+</nav>
+
+<main>
+<!-- ==================== 封面 ==================== -->
+<header class="hero">
+  <p class="eyebrow">Project Handbook</p>
+  <h1>东风设备轴承故障诊断<br>模型管理平台</h1>
+  <p class="lede">
+    把「轴承振动数据 → 训练模型 → 模型产物 → 在线推理 → 落库 → Web 展示」
+    串成一条<strong>能真跑通</strong>的流水线。重点不是单个模型的精度上限，
+    而是这条链路的<strong>完整性</strong>与<strong>可追溯性</strong>：
+    训练出来的模型能推理、推理结果能查到明细、每个模型的参数都能在页面上看到。
+  </p>
+  <div class="chips">
+    <span class="chip">后端 <b>Flask + Flask-RESTful</b></span>
+    <span class="chip">前端 <b>Vue 3 + Vite + Element Plus</b></span>
+    <span class="chip">数据库 <b>MySQL 8/9</b></span>
+    <span class="chip">模型 <b>3 套</b></span>
+    <span class="chip">接口 <b>28 条</b></span>
+    <span class="chip">数据表 <b>11 张</b></span>
+  </div>
+</header>
+
+<!-- ==================== 一 ==================== -->
+<section id="what">
+  <h2><span class="num">01</span>这是什么</h2>
+  <p>
+    一套面向<strong>实验室 / 工厂内网</strong>的模型管理平台。它解决的问题是：训练脚本跑完就把模型丢在内存里，
+    仓库里没有权重文件、没有推理入口、数据库里一张表都没被写过——那条件链是<strong>断的</strong>。
+    本平台把断点补上，并且保证每一环都能被验证。
+  </p>
+
+  <div class="grid g2">
+    <div class="card">
+      <span class="tag">核心能力</span>
+      <h4>训练与产物管理</h4>
+      <p>三个模型可选；产物扁平化落盘（一个模型一份，重训即替换），可上传、改名、删除、下载。</p>
+    </div>
+    <div class="card">
+      <span class="tag">核心能力</span>
+      <h4>推理与审计</h4>
+      <p>按窗口推理，输出类别+置信度或无监督异常分数；每次训练/推理都落库，<strong>失败路径也留记录</strong>。</p>
+    </div>
+    <div class="card">
+      <span class="tag">核心能力</span>
+      <h4>模型发布</h4>
+      <p>把产物打成 zip 发布包（含 meta、README、requirements、可跑示例），下载给外部机器用。</p>
+    </div>
+    <div class="card">
+      <span class="tag">核心能力</span>
+      <h4>展示与运维</h4>
+      <p>波形/频谱/混淆矩阵/训练曲线可视化；库表登记、日志查看、接口索引、运行环境体检。</p>
+    </div>
+  </div>
+
+  <div class="grid g3" style="margin-top:var(--sp-6)">
+    <div class="stat"><div class="v">3<small>套</small></div><div class="k">可训练模型（2 分类 + 1 无监督）</div></div>
+    <div class="stat"><div class="v">10<small>类</small></div><div class="k">CWRU 轴承故障类别</div></div>
+    <div class="stat"><div class="v">28<small>条</small></div><div class="k">业务接口（另有兼容层 29 条）</div></div>
+    <div class="stat"><div class="v">11<small>张</small></div><div class="k">MySQL 表（14 条外键）</div></div>
+  </div>
+</section>
+
+<!-- ==================== 二 ==================== -->
+<section id="arch">
+  <h2><span class="num">02</span>系统架构</h2>
+
+  <div class="arch">
+    <div class="arch-row">
+      <div class="box">
+        <div class="bt">Frontend</div>
+        <div class="bn">Vue 3 单页应用</div>
+        <ul>
+          <li>Vite 构建，Element Plus 组件库</li>
+          <li>开发端口 8080</li>
+          <li>专用 axios 实例 <code>platformRequest</code></li>
+        </ul>
+      </div>
+      <div class="box">
+        <div class="bt">Backend</div>
+        <div class="bn">Flask + Flask-RESTful</div>
+        <ul>
+          <li>业务接口返回<strong>裸 JSON</strong></li>
+          <li>另有 dvadmin 兼容层（信封）</li>
+          <li>开发端口 5000 / 生产 8080</li>
+        </ul>
+      </div>
+      <div class="box">
+        <div class="bt">Storage</div>
+        <div class="bn">MySQL + 文件系统</div>
+        <ul>
+          <li>库只存索引与元数据</li>
+          <li>模型/图/日志/上传件落磁盘</li>
+        </ul>
+      </div>
+    </div>
+    <div class="arrow">▼ <span>HTTP / JSON</span></div>
+    <div class="arch-row">
+      <div class="box">
+        <div class="bt">Artifacts</div>
+        <div class="bn">data/models/&lt;模型名&gt;/</div>
+        <ul>
+          <li><code>model.keras</code> / <code>model.pt</code> / <code>detector.pkl</code></li>
+          <li><code>scaler.npz</code>（推理必须复用）</li>
+          <li><code>meta.json</code>（超参 / 指标 / 类别表 / 混淆矩阵）</li>
+        </ul>
+      </div>
+      <div class="box">
+        <div class="bt">Exports</div>
+        <div class="bn">data/exports/&lt;模型名&gt;/*.zip</div>
+        <ul>
+          <li>发布包：权重 + meta + README + 示例脚本</li>
+          <li>库里 <code>ModelDeployments</code> 留发布流水</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+
+  <h3>为什么要两层接口</h3>
+  <p>
+    前端基于 <a href="https://github.com/dvadmin/django-vue3-admin" target="_blank" rel="noopener">django-vue3-admin</a>
+    模板，它的 axios 拦截器<strong>强制校验 <code>{code, data, msg}</code> 信封</strong>；
+    而业务接口按 REST 惯例返回裸 JSON。硬拧在一起会出现
+    「页面能开但所有数据为空，控制台报 <code>非标准返回</code>」。
+  </p>
+  <p>
+    于是分成两层，互不污染：
+  </p>
+  <ul>
+    <li><code>model_service/api.py</code> —— 业务接口，裸 JSON（<code>/models</code>、<code>/train</code>、<code>/predict</code> …）</li>
+    <li><code>model_service/dvadmin.py</code> —— 兼容接口，带信封（登录、动态菜单、用户管理、操作日志…）</li>
+    <li><code>utils/platformRequest.ts</code> —— 前端里那个<strong>不走信封校验</strong>的 axios 实例</li>
+  </ul>
+
+  <div class="note">
+    <b>路由注册顺序有讲究</b>
+    <p>
+      <code>main.py</code> 里顺序是：兼容层 → 业务接口 → 前端托管。
+      最后那个 SPA 兜底 <code>/&lt;path:path&gt;</code> 是无差别匹配，注册早了会把
+      <code>/health</code>、<code>/models</code> 一起吃掉、统一返回 <code>index.html</code>。
+      Flask 按注册顺序匹配，所以<strong>最后注册 = 优先级最低</strong>。
+    </p>
+  </div>
+</section>
+
+<!-- ==================== 三 ==================== -->
+<section id="models">
+  <h2><span class="num">03</span>三个模型</h2>
+  <p>三套模型共用同一套「训练 → 产物 → 推理」接口，差别在框架与监督方式。</p>
+
+  <div class="tw">
+    <table>
+      <thead>
+        <tr>
+          <th>模型</th><th>类型</th><th>框架</th><th>产物</th>
+          <th class="num">参数量</th><th class="num">测试准确率</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><code>1DCNN</code></td>
+          <td>分类（10 类）</td>
+          <td>TensorFlow / Keras</td>
+          <td><code>model.keras</code> + <code>scaler.npz</code></td>
+          <td class="num">102,018</td>
+          <td class="num"><strong>0.9457</strong></td>
+        </tr>
+        <tr>
+          <td><code>cwt_cnn</code></td>
+          <td>分类（同任务，另一实现）</td>
+          <td>PyTorch</td>
+          <td><code>model.pt</code> + <code>scaler.npz</code></td>
+          <td class="num">101,146</td>
+          <td class="num">0.6680</td>
+        </tr>
+        <tr>
+          <td><code>adtk</code></td>
+          <td><strong>无监督</strong>异常检测</td>
+          <td>adtk（PcaAD）</td>
+          <td><code>detector.pkl</code></td>
+          <td class="num">—</td>
+          <td class="num">不适用</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>训练超参（取自产物 <code>meta.json</code>）</h3>
+  <div class="tw">
+    <table>
+      <thead>
+        <tr><th>参数</th><th class="num">1DCNN</th><th class="num">cwt_cnn</th><th>说明</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>窗口长度 length</td><td class="num">784</td><td class="num">784</td><td>每个样本的点数</td></tr>
+        <tr><td>窗口数 number</td><td class="num">600</td><td class="num">300</td><td>切出的样本总量</td></tr>
+        <tr><td>步长 stride</td><td class="num">150</td><td class="num">150</td><td>相邻窗口不重叠不了</td></tr>
+        <tr><td>轮次 epochs</td><td class="num">10</td><td class="num">50</td><td>—</td></tr>
+        <tr><td>批大小 batch_size</td><td class="num">128</td><td class="num">0</td><td><code>0</code> = 全批量训练</td></tr>
+        <tr><td>划分 rate</td><td class="num">0.7 / 0.15 / 0.15</td><td class="num">0.5 / 0.25 / 0.25</td><td>训练 / 验证 / 测试</td></tr>
+        <tr><td>随机种子 seed</td><td class="num">42</td><td class="num">42</td><td>同参数可复现</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>adtk 这条最容易踩坑</h3>
+  <p>
+    <code>PcaAD</code> 内部是 <code>PcaReconstructionError(k)</code> + <code>InterQuartileRangeAD(c)</code>，
+    它把 <strong>DataFrame 的每一行</strong>当成高维空间里的一个点。所以必须喂
+    「<strong>行 = 一个窗口</strong>」的矩阵；如果按「采样点 × 1 列」喂，PCA 会退化成 1 维、
+    重构误差恒为 0，判出来的"异常"与故障完全无关。
+  </p>
+  <p>当前产物的标定参数（取自 <code>meta.json</code> / <code>detector.pkl</code>）：</p>
+  <div class="tw">
+    <table>
+      <thead><tr><th>项</th><th class="num">值</th></tr></thead>
+      <tbody>
+        <tr><td>窗口步长 stride</td><td class="num">150</td></tr>
+        <tr><td>基线窗口数</td><td class="num">600</td></tr>
+        <tr><td>拟合 / 标定窗口</td><td class="num">420 / 180</td></tr>
+        <tr><td>判定阈值 threshold</td><td class="num">0.001588</td></tr>
+        <tr><td>基线误报率</td><td class="num">0.0</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="note">
+    <b>指标口径</b>
+    <p>
+      adtk 是<strong>无监督</strong>模型，没有测试集准确率；推理返回
+      <code>IsAnomaly</code> + <code>AnomalyScore</code>。表格里只列可核验的产物字段，
+      项目文档中另有一些早期手工测算的数值（如连续分数 AUC）<strong>未入库、无复现脚本</strong>，
+      本页不作为结论引用。
+    </p>
+  </div>
+</section>
+
+<!-- ==================== 四 ==================== -->
+<section id="data">
+  <h2><span class="num">04</span>两套数据集</h2>
+
+  <div class="tw">
+    <table>
+      <thead><tr><th>数据集</th><th>位置</th><th>格式</th><th>约定</th></tr></thead>
+      <tbody>
+        <tr>
+          <td><strong>CWRU 0HP</strong>（内置只读）</td>
+          <td><code>testRestfulProject/1DCNN/0HP/*.mat</code></td>
+          <td>MATLAB <code>.mat</code></td>
+          <td>取 <strong>DE（驱动端）</strong>通道，48 kHz；<strong>一个文件 = 一个类别</strong>，10 个文件 10 类</td>
+        </tr>
+        <tr>
+          <td><strong>表格数据集</strong>（可上传）</td>
+          <td><code>testRestfulProject/data/datasets/&lt;数据集名&gt;/</code></td>
+          <td><code>.csv .txt .xlsx .xlsm .xls</code></td>
+          <td><strong>一个文件 = 一个类别，文件名即标签</strong>；表内自动挑信号列（会跳过"时间""温度"等干扰列）</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>CWRU 10 类清单</h3>
+  <div class="tw">
+    <table>
+      <thead><tr><th class="num">class_id</th><th>文件</th><th>标签</th></tr></thead>
+      <tbody>
+        <tr><td class="num">0–2</td><td><code>48k_Drive_End_B007/B014/B021_0_*.mat</code></td><td>滚动体故障 0.007 / 0.014 / 0.021 in</td></tr>
+        <tr><td class="num">3–5</td><td><code>48k_Drive_End_IR007/IR014/IR021_0_*.mat</code></td><td>内圈故障 0.007 / 0.014 / 0.021 in</td></tr>
+        <tr><td class="num">6–8</td><td><code>48k_Drive_End_OR007@6/OR014@6/OR021@6_0_*.mat</code></td><td>外圈故障 @6 点钟</td></tr>
+        <tr><td class="num">9</td><td><code>normal_0_97.mat</code></td><td>正常</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="warn">
+    <b>IR014 点数不足（数据本身的问题，不是 Bug）</b>
+    <p>
+      <code>IR014</code> 只有 <strong>63,788</strong> 点（其它文件约 24 万点），
+      而默认参数（<code>length=784, number=600, stride=150</code>）需要切到 91,418 点。
+      于是该类的<strong>180 个测试窗全部越界被跳过</strong>，这一类<strong>不参与指标计算</strong>
+      ——产物 <code>metrics.untested_labels</code> 里会显式列出来（当前值为「内圈故障-0.014in」）。
+      如果不看这个字段，<code>accuracy</code> 会显得比实际好。
+    </p>
+  </div>
+
+  <div class="note">
+    <b>切窗策略是"拒绝"而不是"补 NaN"</b>
+    <p>
+      原始脚本会把越界切片补成整行 <span class="badge b-warn">NaN</span>，
+      服务侧改成<strong>拒绝并回报</strong>（<code>strict=true</code>），
+      越界窗口数会记进训练的 <code>Remark</code>。
+    </p>
+  </div>
+</section>
+
+<!-- ==================== 五 ==================== -->
+<section id="flow">
+  <h2><span class="num">05</span>一条完整链路</h2>
+  <p>下面这五步对应平台的核心闭环，每一环都会落库。</p>
+
+  <ol class="steps">
+    <li>
+      <span class="st">选模型与数据集，发起训练</span>
+      <span class="sd">
+        「模型管理 → 训练」填写模型、数据源目录、轮次等，或直接 <code>POST /train</code>。
+        后端按 <code>数据集 → 特征窗口 → 标准化 → 训练 → 评估 → 出图</code> 走完，
+        写一条 <code>Trainings</code>（<strong>失败也写一行</strong>），并产出训练曲线/混淆矩阵/每类指标图。
+        <br><span class="badge b-warn">注意</span> <code>/train</code> 是同步阻塞的，本项目<strong>不做排队</strong>。
+      </span>
+    </li>
+    <li>
+      <span class="st">产物落盘（一个模型一份）</span>
+      <span class="sd">
+        写到 <code>data/models/&lt;模型名&gt;/</code>：权重 + <code>scaler.npz</code> + <code>meta.json</code>。
+        <strong>没有版本号</strong>——重训/重传就是直接替换那一份，旧版本会被搬到
+        <code>data/archive/model_versions/</code> 留底（该目录不入库）。
+        这样"模型产物"和"训练记录"是两件事，不会越滚越多。
+      </span>
+    </li>
+    <li>
+      <span class="st">推理</span>
+      <span class="sd">
+        「模型管理 → 推理」选一个 <code>.mat</code>/表格文件与窗口区间，<code>POST /predict</code>。
+        分类模型给「类别 + 置信度」，adtk 给「是否异常 + 异常分数」。
+        推理会自动出图（预测分布、预测波形），并写 <code>InferenceTasks</code> +
+        每个样本一行 <code>InferenceResults</code> + 一条 <code>ModelInvocations</code>。
+      </span>
+    </li>
+    <li>
+      <span class="st">发布成包，拿给别的机器</span>
+      <span class="sd">
+        「模型发布」把产物打成 zip：权重 + <code>meta.json</code>（输入/输出约定）+
+        <code>README.md</code> + <code>requirements.txt</code> + <code>example_infer.py</code>。
+        zip 落在 <code>data/exports/&lt;模型名&gt;/</code>，库里 <code>ModelDeployments</code> 记一条发布流水。
+        <br><span class="badge b-info">语义</span> 删除发布包<strong>只删磁盘 zip</strong>，
+        库记录保留并标成「已删除」——包没了，但"曾经发布过 v1"是历史事实，删记录会断审计链。
+      </span>
+    </li>
+    <li>
+      <span class="st">回到页面上看</span>
+      <span class="sd">
+        首页汇总统计与最近活动；「数据展示」看波形/频谱/图库；「系统管理」看运行环境、11 张表行数、
+        日志与接口索引。每一步都可在页面上追溯到明细。
+      </span>
+    </li>
+  </ol>
+
+  <div class="ok-box">
+    <b>贯穿全链的设计原则</b>
+    <p>
+      <strong>绝不静默</strong>：训练写库失败会降级但显式回报；越界窗口拒绝并计数；
+      响应里的本机绝对路径统一脱敏；未捕获异常连完整 traceback 一起落盘到
+      <code>data/logs/error-YYYYMMDD.log</code>。
+    </p>
+  </div>
+</section>
+
+<!-- ==================== 六 ==================== -->
+<section id="pages">
+  <h2><span class="num">06</span>页面功能导览</h2>
+  <p>侧边栏由后端 <code>GET /api/system/menu/web_router/</code> 下发，共 <strong>7 个模块</strong>，后两个按角色隐藏。</p>
+
+  <div class="grid g2">
+    <div class="card">
+      <span class="tag">/platform/home</span>
+      <h4>首页</h4>
+      <p>平台概览：模型/训练/推理统计、健康检查、项目说明文档入口、最近训练与推理任务。</p>
+    </div>
+    <div class="card">
+      <span class="tag">/platform/model</span>
+      <h4>模型管理</h4>
+      <p>模型清单（登记信息 + 产物参数 + 指标）、上传模型、训练、推理、训练记录、推理任务与结果明细、模型档案、改名、删除产物、发布与删除发布包。</p>
+    </div>
+    <div class="card">
+      <span class="tag">/platform/dataset</span>
+      <h4>数据集管理</h4>
+      <p>CWRU 内置数据集体检、表格数据集上传（一文件一类别）、信号列预览与统计、库表登记。</p>
+    </div>
+    <div class="card">
+      <span class="tag">/platform/visual</span>
+      <h4>数据展示</h4>
+      <p>波形/频谱等可视化，以及训练与推理自动生成的图（混淆矩阵、训练曲线、异常时序）。</p>
+    </div>
+    <div class="card">
+      <span class="tag">/platform/publish</span>
+      <h4>模型发布</h4>
+      <p>按模型汇总已发布的包：磁盘上实际存在的 zip 可直接下载、查看包内目录结构、删除；下方是含已删除留痕的发布流水。</p>
+    </div>
+    <div class="card">
+      <span class="tag">/platform/system</span>
+      <h4>系统管理</h4>
+      <p>运行环境与依赖、11 张表行数、日志查看、接口索引、维护（清空图库 / 删除模型产物）。</p>
+    </div>
+    <div class="card">
+      <span class="tag">/platform/user · 仅 admin</span>
+      <h4>用户管理</h4>
+      <p>新建用户、重置口令、启停用、改角色。隐藏菜单只是体验，真正拦截在后端 <code>user:manage</code>。</p>
+    </div>
+    <div class="card">
+      <span class="tag">/platform/log · 仅 admin</span>
+      <h4>操作日志</h4>
+      <p>全平台操作审计：登录、训练、推理、发布、用户管理等动作的流水（<code>OperationLogs</code> 表）。</p>
+    </div>
+  </div>
+</section>
+
+<!-- ==================== 七 ==================== -->
+<section id="layout">
+  <h2><span class="num">07</span>目录与磁盘布局</h2>
+<pre><code>22project/
+├─ testRestfulProject/                 后端
+│  ├─ main.py                          唯一入口：注册两层路由 + 启动（开发用）
+│  ├─ serve.py                         生产入口：waitress，默认 0.0.0.0:8080，不开 debug
+│  ├─ model_service/                   业务包（15 个 .py）
+│  │  ├─ api.py                        业务接口（裸 JSON，28 条路由）
+│  │  ├─ dvadmin.py                    前端兼容层（{code,data,msg} 信封 + CORS）
+│  │  ├─ auth.py / captcha.py          令牌鉴权 / 登录验证码
+│  │  ├─ training.py                   train() 入口 + 三个 trainer
+│  │  ├─ inference.py                  推理 + 落库
+│  │  ├─ datasets.py / tabular.py      两套数据源
+│  │  ├─ registry.py                   产物管理（落盘/替换/删除 + 旧版本归档）
+│  │  ├─ exporter.py                   发布包（打包 / 查看 / 删除 zip）
+│  │  ├─ db.py                         11 张表的读写
+│  │  ├─ web.py                        生产模式下托管前端 SPA
+│  │  └─ figures.py / config.py
+│  ├─ 1DCNN/  cwt_cnn/  adtk/          原始算法脚本 + vendored adtk 库
+│  ├─ data/
+│  │  ├─ models/&lt;模型名&gt;/             ★ 模型产物（一个模型一份，无版本号）
+│  │  ├─ exports/&lt;模型名&gt;/*.zip        ★ 模型发布包
+│  │  ├─ datasets/&lt;数据集名&gt;/           ★ 上传的表格数据集
+│  │  ├─ figures/  logs/  uploads/      图 / 训练日志 / 上传件
+│  │  └─ archive/model_versions/        旧版本产物归档（不入库）
+│  ├─ sql/schema_mysql.sql              建表脚本（11 张表 + 种子）
+│  ├─ sql/auth-migration.sql            老库补鉴权表
+│  ├─ requirements.txt                  后端依赖清单
+│  └─ db.env                            ★ 数据库连接配置（含口令，不入库）
+├─ frontend/22project/                  前端（Vue3 + Vite + Element Plus）
+│  ├─ src/views/platform/               8 个业务页面
+│  ├─ src/api/platform/index.ts         业务接口封装
+│  ├─ src/utils/platformRequest.ts      不走信封校验的 axios 实例
+│  └─ public/docs.html                  ← 本说明文档
+├─ docs/                                交付文档、离线部署手册、部署脚本
+└─ tools/                               更新包制作/应用、md→docx 等辅助脚本</code></pre>
+
+  <div class="note">
+    <b>产物布局的关键约定</b>
+    <p>
+      <code>data/models/&lt;模型名&gt;/</code> 下<strong>只有一套</strong>文件，没有 <code>v1/</code>、<code>v2/</code> 这种版本子目录。
+      识别一个模型"有没有产物"，看的就是这个目录里有没有权重文件。
+      旧的按版本落盘布局会被一次性迁移脚本搬到 <code>data/archive/model_versions/</code>（只归档、不删除）。
+    </p>
+  </div>
+</section>
+
+<!-- ==================== 八 ==================== -->
+<section id="db">
+  <h2><span class="num">08</span>数据库</h2>
+  <p>
+    MySQL 8/9，库名 <code>model_management</code>，字符集 <code>utf8mb4</code>。
+    共 <strong>11 张表</strong>（8 张业务表 + 3 张鉴权表）、<strong>14 条外键</strong>。
+    <strong>只连 MySQL，没有兜底库</strong>——<code>MODEL_DB_DIALECT</code> 只接受 <code>mysql</code>，配成别的值会在启动的 import 期直接报错。
+  </p>
+
+  <h3>外键顺序（写入必须照这个顺序）</h3>
+<pre><code>Datasets ─┐
+Models   ─┼─► Trainings ─► InferenceTasks ─► InferenceResults
+          │        │
+          │        └─► ModelInvocations
+          └─► ModelDeployments ◄── EdgeDevices
+Roles ─► Users ─► OperationLogs</code></pre>
+
+  <h3>表清单</h3>
+  <div class="tw">
+    <table>
+      <thead><tr><th>表</th><th>存什么</th><th>谁写</th></tr></thead>
+      <tbody>
+        <tr><td><code>Datasets</code></td><td>数据集登记：名称(唯一)/来源/样本数/类别数/路径</td><td>训练自动登记、<code>POST /datasets/db</code>、推理的 ADHOC 登记</td></tr>
+        <tr><td><code>Models</code></td><td>模型登记：名称(唯一)/描述/接口/类型/状态</td><td>训练、<code>POST /models</code>、改名</td></tr>
+        <tr><td><code>Trainings</code></td><td>训练记录：超参、准确率、<code>ModelPath</code>、状态、备注 JSON</td><td><code>/train</code>（失败也写一行）</td></tr>
+        <tr><td><code>ModelInvocations</code></td><td>每次推理的请求/响应原文、耗时、状态码</td><td>每次 <code>/predict</code></td></tr>
+        <tr><td><code>ModelDeployments</code></td><td>发布流水：版本、来源训练、发布人、<code>DeployedPath</code>、状态</td><td>模型发布（导出/删除）</td></tr>
+        <tr><td><code>InferenceTasks</code></td><td>推理任务：锚点训练、数据集、参数、输出目录、进度</td><td>每次 <code>/predict</code></td></tr>
+        <tr><td><code>InferenceResults</code></td><td>逐样本结果：窗口标识、预测类别/标签、置信度、异常分数</td><td>每条推理样本</td></tr>
+        <tr><td><code>EdgeDevices</code></td><td>边缘设备（预留）：仅一行占位「本地导出」供发布记录挂外键</td><td>建表脚本种子</td></tr>
+        <tr><td><code>Roles</code></td><td>角色：<code>admin</code> / <code>engineer</code> / <code>operator</code></td><td>首次启动种子 + 用户管理</td></tr>
+        <tr><td><code>Users</code></td><td>用户：用户名(唯一)、<code>PasswordHash</code>(pbkdf2)、角色、<code>IsActive</code></td><td>种子账号 + 用户管理页</td></tr>
+        <tr><td><code>OperationLogs</code></td><td>操作审计：谁、什么动作、目标、结果、时间</td><td>各写接口埋点</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="warn">
+    <b>建表脚本是可重复执行的</b>
+    <p>
+      <code>sql/schema_mysql.sql</code> 用 <code>CREATE TABLE IF NOT EXISTS</code> +
+      <code>INSERT IGNORE</code>，重跑不会重复插数据。
+      <strong>但有一个例外需要知道</strong>：<code>EdgeDevices</code> 只有主键、没有业务唯一键
+      （同型号真实设备可以有多台，不能在该列上加唯一键），所以它的种子数据用的是
+      <code>INSERT ... SELECT ... WHERE NOT EXISTS</code> 而不是 <code>INSERT IGNORE</code>，
+      否则每重跑一次脚本就会多积一行同名占位设备。
+    </p>
+  </div>
+</section>
+
+<!-- ==================== 九 ==================== -->
+<section id="api">
+  <h2><span class="num">09</span>接口一览</h2>
+  <p>
+    业务接口共 <strong>28 条</strong>，返回裸 JSON。
+    运行中的权威清单是<strong>登录后</strong>的 <code>GET /api</code>（前端「系统管理 → 接口索引」页）；
+    未登录时它只回一句「需要登录后查看」。
+  </p>
+
+  <div class="tw">
+    <table>
+      <thead><tr><th>方法</th><th>路径</th><th>用途</th></tr></thead>
+      <tbody>
+        <tr><td><span class="badge b-info">GET</span></td><td><code>/health</code></td><td>服务/数据库/产物体检（匿名只回最小存活信息）</td></tr>
+        <tr><td><span class="badge b-info">GET</span></td><td><code>/api</code> · <code>/</code></td><td>接口索引（需登录）</td></tr>
+        <tr><td><span class="badge b-info">GET</span> <span class="badge b-ok">POST</span></td><td><code>/models</code></td><td>模型清单 / 新建登记</td></tr>
+        <tr><td><span class="badge b-info">GET</span> <span class="badge b-warn">DELETE</span> <span class="badge b-mute">PUT</span></td><td><code>/models/&lt;模型&gt;</code></td><td>模型档案 / 改名 / 删除登记或产物</td></tr>
+        <tr><td><span class="badge b-ok">POST</span></td><td><code>/models/upload</code></td><td>上传模型（打开文件看内容判断是不是模型）</td></tr>
+        <tr><td><span class="badge b-info">GET</span></td><td><code>/models/&lt;模型&gt;/overview</code></td><td>模型档案：登记 + 产物参数 + 最近训练 + 引用</td></tr>
+        <tr><td><span class="badge b-info">GET</span></td><td><code>/models/&lt;模型&gt;/references</code></td><td>被哪些表引用多少行（删除前用）</td></tr>
+        <tr><td><span class="badge b-ok">POST</span></td><td><code>/train</code> · <code>/predict</code></td><td>训练 / 推理（同步阻塞）</td></tr>
+        <tr><td><span class="badge b-info">GET</span></td><td><code>/trainings</code> · <code>/inference-tasks</code></td><td>训练记录 / 推理任务列表</td></tr>
+        <tr><td><span class="badge b-info">GET</span></td><td><code>/inference-tasks/&lt;id&gt;</code></td><td>单个任务的逐样本明细</td></tr>
+        <tr><td><span class="badge b-info">GET</span> <span class="badge b-ok">POST</span></td><td><code>/models/&lt;模型&gt;/exports</code></td><td>发布历史 / 打包发布</td></tr>
+        <tr><td><span class="badge b-info">GET</span> <span class="badge b-warn">DELETE</span></td><td><code>/models/&lt;模型&gt;/exports/&lt;包&gt;</code></td><td>下载包 / 删除包（<strong>需 <code>export:delete</code></strong>）</td></tr>
+        <tr><td><span class="badge b-info">GET</span></td><td><code>/models/&lt;模型&gt;/exports/&lt;包&gt;/inspect</code></td><td>看包内目录结构（不解压）</td></tr>
+        <tr><td><span class="badge b-info">GET</span></td><td><code>/exports</code></td><td>全平台发布汇总（发布页用）</td></tr>
+        <tr><td><span class="badge b-info">GET</span></td><td><code>/datasets</code> · <code>/datasets/db</code></td><td>数据集体检 / 库表登记与行数</td></tr>
+        <tr><td><span class="badge b-info">GET</span> <span class="badge b-ok">POST</span></td><td><code>/datasets/table</code> · <code>/datasets/signal</code> · <code>/datasets/upload</code></td><td>表格预览 / 取信号段 / 上传</td></tr>
+        <tr><td><span class="badge b-info">GET</span></td><td><code>/figures</code> · <code>/figures/&lt;路径&gt;</code></td><td>图库清单 / 直接取 PNG</td></tr>
+        <tr><td><span class="badge b-info">GET</span> <span class="badge b-ok">POST</span></td><td><code>/system</code> · <code>/system/logs</code> · <code>/system/maintenance</code></td><td>运行信息 / 日志 / 维护</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="note">
+    <b>兼容层是另一套</b>
+    <p>
+      登录、动态菜单、用户信息、用户管理、操作日志、部门、字典、设置等走
+      <code>/api/…</code>（<code>{code,data,msg}</code> 信封），只为让 dvadmin 模板跑起来，
+      不是业务接口。前端的 <code>platformRequest</code> 与 <code>request</code> 分别对应这两套。
+    </p>
+  </div>
+</section>
+
+<!-- ==================== 十 ==================== -->
+<section id="auth">
+  <h2><span class="num">10</span>角色与权限</h2>
+  <p>
+    登录是<strong>真校验</strong>：查 <code>Users</code> 表 → 用 pbkdf2 比对口令哈希 →
+    校验 <code>IsActive</code> → 签发令牌（默认 12 小时）。业务接口另挂角色权限装饰器，
+    <strong>前端隐藏按钮只是体验，真正的拦截在后端</strong>。
+  </p>
+
+  <div class="tw">
+    <table>
+      <thead><tr><th>权限点</th><th>含义</th><th class="num">admin</th><th class="num">engineer</th><th class="num">operator</th></tr></thead>
+      <tbody>
+        <tr><td><code>model:write</code></td><td>上传/改名模型</td><td class="num"><span class="badge b-ok">有</span></td><td class="num"><span class="badge b-ok">有</span></td><td class="num"><span class="badge b-mute">无</span></td></tr>
+        <tr><td><code>model:delete</code></td><td>删除模型产物</td><td class="num"><span class="badge b-ok">有</span></td><td class="num"><span class="badge b-mute">无</span></td><td class="num"><span class="badge b-mute">无</span></td></tr>
+        <tr><td><code>train:run</code></td><td>发起训练</td><td class="num"><span class="badge b-ok">有</span></td><td class="num"><span class="badge b-ok">有</span></td><td class="num"><span class="badge b-mute">无</span></td></tr>
+        <tr><td><code>predict:run</code></td><td>发起推理</td><td class="num"><span class="badge b-ok">有</span></td><td class="num"><span class="badge b-ok">有</span></td><td class="num"><span class="badge b-mute">无</span></td></tr>
+        <tr><td><code>export:run</code></td><td>打包发布</td><td class="num"><span class="badge b-ok">有</span></td><td class="num"><span class="badge b-ok">有</span></td><td class="num"><span class="badge b-mute">无</span></td></tr>
+        <tr><td><code>export:delete</code></td><td>删除发布包</td><td class="num"><span class="badge b-ok">有</span></td><td class="num"><span class="badge b-ok">有</span></td><td class="num"><span class="badge b-mute">无</span></td></tr>
+        <tr><td><code>dataset:write</code></td><td>登记/上传数据集</td><td class="num"><span class="badge b-ok">有</span></td><td class="num"><span class="badge b-ok">有</span></td><td class="num"><span class="badge b-mute">无</span></td></tr>
+        <tr><td><code>user:manage</code></td><td>用户管理</td><td class="num"><span class="badge b-ok">有</span></td><td class="num"><span class="badge b-mute">无</span></td><td class="num"><span class="badge b-mute">无</span></td></tr>
+        <tr><td><code>log:read</code></td><td>查看操作日志</td><td class="num"><span class="badge b-ok">有</span></td><td class="num"><span class="badge b-mute">无</span></td><td class="num"><span class="badge b-mute">无</span></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="warn">
+    <b>交付前必做</b>
+    <p>
+      首次启动会自动建种子账号：<code>admin / Admin&#64;2026</code>，
+      以及 <code>engineer / Engineer&#64;2026</code>、<code>operator / Operator&#64;2026</code>。
+      <strong>交付工厂前请删掉两个演示号或全部改密</strong>；
+      同时把 <code>db.env</code> 里的 <code>MODEL_SECRET_KEY</code> 换成随机值
+      （不配的话每次重启都会掉线，且密钥随时间重生成）。
+    </p>
+  </div>
+</section>
+
+<!-- ==================== 十一 ==================== -->
+<section id="deploy">
+  <h2><span class="num">11</span>启动与部署</h2>
+
+  <h3>环境要求</h3>
+  <div class="tw">
+    <table>
+      <thead><tr><th>组件</th><th>版本</th><th>说明</th></tr></thead>
+      <tbody>
+        <tr><td>Python</td><td>3.14（开发机实测）</td><td>后端依赖装在 <code>testRestfulProject/venv</code></td></tr>
+        <tr><td>Node.js</td><td>18+（开发机 22）</td><td>仅构建前端需要；生产可用已构建的产物</td></tr>
+        <tr><td>MySQL</td><td>8.0+（开发机 9.2）</td><td>需自行准备，<strong>没有兜底库</strong></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>① 准备数据库</h3>
+<pre><code>CREATE DATABASE model_management DEFAULT CHARSET utf8mb4;
+-- 建表（11 张表 + 外键 + 索引 + 种子数据，可重复执行）
+source testRestfulProject/sql/schema_mysql.sql;</code></pre>
+  <p>
+    然后复制 <code>testRestfulProject/db.env.example</code> 为 <code>db.env</code>，填自己的账号口令。
+    <code>db.env</code> 含明文口令，<strong>已在 <code>.gitignore</code> 里按 <code>db.env*</code> 整体忽略</strong>，不要提交。
+  </p>
+
+  <h3>② 开发模式（两个端口）</h3>
+<pre><code># 后端（先起）→ http://127.0.0.1:5000
+cd testRestfulProject
+venv\Scripts\python.exe main.py
+
+# 前端 → http://127.0.0.1:8080
+cd frontend\22project
+npm install     # 首次
+npm run dev</code></pre>
+
+  <h3>③ 生产模式（单端口，推荐交付用）</h3>
+<pre><code># 1) 构建前端（产物落到 frontend/22project/dist）
+cd frontend\22project
+npm run build:singleport
+
+# 2) 后端用 waitress 起，并顺带托管前端 → http://本机IP:8080
+cd ..\..\testRestfulProject
+venv\Scripts\python.exe serve.py
+# 可选： --port 9000  --threads 8   （默认 0.0.0.0:8080，局域网可访问）</code></pre>
+  <p>
+    <code>serve.py</code> 与 <code>main.py</code> 的区别：<strong>不开 Werkzeug 调试器</strong>
+    （debug 模式在出错页面上能执行任意代码，生产环境绝不能开），并用 waitress 多线程 +
+    600 秒 <code>channel_timeout</code> 以容纳同步阻塞的训练请求。
+  </p>
+  <p>
+    也可以把 <code>dist</code> 整个拷到 <code>testRestfulProject/data/web</code>，
+    这样"代码"和"构建产物"分开，更新代码时不必连前端产物一起覆盖。
+  </p>
+
+  <h3>④ 装成开机自启服务</h3>
+  <ul>
+    <li><strong>Windows</strong>：<code>docs/离线部署/部署脚本/</code> 下的编号脚本（<code>run.bat 05</code> 装服务，用 nssm）</li>
+    <li><strong>Linux</strong>：<code>docs/Linux部署/</code> 下的 shell 脚本 + <code>model-platform.service</code>（systemd）</li>
+  </ul>
+
+  <div class="ok-box">
+    <b>两个地址</b>
+    <p>
+      <code>http://&lt;主机&gt;:8080</code> —— 平台前端；
+      <code>http://&lt;主机&gt;:8080/api</code> —— 接口索引（<strong>需登录</strong>）。
+      运维探活只看匿名 <code>GET /health</code> 的 HTTP 200 即可，它不会暴露目录结构。
+    </p>
+  </div>
+</section>
+
+<!-- ==================== 十二 ==================== -->
+<section id="limits">
+  <h2><span class="num">12</span>已知限制</h2>
+  <p>以下都是项目当前真实存在的边界，写在这里是为了避免误读指标或重复踩坑。</p>
+
+  <div class="grid g2">
+    <div class="card">
+      <span class="tag">数据</span>
+      <h4>IR014 类别不参与指标</h4>
+      <p>该文件只有 63,788 点，默认参数下 180 个测试窗全部越界被跳过。
+        看准确率时务必同时看产物里的 <code>untested_labels</code>。</p>
+    </div>
+    <div class="card">
+      <span class="tag">模型</span>
+      <h4>cwt_cnn 精度明显偏低</h4>
+      <p>同任务的 PyTorch 实现测试准确率 0.6680，远低于 1DCNN 的 0.9457。
+        这是实现差异，不是数据问题。</p>
+    </div>
+    <div class="card">
+      <span class="tag">并发</span>
+      <h4>不排队，训练是同步阻塞的</h4>
+      <p>没有任务队列。<code>/train</code> 请求会占住一个工作线程直到训练结束，
+        多人同时点训练会明显变慢。</p>
+    </div>
+    <div class="card">
+      <span class="tag">依赖</span>
+      <h4>依赖清单与真实环境有偏差</h4>
+      <p><code>requirements.txt</code> 钉的是正式版 TensorFlow / Keras，
+        而开发机 venv 实装的是 nightly 版本。
+        在新机器上照清单安装后能否加载现有 <code>.keras</code> 产物<strong>尚未验证</strong>。</p>
+    </div>
+    <div class="card">
+      <span class="tag">指标</span>
+      <h4>部分早期数值不可复现</h4>
+      <p>文档里个别历史测算值（如某些 AUC/误报率）没有入库、也没有复现脚本。
+        以产物 <code>meta.json</code> 与库表为准。</p>
+    </div>
+    <div class="card">
+      <span class="tag">安全</span>
+      <h4>内网定位，非公网服务</h4>
+      <p>按"实验室内网"设计。若要暴露到更大网络，请自行加 HTTPS、改默认口令、
+        并确认 <code>MODEL_AUTH_DISABLED</code> 没被打开。</p>
+    </div>
+  </div>
+
+  <div class="note">
+    <b>本页数据的时点</b>
+    <p>
+      模型指标、超参、阈值取自 <code>data/models/*/meta.json</code> 与 <code>detector.pkl</code>；
+      接口条数与权限点取自后端源码（<code>api.py</code> 的 <code>_ROUTES</code>、<code>auth.py</code> 的 <code>_ROLE_PERMS</code>）；
+      表结构取自 <code>sql/schema_mysql.sql</code>。
+      行数类数字会随使用变化，页面上不写死——首页与「系统管理」页显示的都是实时值。
+    </p>
+  </div>
+</section>
+
+<footer>
+  <p>
+    本说明文档是<strong>静态单文件</strong>（<code>frontend/22project/public/docs.html</code>），
+    不依赖网络与任何外部资源，可直接拷到离线机器打开。
+    更细的内容见仓库内 <code>README.md</code>、<code>项目交接文档.md</code>、<code>项目技术详解.md</code> 与
+    <code>docs/</code> 下的部署手册。
+  </p>
+</footer>
+</main>
+</div>
+
+<script>
+/* 唯一的脚本：目录高亮当前章节 + 平滑锚点定位。
+   只用 IntersectionObserver，无依赖；观察不到时（老浏览器）目录依然可点，不影响阅读。 */
+(function () {
+  var links = Array.prototype.slice.call(document.querySelectorAll('#toc-list a'));
+  if (!links.length || !('IntersectionObserver' in window)) return;
+
+  var byId = {};
+  links.forEach(function (a) { byId[a.getAttribute('href').slice(1)] = a; });
+
+  var current = null;
+  function setActive(id) {
+    if (current === id) return;
+    current = id;
+    links.forEach(function (a) { a.classList.remove('on'); });
+    if (byId[id]) byId[id].classList.add('on');
+  }
+
+  var visible = {};
+  var io = new IntersectionObserver(function (entries) {
+    entries.forEach(function (e) { visible[e.target.id] = e.isIntersecting; });
+    /* 取"当前可见且最靠上"的章节，避免快速滚动时高亮跳来跳去 */
+    var hit = null;
+    for (var i = 0; i < links.length; i++) {
+      var id = links[i].getAttribute('href').slice(1);
+      if (visible[id]) { hit = id; break; }
+    }
+    if (hit) setActive(hit);
+  }, { rootMargin: '-10% 0px -70% 0px', threshold: 0 });
+
+  document.querySelectorAll('main section[id]').forEach(function (s) { io.observe(s); });
+  setActive(links[0].getAttribute('href').slice(1));
+})();
+</script>
+</body>
+</html>
