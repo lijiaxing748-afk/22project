@@ -876,7 +876,10 @@ const doUploadModel = async () => {
 		dialog.uploadVisible = false;
 	} catch (e: any) {
 		const data = e?.response?.data;
-		const detail = (data?.detail || []).map((d: any) => `${d.filename}：${d.reason}`).join('\n');
+		// ⚠️ 后端两种形状都要显示：detail（校验明细）与 skipped（被忽略的文件及原因）。
+		//    原先只读 detail → 上传"不是一个模型"的文件夹时，用户看不到哪些文件被忽略、为什么。
+		const items = data?.detail || data?.skipped || [];
+		const detail = (items as any[]).map((d: any) => `${d.filename}：${d.reason}`).join('\n');
 		uploadMsg.value = '上传失败：' + (data?.error || e?.message || e) + (detail ? `\n${detail}` : '');
 		ElMessage.error('上传失败：' + (data?.error || e?.message || e));
 	} finally {

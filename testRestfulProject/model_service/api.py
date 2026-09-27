@@ -1442,7 +1442,8 @@ class ModelUpload(Resource):
         # 2) 判断"这是不是一个模型"：候选逐个做内容探测，第一个通过的当权重
         if not candidates:
             return {"error": "上传的内容里没有权重文件，不算模型"
-                             "（支持 .h5/.keras/.pt/.pth/.pt2/.pkl/.pickle）",
+                             "（支持 .h5/.keras/.pt/.pth/.pt2/.pkl/.pickle）"
+                             + _model_upload_missing_weight_hint(skipped),
                     "received": sorted(blobs), "skipped": skipped}, 400
         probed: list[dict] = []
         for filename, framework in candidates:
@@ -1539,6 +1540,29 @@ def _uploaded_files():
     取不到就是空列表 —— 调用方据此回 400，不必自己判 None。
     """
     return request.files.getlist("file") or request.files.getlist("files")
+def _model_upload_missing_weight_hint(skipped: list[dict]) -> str:
+    """「没找到权重」时，按文件夹里**实际有什么**直接指到对应功能。
+
+    ⚠️ 实测踩到（2026-09-27）：用户把「教程代码 + CWRU 数据集」的文件夹当模型上传
+    （`1DCNN/{0HP/*.mat, 1DCNN.py, preprocessing.py}`），后端只回一句"没有权重文件，不算模型"
+    —— 技术上没错，但用户不知道该去哪儿办这件事，于是只会觉得"上传不了"。
+    这里判一下被忽略文件的类型：数据 → 指到「数据集管理 → 上传数据集」；源码 → 说明它不是模型产物。
+    """
+    suffixes = {Path(str(item.get("filename") or "")).suffix.lower() for item in skipped}
+    data_like = suffixes & {".mat", ".npy", ".csv", ".txt", ".xlsx", ".xls", ".xlsm"}
+    code_like = suffixes & {".py", ".pyc", ".ipynb", ".m", ".java", ".c", ".cpp"}
+    if data_like and code_like:
+        return ("。这个文件夹看起来是「训练脚本 + 数据集」，不是训练好的模型产物 —— "
+                "想把里面的数据用起来，请走「数据集管理 → 上传数据集 → 选文件夹」，"
+                "指向放数据的那个目录（" + "/".join(sorted(data_like)) + " 会被收下）")
+    if data_like:
+        return ("。这些是**数据文件**不是模型权重 —— 请走「数据集管理 → 上传数据集 → 选文件夹」，"
+                "把数据目录传上去；模型上传只收训练好的权重")
+    if code_like:
+        return "。这些是源码/脚本，不是模型产物 —— 模型上传只收训练好的权重"
+    return ""
+
+
 def _upload_blobs(files, keep_suffix, weight_whitelist, max_mb):
     """把上传的文件读进内存并按用途分堆，返回 (blobs, skipped, candidates, scaler, meta_blob)。
 
