@@ -440,6 +440,12 @@
 			<el-form-item label="模型名 *">
 				<el-input v-model="uploadForm.name" placeholder="唯一键，如 1DCNN；同名会直接替换旧产物" />
 			</el-form-item>
+			<el-form-item v-if="uploadNameConflict" label=" ">
+				<div class="hint" style="color: var(--el-color-warning)">
+					⚠️ 已存在模型「{{ uploadNameConflict }}」——这次上传会<strong>替换它的产物</strong>，列表里不会新增一行。
+					想保留旧的请换个名字（例如 <code>{{ uploadForm.name }}-v2</code>）。
+				</div>
+			</el-form-item>
 			<el-form-item label="说明"><el-input v-model="uploadForm.description" placeholder="可选" /></el-form-item>
 		</el-form>
 		<div class="hint">
@@ -691,6 +697,21 @@ const mergedRows = computed(() => {
 	});
 	return [...map.values()];
 });
+/**
+ * 上传对话框里填的模型名是否**已存在**（大小写不敏感，与后端同口径：Models 表是 utf8mb4_unicode_ci，
+ * `1dcnn` 与 `1DCNN` 算同一个 → 这次上传会**替换它的产物**，列表里不会新增一行）。
+ *
+ * ⚠️ 实测踩到（2026-09-27 22:22）：用户把导出的发布包解压后当模型上传，名字填了 `1dcnn`
+ * → 后端归一成内置 `1DCNN` 并替换了它的产物 → 模型管理页"看不出变化"，于是来问"为什么不显示"。
+ * 后端其实在响应 warnings 里写了"已被本次上传替换"，但对话框上传完就自动关闭，用户看不到。
+ * 所以这里在**上传之前**就把冲突摆出来（含"换个名字"的建议）。
+ */
+const uploadNameConflict = computed<string>(() => {
+	const typed = String(uploadForm.name || '').trim().toLowerCase();
+	if (!typed) return '';
+	const hit = mergedRows.value.find((r: any) => String(r?.name || '').toLowerCase() === typed);
+	return hit ? String(hit.name) : '';
+});
 /** 当前产物（唯一那个）；模型还没有产物时是 null —— 详情卡照常渲染，字段显示「—」 */
 const curArt = computed(() => overview.value?.artifact || null);
 const isAnomalyModel = computed(() => {
@@ -869,11 +890,21 @@ const doUploadModel = async () => {
 			`${res.num_classes ?? '?'} 类`,
 			res.meta_generated ? '已自动生成 meta.json' : '使用文件夹里的 meta.json',
 		].join(' · ') + (res.warnings?.length ? `\n⚠ ${res.warnings.join('；')}` : '');
-		ElMessage.success('模型上传成功');
-		clearPicked();
-		await loadModels();
-		await loadOverview(res.model);
-		dialog.uploadVisible = false;
+		if (res.replaced) {
+			// ⚠️ 替换 ≠ 新增：必须当面说清，否则用户会一直找"新模型在哪里"（见 uploadNameConflict 的说明）。
+			//    对话框**留在原地**，让他能读完这段再关。
+			uploadMsg.value = `⚠️ 这是**替换**：模型「${res.db_model || res.model}」的旧产物已被本次上传覆盖，`
+				+ `列表里不会新增一行。\n` + uploadMsg.value;
+			ElMessage.warning(`已替换模型「${res.db_model || res.model}」的产物（不是新增）`);
+			await loadModels();
+			await loadOverview(res.db_model || res.model);
+		} else {
+			ElMessage.success('模型上传成功');
+			clearPicked();
+			await loadModels();
+			await loadOverview(res.model);
+			dialog.uploadVisible = false;
+		}
 	} catch (e: any) {
 		const data = e?.response?.data;
 		// ⚠️ 后端两种形状都要显示：detail（校验明细）与 skipped（被忽略的文件及原因）。

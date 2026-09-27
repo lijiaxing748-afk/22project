@@ -1520,6 +1520,10 @@ class ModelUpload(Resource):
                               "db_written": db_error is None})
         return {
             "model": safe, "directory": str(root),
+            # ⚠️ db_model = **归一后写进 Models 表的名字**：用户填 `1dcnn` 时这里是 `1DCNN`
+            #    （内置名归一 + 库是 utf8mb4_unicode_ci 大小写不敏感）。替换提示必须用这个名字，
+            #    否则用户会拿着"我填的 1dcnn"去列表里找，而列表里那一行叫 1DCNN。
+            "db_model": _db_model_name(safe),
             "framework": meta.get("framework"), "weights": meta.get("weights_file") or weights[0],
             "input_len": meta.get("input_len"), "num_classes": meta.get("num_classes"),
             "labels": meta.get("labels"), "scaler": meta.get("scaler_file"),
