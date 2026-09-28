@@ -11,6 +11,8 @@
       键名多一个不可见字符 → 整行配置读不到；.bat 带 BOM 会让 cmd 第一行报错。
       （应用侧已做防御：db.env 与建表 .sql 用 utf-8-sig 读，能吃掉 BOM；但文件本身仍应无 BOM。）
   · 所有文本文件都必须能按 UTF-8 解码（出现 GBK/ANSI 文件要报出来）。
+  · 换行：`.bat/.cmd/.ps1` 必须 **CRLF**（cmd 对 LF 的批处理会解析错乱），`.sh/.bash` 必须 **LF**
+    （CRLF 的 shell 脚本在 Linux 上报 /bin/bash^M: bad interpreter）。仓库用 .gitattributes 钉住。
 
 用法：
     testRestfulProject\\venv\\Scripts\\python.exe tools\\check-encoding.py [项目根目录，默认自动定位]
@@ -33,6 +35,13 @@ TEXT_SUFFIXES = {
 }
 TEXT_NAMES = {"db.env", "db.env.example", "requirements.txt", ".gitignore", ".gitattributes",
               ".editorconfig", "Dockerfile", "Makefile", "LICENSE"}
+
+# 换行约定：值 = 该类型**必须**是哪种换行（None/缺省 = 不检查）
+#   · .bat/.cmd 必须 CRLF：cmd.exe 对 LF 的批处理解析会错乱（goto/标签/括号块尤甚 —— 实测踩过，
+#     uninstall.bat 的 goto 与括号块整段失效，报出一堆"中文片段不是命令"）；
+#   · .sh/.bash 必须 LF：CRLF 的 shell 脚本在 Linux 上会报 /bin/bash^M: bad interpreter；
+#   · .ps1 用 CRLF（Windows 习惯，PowerShell 两种都能读）。
+EOL_RULES = {".bat": "crlf", ".cmd": "crlf", ".ps1": "crlf", ".sh": "lf", ".bash": "lf"}
 
 
 def is_text(path: Path) -> bool:
@@ -82,10 +91,28 @@ def main() -> int:
         except UnicodeDecodeError as exc:
             problems.append(f"{rel}：不是 UTF-8（{exc}）—— 可能是 GBK/ANSI，请转成 UTF-8")
 
+        # 换行检查（2026-09-28 加）：.bat/.cmd 必须 CRLF，否则 cmd.exe 解析会错乱；
+        # shell 脚本必须 LF，否则 Linux 上报 "/bin/bash^M: bad interpreter"。
+        want = EOL_RULES.get(p.suffix.lower())
+        if want and b"\n" in data:
+            crlf = data.count(b"\r\n")
+            bare_lf = data.count(b"\n") - crlf
+            if want == "crlf" and bare_lf > 0:
+                who = "cmd.exe 读 .bat/.cmd 会解析错乱（带 goto/标签/括号块时整段失效，实测踩过）" if p.suffix.lower() in (".bat", ".cmd") \
+                      else "Windows 脚本按惯例用 CRLF（PowerShell 两种都能读，但保持一致更好）"
+                problems.append(
+                    f"{rel}：应为 CRLF 换行，但有 {bare_lf} 处裸 LF —— {who}。\n"
+                    f"        修：把行尾统一成 CRLF（仓库已用 .gitattributes 钉住 eol=crlf）")
+            if want == "lf" and crlf > 0:
+                problems.append(
+                    f"{rel}：应为 LF 换行，但有 {crlf} 处 CRLF —— Linux 上执行会报 bad interpreter: /bin/bash^M。\n"
+                    f"        修：把行尾统一成 LF（.gitattributes 已钉住 *.sh eol=lf）")
+
     print(f"检查目录：{root}")
     print(f"  文本文件：{n_ps1 + n_other} 个（其中 .ps1 {n_ps1} 个；.ps1 须带 BOM，其余须无 BOM）")
+    print("  换行约定：.bat/.cmd/.ps1 = CRLF，.sh/.bash = LF")
     if not problems:
-        print("  ✅ 全部符合约定（.ps1 带 BOM；其它文件 UTF-8 无 BOM；没有非 UTF-8 文件）")
+        print("  ✅ 全部符合约定（编码、BOM、换行都正确）")
         return 0
     print(f"  ❌ 发现 {len(problems)} 处不合规：")
     for item in problems:

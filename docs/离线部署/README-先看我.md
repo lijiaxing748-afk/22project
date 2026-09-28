@@ -6,7 +6,8 @@
 > **⚠️ 先看这条**：如果目标是"**装一次、长期开着、局域网别人用**"的服务器，现在有更省事的路子 ——
 > 仓库根的 `start.bat`（Windows）/ `start.sh`（Linux）**一条命令**搞定：探测并自动装 MySQL + 自动建库 +
 > 建专用账号 + 生成 `db.env`（含随机密钥）+ 装成开机自启服务 + 放行防火墙 + 打印局域网地址；
-> `update.bat`/`update.sh` 更新到最新代码，`stop.bat`/`stop.sh` 停止运行。
+> `update.bat`/`update.sh` 更新到最新代码，`stop.bat`/`stop.sh` 停止运行；
+> 以后不用了：双击 `uninstall.bat`（或 `sudo bash start.sh uninstall`）解除开机自启并释放占用，之后整个文件夹可以直接删。
 > 见根目录 `README.md` 的「部署到服务器：一条命令」。
 > 本文档面向**完全离线、需要手工分步（自己装 Python/MySQL/Node）**的交付场景。
 

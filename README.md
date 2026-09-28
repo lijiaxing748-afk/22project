@@ -83,19 +83,22 @@
 | Node.js | 18+ |
 | MySQL | 8.0+（本项目在 9.2 上验证） |
 
-### 0.1 文本编码约定（别乱加 BOM —— 会真的坏）
+### 0.1 文本编码与换行约定（别乱加 BOM、别用错换行 —— 都会真的坏）
 
 | 文件类型 | 约定 | 为什么 |
 |---|---|---|
-| `*.ps1`（Windows PowerShell 脚本） | **UTF-8 带 BOM** | Windows PowerShell **5.1** 读没有 BOM 的 `.ps1` 会按系统 ANSI（中文机器 = GBK）解码 → 脚本里的中文全乱码，语句还可能被拆错。所以 `tools\*.ps1`、`docs\离线部署\部署脚本\*.ps1` **都必须带 BOM** |
-| **其它所有文本文件**（`.py .md .vue .ts .sql .bat .sh .json .txt requirements.txt db.env ...`） | **UTF-8 无 BOM** | BOM 会被当成文件内容。真实踩过的坑：`db.env` 带 BOM → 第一行变成 `\ufeffMODEL_DB_DIALECT`（键名多一个不可见字符）→ **整行配置读不到**；`.bat` 带 BOM → cmd 第一行报错 |
+| `*.ps1`（Windows PowerShell 脚本） | **UTF-8 带 BOM** + **CRLF** | Windows PowerShell **5.1** 读没有 BOM 的 `.ps1` 会按系统 ANSI（中文机器 = GBK）解码 → 脚本里的中文全乱码，语句还可能被拆错。所以 `tools\*.ps1`、`docs\离线部署\部署脚本\*.ps1` **都必须带 BOM** |
+| `*.bat` / `*.cmd` | **UTF-8 无 BOM** + **CRLF** | ① 带 BOM 会让 cmd 第一行就报错；② **换行必须是 CRLF** —— 用 LF 写的 `.bat`，cmd.exe 解析会错乱：带 `goto`/标签/括号块时**整段失效**（实测踩过：`uninstall.bat` 报出一堆"中文片段不是命令"）。脚本里用 `chcp 65001` 让中文正常显示 |
+| `*.sh` / `*.bash` | **UTF-8 无 BOM** + **LF** | 带 CRLF 的 shell 脚本在 Linux 上会报 `/bin/bash^M: bad interpreter`，而且**内容看起来完全正常**、极难排查 |
+| 其它所有文本文件（`.py .md .vue .ts .sql .json requirements.txt db.env ...`） | **UTF-8 无 BOM** + **LF** | BOM 会被当成文件内容。真实踩过的坑：`db.env` 带 BOM → 第一行变成 `\ufeffMODEL_DB_DIALECT`（键名多一个不可见字符）→ **整行配置读不到** |
 
+- 换行由 `.gitattributes` 钉死（`*.bat/*.cmd/*.ps1` → CRLF；`*.sh/*.py` 等 → LF），`git clone` 出来就是对的；
 - 应用侧已做防御：读 `db.env` 与建表 `.sql` 用 `utf-8-sig`（能吃掉 BOM），Windows 部署脚本写文件也**强制无 BOM**（PowerShell 5.1 的 `-Encoding UTF8` 默认会加 BOM，已换成显式 `UTF8Encoding($false)` 写入）。
-- 交付前跑一次检查（全仓 400+ 个文本文件，逐条列出不合规项）：
+- 交付前跑一次检查（全仓 460+ 个文本文件，编码 / BOM / 换行逐条查，不合规会给出修法）：
 
 ```cmd
 testRestfulProject\venv\Scripts\python.exe tools\check-encoding.py
-:: 期望输出：✅ 全部符合约定（.ps1 带 BOM；其它文件 UTF-8 无 BOM；没有非 UTF-8 文件）
+:: 期望输出：✅ 全部符合约定（编码、BOM、换行都正确）
 ```
 
 ### 部署到服务器：一条命令（推荐给"装一次、长期开着"的机器）
@@ -175,10 +178,24 @@ sudo bash start.sh
 ### 0.2 以后想删掉整个文件夹怎么办（先卸载，再删）
 
 平台的"开机自启服务/计划任务"正是**文件夹删不掉**的原因：服务会自动重启进程，进程占着目录。
-所以删文件夹之前，先让平台自己松开手 —— **一条命令**：
+所以删文件夹之前，先让平台自己松开手 —— **Windows 直接双击 `uninstall.bat` 就行**：
+
+```
+双击 uninstall.bat
+  → 弹 UAC，点「是」（自动提权）
+  → 自动：解除开机自启 → 停服务/计划任务 → 收掉占用该目录的进程
+  → 打印：整个目录已不被任何进程占用 —— 现在可以直接删了
+  → 问：是否连整个文件夹一起删除？(Y/N)
+       Y → 再输入 DELETE 二次确认 → 自动删掉整个文件夹
+       N → 只卸载，窗口停住，你自己删
+```
+
+> ⚠️ **选 Y 会连 `testRestfulProject\data`（训练好的模型/图片/数据集）一起删掉**（脚本会先警告）——
+> 要保留就选 **N**（只卸载），自己备份后再删。数据库（MySQL 里的表和数据）**两种选择都不动**。
+
+命令行等价写法：
 
 ```bat
-:: Windows（管理员）：取消开机自启 + 停服务/计划任务 + 收掉所有占用该目录的进程
 start.bat uninstall
 :: 结束时它会明确打印：整个目录已不被任何进程占用 —— 现在可以直接把 <目录> 删掉了
 ```
@@ -186,6 +203,15 @@ start.bat uninstall
 # Linux
 sudo bash start.sh uninstall
 ```
+
+**各入口的差别（Windows 全部支持直接双击，双击会自动提权、结束不关窗）**：
+
+| 双击 | 用途 | 解除开机自启？ |
+|---|---|---|
+| `start.bat` | 安装 / 启动 / 重新配置 | — |
+| `stop.bat`（= `end.bat`） | 临时停一下，以后还要用 | ❌ 保留 |
+| `update.bat` | 更新到仓库最新代码（git pull → 重建前端 → 重启） | — |
+| **`uninstall.bat`** | **彻底不用了：解除自启 + 释放占用，之后可删文件夹** | ✅ 解除（可再选连文件夹一起删） |
 
 - 只是**临时停一下**（保留开机自启）：`stop.bat` / `bash stop.sh`（同样会报告目录是否已释放）；
 - `uninstall` **不动数据库、也不动 `data` 目录** —— 只是解除自启并释放占用，之后手工删文件夹即可；
