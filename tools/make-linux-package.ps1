@@ -8,8 +8,8 @@
 # 产物：dist-linux\model-platform-linux-<时间戳>.tar.gz
 #       dist-linux\model-platform-linux-<时间戳>.manifest.txt  （清单，核对用）
 
-$ErrorActionPreference = 'Stop'
-
+if (Get-Variable -Name PSNativeCommandUseErrorActionPreference -ErrorAction SilentlyContinue) { $PSNativeCommandUseErrorActionPreference = $false }
+$ErrorActionPreference = 'Continue'   # 不能 Stop：Stop 下原生命令的 stderr（如 sc.exe/nssm 的提示）会变成终止性错误、直接杀掉脚本
 $RepoRoot = Split-Path -Parent $PSScriptRoot
 if (-not (Test-Path (Join-Path $RepoRoot 'testRestfulProject'))) {
     $RepoRoot = (Get-Location).Path

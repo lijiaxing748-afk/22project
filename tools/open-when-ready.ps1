@@ -10,6 +10,7 @@ param(
     [int]$TimeoutSec = 180
 )
 $ErrorActionPreference = 'SilentlyContinue'
+if (Get-Variable -Name PSNativeCommandUseErrorActionPreference -ErrorAction SilentlyContinue) { $PSNativeCommandUseErrorActionPreference = $false }
 $deadline = (Get-Date).AddSeconds($TimeoutSec)
 $probe = if ($Health) { $Health } else { $Url }
 while ((Get-Date) -lt $deadline) {

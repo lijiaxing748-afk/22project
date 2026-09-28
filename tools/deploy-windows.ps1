@@ -41,7 +41,8 @@ param(
     [switch]$RecreateVenv,           # 现有 venv 的 Python 版本不对时，自动删掉重建（要求 3.12）
     [switch]$DryRun
 )
-$ErrorActionPreference = 'Stop'
+$ErrorActionPreference = 'Continue'   # ⚠️ 必须是 Continue：Stop 会把原生命令的 stderr（mysql 报错等）变成**终止性错误**，
+                                        #    在 5.1 下直接杀掉脚本（现场踩过）。真正的失败一律用 Die 显式终止。
 
 $Root = Split-Path -Parent $PSScriptRoot          # 仓库根（脚本在 tools\ 下）
 $Srv = Join-Path $Root 'testRestfulProject'

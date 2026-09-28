@@ -22,6 +22,8 @@ $Root   = 'C:\Users\Lenovo\22project'
 $Delete = $false        # ← 备份好了改成 $true，脚本最后会删目录
 
 $ErrorActionPreference = 'Continue'
+# ⚠️ 见 README 的"Windows 脚本约定"：避免原生命令 stderr 在 PowerShell 7 上被当成终止错误
+if (Get-Variable -Name PSNativeCommandUseErrorActionPreference -ErrorAction SilentlyContinue) { $PSNativeCommandUseErrorActionPreference = $false }
 function Say($t)  { Write-Host $t }
 function Ok($t)   { Write-Host "[OK] $t"   -ForegroundColor Green }
 function Info($t) { Write-Host "     $t" }

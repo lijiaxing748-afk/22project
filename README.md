@@ -101,6 +101,22 @@ testRestfulProject\venv\Scripts\python.exe tools\check-encoding.py
 :: 期望输出：✅ 全部符合约定（编码、BOM、换行都正确）
 ```
 
+#### 0.1.1 Windows 脚本约定（PowerShell 5.1 的三个坑，都真踩过）
+
+写/改 `.ps1` 时守住这三条，改完跑一次 `tools\check-ps-pitfalls.py` 体检：
+
+| 坑 | 现象 | 规矩 |
+|---|---|---|
+| **`Stop` + 原生命令** | 脚本里写 `$ErrorActionPreference = 'Stop'`，同时又调用 `mysql.exe`/`sc.exe`/`nssm` 等；这些命令往 **stderr** 写东西时（例如 `ERROR 1045 Access denied`），5.1 会生成 `NativeCommandError`，在 `Stop` 下属于**终止性错误** → **脚本直接被杀掉**（现场：探测 MySQL 账号只试了第一个候选就退出，后面本来能成功的候选根本没机会试） | 调用原生命令的脚本用 **`Continue`**，失败用 `Die`/退出码显式判断；或给该命令加 `2>&1` 把输出收下来自行判断 |
+| **参数里带内嵌双引号** | `mysql -e 'SELECT CONCAT(@@port, " ", @@version)'` 在 5.1 下会在引号处**被拆成两条参数**，mysql 把后半截当成库名 → `ERROR 1044 ... to database ', @@version)'` | 不要给原生命令传带双引号的参数；拆成多条简单命令（如 `SELECT @@port`、`SELECT @@version`） |
+| **双 BOM** | 把带 BOM 的文件读出字符串再写回时，若没去掉首字符 `U+FEFF` 又写 BOM，就会变成**两个 BOM** → PowerShell 在 `param` 之前看到多余字符，把参数块当表达式解析，报一排 `The assignment expression is not valid` | 读写时 `TrimStart([char]0xFEFF)`；写回用 `WriteAllText`（恰好一个 BOM）；脚本级 `param(` 必须是第一条语句（前面只能有注释/`[CmdletBinding()]`） |
+
+```cmd
+:: 体检（逐条给出修法；--fix 只补一行 PS7 兼容开关，不动你的 EAP 与 param）
+testRestfulProject\venv\Scripts\python.exe tools\check-ps-pitfalls.py
+:: 期望输出：✅ 无问题（param 位置、EAP、原生命令参数、BOM 都正常）
+```
+
 ### 部署到服务器：一条命令（推荐给"装一次、长期开着"的机器）
 
 在项目根目录执行一条命令，之后**开机就在跑**，局域网里别人用 `http://<这台机器的IP>:8080/` 访问：

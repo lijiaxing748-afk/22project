@@ -10,7 +10,8 @@
 #  用法：右键 ->「使用 PowerShell 运行」   （需要**管理员**权限）
 # =====================================================================
 
-$ErrorActionPreference = 'Stop'
+if (Get-Variable -Name PSNativeCommandUseErrorActionPreference -ErrorAction SilentlyContinue) { $PSNativeCommandUseErrorActionPreference = $false }
+$ErrorActionPreference = 'Continue'   # 不能 Stop：Stop 下原生命令的 stderr（如 sc.exe/nssm 的提示）会变成终止性错误、直接杀掉脚本
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 
 function Say  ($m) { Write-Host $m }

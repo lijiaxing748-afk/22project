@@ -6,6 +6,8 @@
 # =====================================================================
 
 $ErrorActionPreference = 'Continue'
+# ⚠️ 见 README 的"Windows 脚本约定"：避免原生命令 stderr 在 PowerShell 7 上被当成终止错误
+if (Get-Variable -Name PSNativeCommandUseErrorActionPreference -ErrorAction SilentlyContinue) { $PSNativeCommandUseErrorActionPreference = $false }
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 
 function Say  ($m) { Write-Host $m }
