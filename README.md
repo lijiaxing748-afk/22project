@@ -83,6 +83,43 @@
 | Node.js | 18+ |
 | MySQL | 8.0+（本项目在 9.2 上验证） |
 
+### 部署到服务器：一条命令（推荐给"装一次、长期开着"的机器）
+
+在项目根目录执行一条命令，之后**开机就在跑**，局域网里别人用 `http://<这台机器的IP>:8080/` 访问：
+
+```bat
+:: Windows —— 需**管理员**身份运行 cmd/PowerShell
+git clone https://github.com/lijiaxing748-afk/22project.git
+cd 22project
+deploy.bat
+```
+```bash
+# Linux（Ubuntu/Debian）
+git clone https://github.com/lijiaxing748-afk/22project.git
+cd 22project
+sudo bash deploy.sh
+```
+
+它会（幂等，可反复执行）：准备 venv 与依赖 → 构建前端产物 → 读 `testRestfulProject/db.env`
+建库建表（库名按 `MODEL_DB_NAME` 替换；**`MODEL_SECRET_KEY` 为空会自动生成并写回**，否则每次重启
+所有人都要重新登录）→ 注册成**开机自启**的常驻服务（Windows：`nssm` 服务；没找到 `nssm.exe` 时退化为
+"计划任务（开机启动、以 SYSTEM 运行）" · Linux：`systemd`，崩溃自动重启、日志进 journald）
+→ 放行防火墙端口 → 打印**局域网访问地址**。
+
+| 想做的事 | Windows | Linux |
+|---|---|---|
+| 安装/更新并启动 | `deploy.bat` | `sudo bash deploy.sh` |
+| 看状态 / 看日志 / 重启 | `deploy.bat status` · `logs` · `restart` | `sudo bash deploy.sh status` · `logs` · `restart` |
+| 更新代码后生效 | `deploy.bat upgrade`（会重建前端） | `sudo bash deploy.sh upgrade` |
+| 卸载（不动数据库与 `data`） | `deploy.bat uninstall` | `sudo bash deploy.sh uninstall` |
+| 换端口 | `deploy.bat -Port 8081` | `MODEL_PORT=8081 sudo bash deploy.sh` |
+| 只演练、不改系统 | `deploy.bat -DryRun` | `DRY_RUN=1 bash deploy.sh` |
+
+> 只是想在**本机**跑起来看一眼：Windows 用 `start.bat`，Linux 用 `bash start.sh`
+> （前台运行、自动打开浏览器，关掉窗口即停止）。
+> 完全离线的内网整包交付（含离线 wheel / MySQL / Python 安装包）：见 `docs/离线部署/README-先看我.md`
+> 与 `docs/Linux部署/`。
+
 ### 1. 数据库
 
 ```sql
