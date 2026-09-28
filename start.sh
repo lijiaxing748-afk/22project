@@ -68,6 +68,43 @@ read_env() {   # read_env KEY DEFAULT
 # ---------------------------------------------------------------- 子命令
 # ⚠️ 这里每个子命令都必须是**幂等**的：没装/重复跑都不该"报错退出"，只提示 —— 否则运维会以为坏了。
 svc_installed() { systemctl list-unit-files 2>/dev/null | grep -q "^${SERVICE}\.service"; }
+
+# 「把属于本项目的进程收干净」——stop/uninstall 时调用，让**整个目录可以直接删除**。
+# ⚠️ 只按两类判定：① 程序本体（/proc/PID/exe）在项目目录里；② 占着本项目端口。
+#    命令行里只是"提到"项目路径的进程**一律不动**（避免误杀调用它的终端）。
+stop_owned_processes() {
+    local pids=() pid exe d n=0
+    for d in /proc/[0-9]*; do
+        pid="${d#/proc/}"
+        exe="$(readlink -f "$d/exe" 2>/dev/null || true)"
+        if [[ -n "$exe" && ( "$exe" == "$ROOT"/* || "$exe" == "$SRV"/* ) ]]; then pids+=("$pid"); fi
+    done
+    if command -v ss >/dev/null; then
+        while read -r pid; do [[ -n "$pid" ]] && pids+=("$pid"); done < <(
+            ss -ltnpH 2>/dev/null | awk -v pat=":$PORT\$" '$4 ~ pat {print}' | grep -oE 'pid=[0-9]+' | cut -d= -f2)
+    fi
+    for pid in $(printf '%s\n' "${pids[@]:-}" | grep -E '^[0-9]+$' | sort -unr); do
+        [[ "$pid" == "$$" ]] && continue
+        run "kill -TERM '$pid' 2>/dev/null || true"
+        n=$((n+1))
+    done
+    [[ "$n" -gt 0 ]] && sleep 1
+    info "结束了 $n 个残留进程"
+}
+show_folder_free() {
+    local left="" d exe
+    for d in /proc/[0-9]*; do
+        exe="$(readlink -f "$d/exe" 2>/dev/null || true)"
+        if [[ -n "$exe" && ( "$exe" == "$ROOT"/* || "$exe" == "$SRV"/* ) ]]; then left="$left ${d#/proc/}"; fi
+    done
+    if [[ -z "$left" ]] && ! (command -v ss >/dev/null && ss -ltnH 2>/dev/null | grep -q ":${PORT}\$"); then
+        ok "整个目录已不被任何进程占用 —— 现在可以直接删除 $ROOT"
+        info "（数据库与 $SRV/data 不受影响；只是想删文件夹的话不用管它们）"
+        info "万一还是删不掉：多半是有个终端 cd 在里面，关掉它即可"
+    else
+        warn "仍在运行/占用：${left:-端口 $PORT} —— 先处理这些再删目录"
+    fi
+}
 case "$MODE" in
     status)
         if svc_installed; then
@@ -93,15 +130,20 @@ case "$MODE" in
     stop)
         need_root
         if svc_installed; then run "systemctl stop '$SERVICE'"; ok "已停止（$SERVICE）"
-        else warn "服务本来就没安装/没在跑，无需停止"; fi
+        else warn "服务本来就没安装/没在跑"; fi
+        # 服务停了不等于进程都没了（可能是 bash start.sh run 的前台实例或残留子进程）
+        stop_owned_processes
+        show_folder_free
         exit 0 ;;
     uninstall)
         need_root
-        info "卸载 systemd 服务（数据库与 $SRV/data 一概不动）"
+        info "卸载 systemd 服务（数据库与 $SRV/data 一概不动）——目标是让整个目录可以直接删"
         run "systemctl stop '$SERVICE' 2>/dev/null || true"
-        run "systemctl disable '$SERVICE' 2>/dev/null || true"
+        run "systemctl disable '$SERVICE' 2>/dev/null || true"      # ⚠️ 关键：不禁用开机自启，删目录时它还会起来
         run "rm -f '$UNIT'"
         run "systemctl daemon-reload"
+        stop_owned_processes
+        show_folder_free
         ok "已卸载。数据目录与数据库保留：$SRV/data"
         exit 0 ;;
     update)

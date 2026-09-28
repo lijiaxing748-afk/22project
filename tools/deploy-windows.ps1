@@ -125,6 +125,52 @@ function Get-ServiceMode {
     return ''
 }
 
+# 「把属于本项目的进程收干净」—— stop / uninstall 时调用，让**整个目录可以直接删除**。
+# ⚠️ 只按两类判定：① 程序本体（ExecutablePath）在项目目录里；② 正在监听本项目端口。
+#    命令行里只是"提到"该项目路径的进程**一律不动** ——
+#    实测踩过：按命令行匹配会误杀调用它的终端乃至兄弟进程（把 dsh 的作业运行器都杀退了）。
+function Stop-OwnedProcesses {
+    $selfIds = New-Object 'System.Collections.Generic.HashSet[int]'
+    $c = $PID
+    while ($c -and $c -ne 0 -and -not $selfIds.Contains([int]$c)) {
+        [void]$selfIds.Add([int]$c)
+        $c = (Get-CimInstance Win32_Process -Filter "ProcessId=$c" -ErrorAction SilentlyContinue).ParentProcessId
+    }
+    $portIds = @()
+    foreach ($p in @($Port)) {
+        $x = Get-NetTCPConnection -State Listen -LocalPort $p -ErrorAction SilentlyContinue
+        if ($x) { $portIds += $x[0].OwningProcess }
+    }
+    $targets = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
+        if ($selfIds.Contains([int]$_.ProcessId)) { return $false }
+        ($_.ExecutablePath -and $_.ExecutablePath -like "$Root*") -or ($portIds -contains [int]$_.ProcessId)
+    }
+    $n = 0
+    foreach ($t in ($targets | Sort-Object ProcessId -Descending)) {
+        Info "结束残留进程 PID $($t.ProcessId)  $($t.Name)  $($t.ExecutablePath)"
+        & taskkill /PID $t.ProcessId /T /F 2>&1 | Out-Null
+        if ($LASTEXITCODE -eq 0) { $n++ }
+    }
+    if ($n -gt 0) { Start-Sleep -Milliseconds 600 }
+    return $n
+}
+
+function Show-FolderFree {
+    $left = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
+        $_.ExecutablePath -and $_.ExecutablePath -like "$Root*"
+    }
+    $listen = Get-NetTCPConnection -State Listen -LocalPort $Port -ErrorAction SilentlyContinue
+    if (-not $left -and -not $listen) {
+        Ok "整个目录已不被任何进程占用 —— 现在可以直接把 $Root 删掉了"
+        Info "（数据库与 $Srv\data 不受影响；只是想删文件夹的话不用管它们）"
+        Info "万一还是删不掉：多半是有个 cmd/PowerShell 窗口 cd 在里面，关掉它即可"
+    } else {
+        if ($left) { $left | ForEach-Object { Warn "仍在运行：PID $($_.ProcessId) $($_.Name) $($_.ExecutablePath)" } }
+        if ($listen) { Warn "端口 $Port 仍在监听：PID $($listen[0].OwningProcess)" }
+        Warn '先处理上面这些再删目录；若属主是 SYSTEM，请确认本窗口是管理员'
+    }
+}
+
 # ---------------------------------------------------------------- 子命令
 # ⚠️ 每个子命令都必须是**幂等**的：没装/重复跑都不该"报错退出"，只提示 —— 否则运维会以为坏了。
 switch ($Action.ToLower()) {
@@ -166,7 +212,11 @@ switch ($Action.ToLower()) {
         $mode = Get-ServiceMode
         if ($mode -eq 'service') { Stop-Service $SvcName -Force -ErrorAction SilentlyContinue; Ok "已停止（$SvcName）" }
         elseif ($mode -eq 'task') { Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue; Ok "已停止（$TaskName）" }
-        else { Warn '服务本来就没安装/没在跑，无需停止' }
+        else { Warn '服务本来就没安装/没在跑' }
+        # 服务停了不等于进程都没了（可能是 start.bat run 的前台实例、或残留子进程）
+        $k = if ($DryRun) { 0 } else { Stop-OwnedProcesses }
+        if ($k -gt 0) { Ok "另外结束了 $k 个残留进程" }
+        Show-FolderFree
         exit 0
     }
     'update' {
@@ -191,15 +241,28 @@ switch ($Action.ToLower()) {
     'run' { $Foreground = $true; $Action = 'install'; $Rebuild = $true }
     'uninstall' {
         Need-Admin
+        Info '卸载服务（数据库与 data 目录一概不动）—— 目标是让整个文件夹可以直接删除'
         $mode = Get-ServiceMode
         if ($mode -eq 'service') {
             $nssm = Find-Nssm
-            if ($nssm) { Step "& '$nssm' stop $SvcName"; Step "& '$nssm' remove $SvcName confirm" }
-            else { Step "Stop-Service $SvcName -Force"; Step "sc.exe delete $SvcName" }
+            if ($nssm) {
+                Step "& '$nssm' stop $SvcName"
+                Step "& '$nssm' set $SvcName AppExit Default Exit"      # 先掐掉"退出即重启"，否则进程杀了又被拉起来
+                Step "& '$nssm' remove $SvcName confirm"
+            } else {
+                Step "Stop-Service $SvcName -Force -ErrorAction SilentlyContinue"
+                Step "sc.exe config $SvcName start= disabled"          # ⚠️ 关键：不禁用自动启动，删目录时它还会启动
+                Step "sc.exe delete $SvcName"
+            }
         } elseif ($mode -eq 'task') {
+            Step "Stop-ScheduledTask -TaskName '$TaskName' -ErrorAction SilentlyContinue"
             Step "Unregister-ScheduledTask -TaskName '$TaskName' -Confirm:`$false"
-        } else { Warn '没找到已安装的服务/计划任务' }
+        } else { Warn '没找到已安装的服务/计划任务（那更好，说明没有开机自启的东西）' }
         Step "Remove-NetFirewallRule -DisplayName 'ModelPlatform $Port' -ErrorAction SilentlyContinue"
+        # 收掉所有"本体在项目目录里 / 占着本项目端口"的进程
+        $k = if ($DryRun) { 0 } else { Stop-OwnedProcesses }
+        if ($k -gt 0) { Ok "结束了 $k 个仍在运行的进程" }
+        Show-FolderFree
         Ok "已卸载。数据库与 $Srv\data 一概未动"
         exit 0
     }
