@@ -34,20 +34,27 @@
 #        （tools/check-requirements.py 就是拿本文件与 pip freeze 对拍的工具）。
 #
 #  ---------------------------------------------------------------
-#  torch 的正确安装方式：
+#  torch 的安装方式：
 #
-#     `torch==2.14.0+cpu` 这种带 +cpu 后缀的包**不在 PyPI 上**，
-#     只在 PyTorch 官方 CPU 索引里。直接 pip install 本文件会失败：
+#     `torch==2.14.0+cpu` 里的 `+cpu` 是 **local version 标记**：这种轮子
+#     **不在 PyPI 上**，只在 PyTorch 官方 CPU 索引里。如果只写一个 `torch==2.14.0+cpu`，
+#     默认走 PyPI 会直接失败（实测报错：No matching distribution found，且列出的可用版本
+#     里只有 2.9.0 … 2.14.0，没有 +cpu）：
 #
 #         ERROR: No matching distribution found for torch==2.14.0+cpu
 #
-#     正确做法是先单独装 torch：
+#     ✅ 本文件已用下面这行把 PyTorch 的 CPU 索引加进来（pip 支持 requirements 里的选项行），
+#        所以现在**直接 `pip install -r requirements.txt` 就能装上**，不必再手工分两步：
 #
-#         venv\Scripts\python.exe -m pip install torch==2.14.0+cpu ^
-#             --index-url https://download.pytorch.org/whl/cpu
+#  ↓↓↓ 就是这一行（别删）↓↓↓
+--extra-index-url https://download.pytorch.org/whl/cpu
 #
-#     再装其余依赖。或者像离线包那样，预先 `pip download` 把 wheel 存下来。
-#     （CPU 版约 118 MB；若装默认的 CUDA 版会到 2.5 GB 以上，本平台用不到 GPU。）
+#     ⚠️ 离线/内网：改成把 wheel 都下好再装 —— 记得 `torch-2.14.0+cpu-*.whl` 也要在 wheel 目录里
+#        （从 https://download.pytorch.org/whl/cpu 下），然后：
+#            pip install --no-index --find-links=<wheel目录> -r requirements.txt
+#        （`--no-index` 会让上面那行 extra-index 自动失效，不需要改本文件）
+#     ⚠️ 若换成别的 torch 版本，务必同时改这里的 `+cpu` 钉版与上面的索引说明；
+#        用默认的 CUDA 版会到 2.5 GB 以上，而本平台**用不到 GPU**（CPU 版约 118 MB）。
 #
 #  ---------------------------------------------------------------
 #  adtk 说明：
