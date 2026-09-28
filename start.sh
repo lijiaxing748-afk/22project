@@ -224,11 +224,23 @@ elif [[ ! -x "$PY" ]]; then
                 apt-get update -y || true
                 if ! DEBIAN_FRONTEND=noninteractive apt-get install -y python3.12 python3.12-venv python3.12-dev; then
                     warn '基础源里没有 python3.12，尝试 deadsnakes PPA...'
-                    DEBIAN_FRONTEND=noninteractive apt-get install -y software-properties-common \
-                        && add-apt-repository -y ppa:deadsnakes/ppa \
-                        && apt-get update -y \
-                        && DEBIAN_FRONTEND=noninteractive apt-get install -y python3.12 python3.12-venv python3.12-dev \
-                        || die '装不上 Python 3.12：请手工安装后重跑（Ubuntu 24.04 自带 python3.12）'
+                    DEBIAN_FRONTEND=noninteractive apt-get install -y software-properties-common || true
+                    if add-apt-repository -y ppa:deadsnakes/ppa && apt-get update -y \
+                       && DEBIAN_FRONTEND=noninteractive apt-get install -y python3.12 python3.12-venv python3.12-dev; then
+                        :
+                    else
+                        # ⚠️ 兜底：国内/WSL 环境下 add-apt-repository 常失败（它要连 ppa.launchpad.net 与
+                        #    keyserver.ubuntu.com，这两个域名经常被代理/证书问题挡住），而**内容站
+                        #    ppa.launchpadcontent.net 通常是通的**。这里直接手工加源。
+                        #    [trusted=yes] = 跳过签名校验（只为装 python3.12；介意的话装完删掉这个 .list 文件）。
+                        warn 'add-apt-repository 失败 —— 改用手工添加 deadsnakes 源（ppa.launchpadcontent.net）'
+                        echo 'deb [trusted=yes] https://ppa.launchpadcontent.net/deadsnakes/ppa/ubuntu '"$DISTRO_CODENAME"' main' \
+                            > /etc/apt/sources.list.d/deadsnakes.list
+                        info "已写 /etc/apt/sources.list.d/deadsnakes.list（$DISTRO_CODENAME）"
+                        apt-get update -y || true
+                        DEBIAN_FRONTEND=noninteractive apt-get install -y python3.12 python3.12-venv python3.12-dev \
+                            || die '装不上 Python 3.12：请手工安装后重跑（Ubuntu 24.04 自带 python3.12；20.04 需要 deadsnakes）'
+                    fi
                 fi
                 PY312="$(find_py312 || true)"
                 [[ -n "$PY312" ]] && ok "Python 3.12 已安装：$PY312"
@@ -267,6 +279,7 @@ if [[ -x "$PY" ]]; then ok "Python 环境：$("$PY" -V 2>/dev/null | tr -d '\r')
 DB_HOST="${MODEL_DB_HOST:-$(read_env MODEL_DB_HOST 127.0.0.1)}"
 DB_PORT="${MODEL_DB_PORT:-$(read_env MODEL_DB_PORT 3306)}"
 DB_NAME="$(read_env MODEL_DB_NAME model_management)"
+DISTRO_CODENAME="$(. /etc/os-release 2>/dev/null; echo "${VERSION_CODENAME:-focal}")"   # 手工加 PPA 源时要用
 MYSQL_BIN="$(command -v mysql || true)"
 MYSQL_SVC=""
 if command -v systemctl >/dev/null; then
@@ -298,7 +311,8 @@ else
         DEBIAN_FRONTEND=noninteractive apt-get install -y mysql-server \
             || die "安装 mysql-server 失败。离线机器请用 docs/离线部署/ 的离线包，或手工装好 MySQL 后重跑本脚本"
         systemctl enable --now mysql 2>/dev/null || systemctl start mysql 2>/dev/null || true
-        MYSQL_BIN="$(command -v mysql || true)"
+        DISTRO_CODENAME="$(. /etc/os-release 2>/dev/null; echo "${VERSION_CODENAME:-focal}")"   # 手工加 PPA 源时要用
+MYSQL_BIN="$(command -v mysql || true)"
         MYSQL_SVC="mysql"
         ok "MySQL 已安装并启动"
     else

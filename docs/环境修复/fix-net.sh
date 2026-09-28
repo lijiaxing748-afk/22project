@@ -101,6 +101,11 @@ fi
 step '3) 应用配置（apt / pip / 环境变量）'
 if [[ -z "$PROXY" ]]; then
     info '跳过（没有可用代理）'
+    # 清掉"空代理"这类坏配置：apt 看到空代理会当成要代理，反而更容易失败
+    ap=/etc/apt/apt.conf.d/99model-proxy
+    if [[ -f $ap ]] && grep -q '""' "$ap" 2>/dev/null; then
+        [[ "$(id -u)" -eq 0 ]] && { rm -f "$ap"; ok "清掉了空代理配置 $ap"; } || warn "存在空代理配置 $ap（apt 会误判），建议 sudo rm -f $ap"
+    fi
 elif [[ $DRY -eq 1 ]]; then
     info "[dry-run] 会写 /etc/apt/apt.conf.d/99model-proxy、~/ 的 pip.conf 与 profile.d，内容指向：$PROXY"
 else
@@ -124,14 +129,21 @@ EOF
     else
         warn '不是 root：跳过 /etc/profile.d（可在自己的 ~/.bashrc 里加同样几行）'
     fi
+    # ⚠️ PyPI 源也要"实测选一个"：本机实测 mirrors.ustc 与 pypi.tuna 都不通，而 aliyun / pypi.org 通
+    PYPI=""
+    for cand in https://mirrors.aliyun.com/pypi/simple/ https://pypi.org/simple/ https://pypi.tuna.tsinghua.edu.cn/simple/; do
+        if curl -fsS -m 10 -o /dev/null "$cand" 2>/dev/null; then PYPI="$cand"; break; fi
+        info "PyPI 源不通：$cand"
+    done
+    [[ -z "$PYPI" ]] && { PYPI="https://pypi.org/simple/"; warn 'PyPI 源都没连上，先按 pypi.org 写，联网后再 pip'; } \
+                     || ok "可用 PyPI 源：$PYPI"
     mkdir -p "${HOME}/.config/pip"
     cat > "${HOME}/.config/pip/pip.conf" <<EOF
 [global]
 proxy = $PROXY
-index-url = https://pypi.tuna.tsinghua.edu.cn/simple
-trusted-host = pypi.tuna.tsinghua.edu.cn
+index-url = $PYPI
 EOF
-    ok "已写 ${HOME}/.config/pip/pip.conf（pip 走代理 + 国内源）"
+    ok "已写 ${HOME}/.config/pip/pip.conf（pip${PROXY:+ 走代理} + 实测可用的源）"
     export http_proxy="$PROXY" https_proxy="$PROXY" all_proxy="$PROXY"
 fi
 
