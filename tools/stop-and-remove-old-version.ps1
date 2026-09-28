@@ -61,11 +61,22 @@ while ($curId -and $curId -ne 0 -and -not $selfIds.Contains([int]$curId)) {
 }
 $SelfIds = $selfIds
 
+# ⚠️ 只按"程序本体（ExecutablePath）在目标目录里"判定，**不**按命令行匹配 ——
+#    实测踩过：用 `powershell -Command "cd <目录>; ..."` 这类方式调用时，命令行里会带该目录，
+#    按命令行匹配会把调用者的终端乃至兄弟进程一起杀掉。命令行里提到目录的进程只**报告**不杀。
 function Get-SuspectProcess {
     Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
         $id = [int]$_.ProcessId
         if ($SelfIds.Contains($id)) { return $false }
-        ($_.ExecutablePath -and $_.ExecutablePath -like "$Root*") -or
+        ($_.ExecutablePath -and $_.ExecutablePath -like "$Root*")
+    }
+}
+
+function Get-MentioningProcess {
+    Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
+        $id = [int]$_.ProcessId
+        if ($SelfIds.Contains($id)) { return $false }
+        -not ($_.ExecutablePath -and $_.ExecutablePath -like "$Root*") -and
         ($_.CommandLine -and $_.CommandLine -like "*$Root*")
     }
 }
