@@ -601,18 +601,24 @@ Info "数据库：${DbUser}@${DbHost}:${DbPort}/${DbName}"
 
 # 「查配置」：连上之后问服务端**真实的端口与版本**，写进 db.env 的是实际值而不是我们的猜测
 if (-not $DryRun -and $Configured) {
+    # ⚠️ 这一段只是"问服务端真实端口/版本"（用于展示 + 纠正 db.env），**绝不能因为失败就中断安装**。
+    #    另有 PowerShell 5.1 的一个坑（用户现场踩到）：给原生命令传带**内嵌双引号**的 SQL 时，
+    #    参数会在引号处被拆开 —— `-e 'SELECT CONCAT(@@port, " ", @@version)'` 被拆成两条参数，
+    #    mysql 把后半截当成**库名**，报 `Access denied ... to database ', @@version)'`。
+    #    所以改成两条**不含引号**的简单查询，并整体 try/catch 兜底。
     $env:MYSQL_PWD = $DbPass
-    $srvInfo = (& $Mysql -h $DbHost -P $DbPort -u $DbUser -N -B -e 'SELECT CONCAT(@@port, " ", @@version)' 2>&1 |
-                Out-String).Trim()
-    if ($srvInfo) {
-        $parts = $srvInfo -split '\s+', 2
-        if ($parts[0] -match '^\d+$' -and $parts[0] -ne $DbPort) {
-            Info "服务端报告实际端口是 $($parts[0])（配置里写的是 $DbPort），按实际值更新 db.env"
-            ((Get-Content $DbEnv -Raw -Encoding UTF8) -replace '(?m)^\s*MODEL_DB_PORT\s*=.*$', "MODEL_DB_PORT=$($parts[0])") |
-                ForEach-Object { Write-Text $DbEnv $_ }
-            $DbPort = $parts[0]
+    try {
+        $realPort = ((& $Mysql -h $DbHost -P $DbPort -u $DbUser -N -B -e 'SELECT @@port' 2>&1 | Out-String)).Trim()
+        $realVer  = ((& $Mysql -h $DbHost -P $DbPort -u $DbUser -N -B -e 'SELECT @@version' 2>&1 | Out-String)).Trim()
+        if ($realVer -match 'ERROR') { $realVer = '' }
+        if ($realPort -match '^\d+$' -and $realPort -ne $DbPort) {
+            Info "服务端报告实际端口是 $realPort（配置里写的是 $DbPort），按实际值更新 db.env"
+            Write-Text $DbEnv ((Get-Content $DbEnv -Raw -Encoding UTF8) -replace '(?m)^\s*MODEL_DB_PORT\s*=.*$', "MODEL_DB_PORT=$realPort")
+            $DbPort = $realPort
         }
-        if ($parts.Count -gt 1) { Ok "MySQL 版本：$($parts[1])（端口 $DbPort）" }
+        if ($realVer) { Ok "MySQL 版本：$realVer（端口 $DbPort）" } else { Info '（未能读到 MySQL 版本，不影响使用）' }
+    } catch {
+        Warn "查询 MySQL 版本/端口时出错（不影响使用）：$($_.Exception.Message)"
     }
 }
 
