@@ -1,7 +1,15 @@
 @echo off
 chcp 65001 >nul
-rem 模型管理平台 · 更新到仓库最新代码（Windows）。等价于 start.bat update
-rem git pull → 重建前端 → 重启服务。内网拉不到 GitHub 时：覆盖代码后跑 start.bat upgrade
-setlocal
-powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0tools\deploy-windows.ps1" update %*
-endlocal
+rem 模型管理平台 · 更新到仓库最新代码（git pull → 重建前端 → 重启服务）
+rem 该动作需要管理员：不是管理员会弹 UAC 请求提升（点「是」）
+if not defined MP_NO_ELEVATE (
+  net session >nul 2>&1
+  if errorlevel 1 (
+    echo 需要管理员权限，正在请求提升（会弹 UAC 窗口，点「是」）...
+    powershell -NoProfile -Command "Start-Process -FilePath '%~f0' -ArgumentList '%*' -Verb RunAs"
+    exit /b
+  )
+)
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0tools\deploy-windows.ps1" update
+echo.
+pause

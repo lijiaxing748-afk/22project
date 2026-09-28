@@ -71,3 +71,17 @@ Makefile    text eol=lf
 *.vmdk      binary
 *.vmem      binary
 *.vmsn      binary
+
+
+# ---- 2026-09-28 追加：上面已有 .sh/.bash/.service/.py = LF、.ps1/.bat/.cmd = CRLF、二进制 = binary；
+#      这里补前端与文档类，避免 core.autocrlf 在 Windows 上把它们转成 CRLF 产生无意义 diff。
+#      ⚠️ 教训：新写的 .bat 若以 LF 结尾，cmd.exe 解析会错乱 —— 带 goto/标签/括号块时尤其严重
+#      （实测 uninstall.bat 的 goto 与括号块整段失效，报出一堆"中文片段不是命令"），
+#      所以 .bat/.cmd 的 CRLF 规则必须留着，别删。
+*.vue       text eol=lf
+*.ts        text eol=lf
+*.js        text eol=lf
+*.mjs       text eol=lf
+*.json      text eol=lf
+*.md        text eol=lf
+*.sql       text eol=lf
