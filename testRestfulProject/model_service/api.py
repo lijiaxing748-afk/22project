@@ -97,6 +97,12 @@ WEIGHT_SUFFIXES = {
 # 上传文件夹时，这些扩展名之外的文件一律忽略（允许带上 scaler/meta/说明文件等附属文件）
 KEEP_SUFFIXES = {".json", ".npz", ".npy", ".txt", ".yaml", ".yml", ".onnx", ".csv",
                  ".h5", ".keras", ".pt", ".pth", ".pt2", ".pkl", ".pickle"}
+# ⚠️ 落盘到产物目录时**再筛一次**：`.txt` / `.csv` 这类"说明/数据类"附件**不写进产物目录**。
+#    理由（实测踩到）：导出的发布包里带 requirements.txt，用户把这个包当模型上传时，
+#    它会跟着进 data/models/<名>/，把产物目录弄脏（1dcnn 目录里凭空多出一个 requirements.txt）。
+#    它们仍然会被收下、也参与过探测（KEEP_SUFFIXES 不动），只是**不落进产物目录**，
+#    并在响应里如实回报"已忽略"。模型跑起来需要的（权重 / scaler / meta / 框架配置 / onnx）照旧都写。
+ARTIFACT_SKIP_SUFFIXES = {".txt", ".csv"}
 # PyTorch 的输出层一般叫这些名字，用来从 state_dict 里认出"最后一层"从而读出类别数。
 # ⚠️ 必须有那个否定环视（`(?<![A-Za-z0-9])`）：没有它时 `re.search` 会把**更长的层名后缀**
 #    也算命中 —— `dropout.weight`、`about.weight`、`readout.weight`、`without.weight`
@@ -1476,9 +1482,16 @@ class ModelUpload(Resource):
             return {"error": f"模型名不能用于落盘：{exc}"}, 400
         replaced = (root / "meta.json").is_file()
         # 3) 落盘
+        written: list[str] = []                    # 真正进了产物目录的文件（响应里只报这些）
         try:
             for filename, blob in blobs.items():
+                if Path(filename).suffix.lower() in ARTIFACT_SKIP_SUFFIXES:
+                    # 说明/数据类附件：收下了、也参与过探测，但它不是"模型产物"，不进产物目录
+                    skipped.append({"filename": filename,
+                                    "reason": "说明/数据类文件（如 requirements.txt），已忽略，不写入模型产物目录"})
+                    continue
                 (stage / filename).write_bytes(blob)
+                written.append(filename)
             # meta.json 只在这里写一次：用户带了就以他的为准，没带就按探测结果现造（_upload_meta 内部判断）
             meta, meta_generated = _upload_meta(form, safe, weights, probe, scaler, meta_blob)
             (stage / "meta.json").write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -1531,7 +1544,7 @@ class ModelUpload(Resource):
             "probe": {"weights": weights[0], "framework": weights[1], "reason": probe.get("reason"),
                       "input_len": probe.get("input_len"), "num_classes": probe.get("num_classes")},
             "probed_files": probed,
-            "saved": [{"filename": k, "size_kb": round(len(v) / 1024, 1)} for k, v in blobs.items()],
+            "saved": [{"filename": k, "size_kb": round(len(blobs[k]) / 1024, 1)} for k in written],
             "skipped": skipped, "warnings": warnings,
             "db": {"written": db_error is None, "ModelID": model_id, "ModelName": safe, "error": db_error},
             "hint": f"现在可以在「推理」里选 {safe}（输入长度 {meta.get('input_len') or '默认 784'}）",
