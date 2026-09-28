@@ -35,6 +35,7 @@ param(
     [string]$MysqlUrl = '',          # 自定义下载地址
     [string]$MysqlDir = '',          # 安装目录，默认 C:\mysql
     [switch]$SkipMysqlInstall,       # 本机没有 MySQL 时不要自动装（只报错提示）
+    [switch]$RecreateVenv,           # 现有 venv 的 Python 版本不对时，自动删掉重建（要求 3.12）
     [switch]$DryRun
 )
 $ErrorActionPreference = 'Stop'
@@ -283,20 +284,67 @@ Write-Host ''
 Need-Admin
 
 # ---------------------------------------------------------------- 1) Python 环境
+# ⚠️ 必须 Python **3.12**：requirements.txt 里 numpy==2.5.3 要求 >=3.12、tensorflow 2.21 也只有 3.12 的轮子。
+#    实测踩过（用户现场）：机器上 PATH 里排前面的 python 是 **3.11**，脚本"拿到哪个用哪个"→ 装依赖时报
+#    "No matching distribution found for numpy==2.5.3 (from versions: ...2.4.6)"（cp311 上根本没有 2.5.3）。
+#    所以这里**校验版本**，并优先用 py -3.12 找解释器。
+function Get-PyVer([string]$Exe) {
+    if (-not $Exe -or -not (Test-Path $Exe)) { return '' }
+    try { return ("$(& $Exe -c 'import sys;print(str(sys.version_info[0]) + chr(46) + str(sys.version_info[1]))' 2>$null)").Trim() }
+    catch { return '' }
+}
+function Find-Python312 {
+    # ① py 启动器最可靠（装了 3.12 就能找到，不必进 PATH）
+    if (Get-Command py.exe -ErrorAction SilentlyContinue) {
+        try {
+            $exe = ("$(& py -3.12 -c 'import sys;print(sys.executable)' 2>$null | Select-Object -First 1)").Trim()
+            if ((Get-PyVer $exe) -eq '3.12') { return $exe }
+        } catch {}
+    }
+    # ② 常见安装位置
+    foreach ($p in @((Join-Path $env:LOCALAPPDATA 'Programs\Python\Python312\python.exe'),
+                     'C:\Python312\python.exe', 'C:\Program Files\Python312\python.exe',
+                     'D:\Python312\python.exe', 'D:\python\Python312\python.exe')) {
+        if ((Get-PyVer $p) -eq '3.12') { return $p }
+    }
+    # ③ PATH 里的 python / python3（只有版本正好 3.12 才用）
+    foreach ($cmd in 'python.exe', 'python3.exe') {
+        $c = Get-Command $cmd -ErrorAction SilentlyContinue
+        if ($c -and (Get-PyVer $c.Source) -eq '3.12') { return $c.Source }
+    }
+    return ''
+}
+$PyHint = '本平台要求 Python 3.12（requirements.txt 里 numpy==2.5.3 需 >=3.12、tensorflow 2.21 只有 3.12 的轮子）。' +
+          "`n        装一个：https://www.python.org/downloads/release/python-31210/  （安装时勾不勾 Add to PATH 都行，脚本会用 py -3.12 找）"
+if (Test-Path $Py) {
+    $curVer = Get-PyVer $Py
+    if ($curVer -ne '3.12') {
+        if ($RecreateVenv -and -not $DryRun) {
+            Warn "现有 venv 是 Python $curVer（要求 3.12）→ 按 -RecreateVenv 重建"
+            Remove-Item -Recurse -Force (Join-Path $Srv 'venv')
+        } else {
+            Die "现有 venv 用的是 Python $curVer，但要求 3.12 —— 继续装会在 numpy==2.5.3 上失败。`n        修：删掉 $(Join-Path $Srv 'venv') 后重跑；或执行  start.bat -RecreateVenv  （自动重建）"
+        }
+    }
+}
 if (-not (Test-Path $Py)) {
+    $PyExe = Find-Python312
     Info '缺少 venv，创建并安装依赖（需联网；内网请用 docs\离线部署\ 的离线 wheel 方案）...'
+    Info "会用的解释器：$(if ($PyExe) { $PyExe } else { '（没找到 3.12）' })"
+    if (-not $PyExe) {
+        if ($DryRun) { Info "[dry-run] 本机没找到 Python 3.12 —— 真实运行会在这里报错并给出下载地址" }
+        else { Die "没找到 Python 3.12。$PyHint" }
+    }
     if ($DryRun) { Info '[dry-run] 会创建 venv 并 pip install -r requirements.txt' }
     else {
-        $base = Get-Command python.exe -ErrorAction SilentlyContinue
-        if (-not $base) { Die '找不到 python.exe：请先安装 Python 3.12（与 requirements.txt / 离线包一致）并勾选 Add to PATH' }
-        & $base.Source -m venv (Join-Path $Srv 'venv')
+        & $PyExe -m venv (Join-Path $Srv 'venv')
         if (-not (Test-Path $Py)) { Die '创建 venv 失败' }
         & $Py -m pip install --upgrade pip
         & $Py -m pip install -r (Join-Path $Srv 'requirements.txt')
-        if ($LASTEXITCODE -ne 0) { Die '依赖安装失败' }
+        if ($LASTEXITCODE -ne 0) { Die "依赖安装失败（看上面的 pip 报错；常见原因：Python 版本不是 3.12、或内网拉不到包 → 用 docs\离线部署\ 的离线 wheel）" }
     }
 }
-if (Test-Path $Py) { Ok "Python 环境：$(& $Py -V 2>&1)" } else { Info '（dry-run：跳过 Python 环境检查）' }
+if (Test-Path $Py) { Ok "Python 环境：$(& $Py -V 2>&1)（$(Get-PyVer $Py)）" } else { Info '（dry-run：跳过 Python 环境检查）' }
 
 # ---------------------------------------------------------------- 2) db.env（含密钥生成）
 # ---------------------------------------------------------------- 2) 数据库与 db.env（**自动配置**）

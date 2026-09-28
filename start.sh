@@ -183,27 +183,62 @@ printf '============================================================\n\n'
 need_root
 
 # ---------------------------------------------------------------- 1) Python 环境
+# ⚠️ 必须 Python **3.12**：requirements.txt 里 numpy==2.5.3 要求 >=3.12、tensorflow 2.21 也只有 3.12 的轮子。
+#    实测踩过：机器上 `python3` 是 3.11，脚本"拿到哪个用哪个" → 装依赖时报
+#    "No matching distribution found for numpy==2.5.3"（cp311 上根本没有 2.5.3）。所以这里**校验版本**。
 PY="$SRV/venv/bin/python"
-if [[ ! -x "$PY" ]]; then
+py_ver_of() { "$1" -c 'import sys;print("%d.%d" % sys.version_info[:2])' 2>/dev/null | tr -d '\r'; }
+find_py312() {
+    for c in python3.12 python3; do
+        if command -v "$c" >/dev/null 2>&1; then
+            v="$(py_ver_of "$(command -v "$c")")"
+            [[ "$v" == "3.12" ]] && { command -v "$c"; return 0; }
+        fi
+    done
+    for p in /usr/bin/python3.12 /usr/local/bin/python3.12; do
+        [[ -x "$p" && "$(py_ver_of "$p")" == "3.12" ]] && { echo "$p"; return 0; }
+    done
+    return 1
+}
+if [[ -x "$PY" ]]; then
+    CUR_VER="$(py_ver_of "$PY")"
+    if [[ "$CUR_VER" != "3.12" ]]; then
+        die "现有 venv 用的是 Python ${CUR_VER:-未知}，但 requirements.txt 要求 3.12（numpy==2.5.3 需 >=3.12）。
+        修：rm -rf '$SRV/venv' 后重跑；或加 RECREATE_VENV=1 让它自动重建：
+            RECREATE_VENV=1 sudo bash start.sh"
+    fi
+    ok "Python 环境：$("$PY" -V 2>/dev/null | tr -d '\r')"
+elif [[ ! -x "$PY" ]]; then
     info "缺少 venv，创建并安装依赖（有 wheels/ 或 dist-linux 里的离线 wheel 会优先用）..."
+    PY312="$(find_py312 || true)"
     if [[ -n "$DRY" ]]; then
+        info "会用的解释器：${PY312:-（本机没找到 3.12，真实运行会报错并给出安装命令）}"
         info "[dry-run] 会创建 venv 并安装 requirements.txt"
     else
-    command -v python3 >/dev/null || die "找不到 python3：sudo apt install -y python3 python3-venv python3-pip"
-    run "python3 -m venv '$SRV/venv'" || die "创建 venv 失败"
-    WHEELS=""
-    for d in "$ROOT/wheels" "$ROOT/offline_wheels" "$SRV/wheels"; do
-        [[ -d "$d" ]] && WHEELS="$d" && break
-    done
-    if [[ -n "$WHEELS" ]]; then
-        info "使用离线 wheel 目录：$WHEELS"
-        run "'$PY' -m pip install --no-index --find-links='$WHEELS' -r '$SRV/requirements.txt'" \
-            || die "离线安装失败：检查 wheels 目录里是否缺包、Python 版本是否匹配"
-    else
-        warn "没有离线 wheel 目录 → 走联网 pip（torch 需要 pytorch cpu 源，见 requirements.txt 开头）"
-        run "'$PY' -m pip install --upgrade pip"
-        run "'$PY' -m pip install -r '$SRV/requirements.txt'" || die "依赖安装失败（内网机器请看 docs/离线部署/README-先看我.md）"
-    fi
+        if [[ -z "$PY312" ]]; then
+            die "没找到 Python 3.12（本平台要求 3.12：numpy==2.5.3 需 >=3.12、tensorflow 2.21 只有 3.12 的轮子）。
+        装一个： sudo apt update && sudo apt install -y python3.12 python3.12-venv python3.12-dev"
+        fi
+        # 已存在但版本不对的 venv（上面已拦）—— 这里处理"存在同名的空 venv"或 RECREATE_VENV
+        if [[ -d "$SRV/venv" && -n "${RECREATE_VENV:-}" ]]; then
+            warn "按 RECREATE_VENV=1 重建 venv"
+            rm -rf "$SRV/venv"
+        fi
+        info "用 $PY312 创建 venv"
+        run "'$PY312' -m venv '$SRV/venv'" || die "创建 venv 失败"
+        WHEELS=""
+        for d in "$ROOT/wheels" "$ROOT/offline_wheels" "$SRV/wheels"; do
+            [[ -d "$d" ]] && WHEELS="$d" && break
+        done
+        if [[ -n "$WHEELS" ]]; then
+            info "使用离线 wheel 目录：$WHEELS"
+            run "'$PY' -m pip install --no-index --find-links='$WHEELS' -r '$SRV/requirements.txt'" \
+                || die "离线安装失败：检查 wheels 目录里是否缺包、Python 版本是否匹配（必须是 3.12 的轮子）"
+        else
+            warn "没有离线 wheel 目录 → 走联网 pip（torch 需要 pytorch cpu 源，见 requirements.txt 开头）"
+            run "'$PY' -m pip install --upgrade pip"
+            run "'$PY' -m pip install -r '$SRV/requirements.txt'" || die "依赖安装失败（内网机器请看 docs/离线部署/README-先看我.md）"
+        fi
     fi
 fi
 if [[ -x "$PY" ]]; then ok "Python 环境：$("$PY" -V 2>/dev/null | tr -d '\r')"; else info "（dry-run：跳过 Python 环境检查）"; fi
