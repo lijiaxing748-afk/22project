@@ -74,6 +74,26 @@ def main() -> int:
             problems.append(f"{rel}：读不了（{exc}）")
             continue
         has_bom = data.startswith(BOM)
+        # ⚠️ 2026-09-28 踩到的坑：把带 BOM 的 .ps1 读成字符串再写回时，如果读出来的首字符 U+FEFF
+        #    没去掉、写回时又带 BOM，就会变成**两个 BOM**。PowerShell 于是在 param 之前看到一个多余字符，
+        #    把整个参数块当成表达式解析，报一排「The assignment expression is not valid」——
+        #    看起来像脚本写错了，其实是文件头多了一个看不见的字符。这里专门查出来。
+        if has_bom:
+            try:
+                # ⚠️ 这里必须用**普通 utf-8** 解码：utf-8-sig 会主动吃掉 BOM，永远判不出来（一开始就写错过）。
+                if data[3:].decode("utf-8", errors="strict").startswith("\ufeff"):
+                    problems.append(
+                        f"{rel}：文件开头有**两个 BOM**（BOM 字节 + 又一个 U+FEFF）—— PowerShell 会把 param "
+                        f"当成表达式解析，报 'The assignment expression is not valid'。\n"
+                        f"        修：读入时用 TrimStart([char]0xFEFF) 去掉多余 BOM 字符，再用 WriteAllText 写回恰好一个 BOM")
+            except UnicodeDecodeError:
+                pass
+        else:
+            try:
+                if data.decode("utf-8", errors="strict").startswith("\ufeff"):
+                    problems.append(f"{rel}：开头有多余的 U+FEFF 字符（不是标准 BOM 字节形式），请删掉")
+            except UnicodeDecodeError:
+                pass
         if p.suffix.lower() in (".ps1", ".psm1"):
             n_ps1 += 1
             if not has_bom:
