@@ -35,6 +35,9 @@ param(
     [string]$MysqlUrl = '',          # 自定义下载地址
     [string]$MysqlDir = '',          # 安装目录，默认 C:\mysql
     [switch]$SkipMysqlInstall,       # 本机没有 MySQL 时不要自动装（只报错提示）
+    [string]$PythonInstaller = '',   # 离线：python-3.12*.exe 路径（不填则先找仓库里的，再尝试下载）
+    [string]$PythonUrl = '',         # 自定义 Python 安装包下载地址
+    [switch]$SkipPythonInstall,      # 本机没有 Python 3.12 时不要自动装（只报错提示）
     [switch]$RecreateVenv,           # 现有 venv 的 Python 版本不对时，自动删掉重建（要求 3.12）
     [switch]$DryRun
 )
@@ -283,6 +286,42 @@ Write-Host '============================================================'
 Write-Host ''
 Need-Admin
 
+# ---------------------------------------------------------------- 1.0) 没有 Python 3.12 就自动装
+# 与 MySQL 同款思路：找不到就下载官方安装包静默装（仅当前用户，不需要管理员）。
+function Install-Python312 {
+    $exe = $PythonInstaller
+    if (-not $exe) {
+        $found = Get-ChildItem -Path @($Root, (Join-Path $Root 'tools'), (Join-Path $Root 'docs\离线部署')) `
+                    -Recurse -Filter 'python-3.12*.exe' -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($found) { $exe = $found.FullName; Info "使用本机已有的安装包：$exe" }
+    }
+    if (-not $exe) {
+        $target = Join-Path $env:TEMP 'python-3.12-amd64.exe'
+        $urls = @()
+        if ($PythonUrl) { $urls += $PythonUrl }
+        $urls += @(
+            'https://www.python.org/ftp/python/3.12.10/python-3.12.10-amd64.exe',
+            'https://www.python.org/ftp/python/3.12.9/python-3.12.9-amd64.exe',
+            'https://www.python.org/ftp/python/3.12.8/python-3.12.8-amd64.exe'
+        )
+        foreach ($u in $urls) {
+            try {
+                Info "下载 $u （约 26 MB）..."
+                Invoke-WebRequest -Uri $u -OutFile $target -UseBasicParsing -TimeoutSec 900
+                $exe = $target; break
+            } catch { Warn "下载失败：$($_.Exception.Message)" }
+        }
+    }
+    if (-not $exe -or -not (Test-Path $exe)) {
+        Die "没能获得 Python 3.12 安装包。离线机器：把 python-3.12*.exe 放到 tools\ 下（或用 -PythonInstaller 指定路径）后重跑"
+    }
+    Info '静默安装 Python 3.12（仅当前用户，不需要管理员；约 1~3 分钟）...'
+    $argList = @('/quiet', 'InstallAllUsers=0', 'PrependPath=1', 'Include_launcher=1', 'Include_pip=1', 'Include_test=0')
+    $proc = Start-Process -FilePath $exe -ArgumentList $argList -Wait -PassThru
+    if ($proc.ExitCode -ne 0) {
+        Warn "安装程序返回码 $($proc.ExitCode)（1602 = 用户取消；3010 = 需要重启；其它见 python.org 文档）"
+    } else { Ok 'Python 3.12 已安装' }
+}
 # ---------------------------------------------------------------- 1) Python 环境
 # ⚠️ 必须 Python **3.12**：requirements.txt 里 numpy==2.5.3 要求 >=3.12、tensorflow 2.21 也只有 3.12 的轮子。
 #    实测踩过（用户现场）：机器上 PATH 里排前面的 python 是 **3.11**，脚本"拿到哪个用哪个"→ 装依赖时报
@@ -330,11 +369,14 @@ if (Test-Path $Py) {
 if (-not (Test-Path $Py)) {
     $PyExe = Find-Python312
     Info '缺少 venv，创建并安装依赖（需联网；内网请用 docs\离线部署\ 的离线 wheel 方案）...'
-    Info "会用的解释器：$(if ($PyExe) { $PyExe } else { '（没找到 3.12）' })"
     if (-not $PyExe) {
-        if ($DryRun) { Info "[dry-run] 本机没找到 Python 3.12 —— 真实运行会在这里报错并给出下载地址" }
-        else { Die "没找到 Python 3.12。$PyHint" }
+        Warn '本机没有 Python 3.12 —— 自动下载并静默安装（约 26MB；仅当前用户，不需要管理员）'
+        Info '  （离线机器：把 python-3.12*.exe 放到 tools\ 下，或用 -PythonInstaller 指定路径）'
+        if ($SkipPythonInstall) { Die "指定了 -SkipPythonInstall，但本机没有 Python 3.12。$PyHint" }
+        if (-not $DryRun) { Install-Python312; $PyExe = Find-Python312 }
     }
+    Info "会用的解释器：$(if ($PyExe) { $PyExe } else { '（dry-run：本机没有 3.12，真实运行会自动下载安装）' })"
+    if (-not $PyExe -and -not $DryRun) { Die "装完仍找不到 Python 3.12。$PyHint" }
     if ($DryRun) { Info '[dry-run] 会创建 venv 并 pip install -r requirements.txt' }
     else {
         & $PyExe -m venv (Join-Path $Srv 'venv')

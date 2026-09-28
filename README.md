@@ -79,7 +79,7 @@
 
 | | 版本 |
 |---|---|
-| Python | 3.12（`testRestfulProject/venv` 已含 tensorflow 2.21 / torch 2.14+cpu / adtk 等依赖，约 2.7GB） |
+| Python | **3.12**（必须；`testRestfulProject/venv` 已含 tensorflow 2.21 / torch 2.14+cpu / adtk 等依赖，约 2.7GB）。**没装也不用管 —— 部署脚本会自动下载并静默安装**（Windows 取 python.org 官方安装包，仅当前用户、不需要管理员；Linux 走 `apt`，22.04 自动加 deadsnakes PPA） |
 | Node.js | 18+ |
 | MySQL | 8.0+（本项目在 9.2 上验证） |
 
@@ -121,7 +121,7 @@ sudo bash start.sh
 > ⚠️ Windows 上别直接敲 `start`（那是 cmd 自带的命令），要敲 **`start.bat`** 或 `.\start.bat`。
 > 早期版本的脚本叫 `deploy.bat` / `deploy.sh`，**现已改名 start**，老的 `deploy.*` 仍保留为一层转发（会提示已改名）。
 
-它会（幂等，可反复执行）：准备 venv 与依赖 → 构建前端产物 → **自动配置数据库** → 注册成**开机自启**的
+它会（幂等，可反复执行）：**缺 Python 3.12 就自动下载安装** → 准备 venv 与依赖 → 构建前端产物 → **自动配置数据库** → 注册成**开机自启**的
 常驻服务 → 放行防火墙端口 → 打印**局域网访问地址**。
 
 **数据库与 `db.env` 是全自动的** —— 正常情况下**不需要你手工填任何东西**：

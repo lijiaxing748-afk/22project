@@ -216,9 +216,27 @@ elif [[ ! -x "$PY" ]]; then
         info "[dry-run] 会创建 venv 并安装 requirements.txt"
     else
         if [[ -z "$PY312" ]]; then
-            die "没找到 Python 3.12（本平台要求 3.12：numpy==2.5.3 需 >=3.12、tensorflow 2.21 只有 3.12 的轮子）。
-        装一个： sudo apt update && sudo apt install -y python3.12 python3.12-venv python3.12-dev"
+            if [[ -n "${SKIP_PYTHON_INSTALL:-}" ]]; then
+                die '没找到 Python 3.12，且指定了 SKIP_PYTHON_INSTALL=1。请手工装： sudo apt install -y python3.12 python3.12-venv python3.12-dev'
+            fi
+            warn '没找到 Python 3.12 —— 自动安装（需要联网；Ubuntu 24.04 自带 3.12，22.04 会走 deadsnakes PPA）'
+            if command -v apt-get >/dev/null; then
+                apt-get update -y || true
+                if ! DEBIAN_FRONTEND=noninteractive apt-get install -y python3.12 python3.12-venv python3.12-dev; then
+                    warn '基础源里没有 python3.12，尝试 deadsnakes PPA...'
+                    DEBIAN_FRONTEND=noninteractive apt-get install -y software-properties-common \
+                        && add-apt-repository -y ppa:deadsnakes/ppa \
+                        && apt-get update -y \
+                        && DEBIAN_FRONTEND=noninteractive apt-get install -y python3.12 python3.12-venv python3.12-dev \
+                        || die '装不上 Python 3.12：请手工安装后重跑（Ubuntu 24.04 自带 python3.12）'
+                fi
+                PY312="$(find_py312 || true)"
+                [[ -n "$PY312" ]] && ok "Python 3.12 已安装：$PY312"
+            else
+                die '本机没有 python3.12 也没有 apt-get：请手工安装 Python 3.12 后重跑'
+            fi
         fi
+        [[ -n "$PY312" ]] || die '仍找不到 Python 3.12'
         # 已存在但版本不对的 venv（上面已拦）—— 这里处理"存在同名的空 venv"或 RECREATE_VENV
         if [[ -d "$SRV/venv" && -n "${RECREATE_VENV:-}" ]]; then
             warn "按 RECREATE_VENV=1 重建 venv"
