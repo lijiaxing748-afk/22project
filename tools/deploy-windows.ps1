@@ -1,4 +1,4 @@
-# =====================================================================
+﻿# =====================================================================
 #  模型管理平台 · 服务器部署（一条命令，Windows）
 #
 #  由仓库根的 deploy.bat 调用，也可以直接用 PowerShell 跑：
@@ -66,6 +66,13 @@ function Need-Admin {
     if (-not (Test-Admin)) { Die "这个动作需要**管理员**权限：右键「命令提示符/PowerShell」→ 以管理员身份运行，再执行 deploy.bat $Action" }
 }
 # 从 db.env 读一个键（去引号；MODEL_DB_* / MODEL_SECRET_KEY 都在这里）
+# ⚠️ 写文件一律 UTF-8 **无 BOM**：Windows PowerShell 5.1 的 `-Encoding UTF8` 会加 BOM，
+#    而 db.env 带 BOM 会让第一行变成 "\ufeffMODEL_DB_DIALECT"（键名多一个看不见的字符）→ 配置读不到；
+#    SQL 临时文件与 my.ini 同理。
+# ⚠️ 但**本脚本自身**必须带 BOM —— 否则 5.1 会按 GBK 读，脚本里的中文全变乱码（这是另一回事，别混）。
+function Write-Text([string]$Path, [string]$Text) {
+    [System.IO.File]::WriteAllText($Path, $Text, (New-Object System.Text.UTF8Encoding($false)))
+}
 function Read-Env([string]$Key, [string]$Default = '') {
     $path = Join-Path $Srv 'db.env'
     if (-not (Test-Path $path)) { return $Default }
@@ -311,7 +318,7 @@ datadir=$dataDir
 port=$DbPort
 character-set-server=utf8mb4
 collation-server=utf8mb4_unicode_ci
-"@ | Set-Content -Path $ini -Encoding UTF8
+"@ | ForEach-Object { Write-Text $ini $_ }
         Info '注册并启动 Windows 服务 MySQL ...'
         & $mysqld --install MySQL --defaults-file="$ini"
         Start-Service MySQL
@@ -362,7 +369,7 @@ if ($DryRun -and $CurUser -and (Test-Path $DbEnv)) {
             if ($text -match '(?m)^\s*MODEL_SECRET_KEY\s*=') {
                 $text = $text -replace '(?m)^\s*MODEL_SECRET_KEY\s*=.*$', "MODEL_SECRET_KEY=$Secret"
             } else { $text = $text.TrimEnd() + "`r`nMODEL_SECRET_KEY=$Secret`r`n" }
-            Set-Content -Path $DbEnv -Value $text -Encoding UTF8 -NoNewline
+            Write-Text $DbEnv $text
             Ok '已补写 MODEL_SECRET_KEY（Token 不会因重启失效）'
         }
     }
@@ -417,7 +424,7 @@ MODEL_TOKEN_TTL_HOURS=12
 MODEL_BOOTSTRAP_ADMIN_PASSWORD=
 "@
         if (Test-Path $DbEnv) { Copy-Item $DbEnv "$DbEnv.bak-$(Get-Date -Format 'yyyyMMdd-HHmmss')" -Force }
-        Set-Content -Path $DbEnv -Value $text -Encoding UTF8 -NoNewline
+        Write-Text $DbEnv $text
         $CurUser = $AppUser; $CurPass = $AppPass; $Configured = $true
         Ok "已建库 $DbName、建账号 $AppUser（随机口令），并写好 $DbEnv"
         Info "  账号口令与 MODEL_SECRET_KEY 都在这个文件里；要改就编辑它再重跑"
@@ -437,7 +444,7 @@ if (-not $DryRun -and $Configured) {
         if ($parts[0] -match '^\d+$' -and $parts[0] -ne $DbPort) {
             Info "服务端报告实际端口是 $($parts[0])（配置里写的是 $DbPort），按实际值更新 db.env"
             ((Get-Content $DbEnv -Raw -Encoding UTF8) -replace '(?m)^\s*MODEL_DB_PORT\s*=.*$', "MODEL_DB_PORT=$($parts[0])") |
-                Set-Content -Path $DbEnv -Encoding UTF8 -NoNewline
+                ForEach-Object { Write-Text $DbEnv $_ }
             $DbPort = $parts[0]
         }
         if ($parts.Count -gt 1) { Ok "MySQL 版本：$($parts[1])（端口 $DbPort）" }
@@ -478,7 +485,7 @@ function Apply-Sql([string]$File) {
         $sql = $sql.Replace(($bt + 'model_management' + $bt), ($bt + $DbName + $bt))
     }
     $tmp = [System.IO.Path]::GetTempFileName()
-    Set-Content -Path $tmp -Value $sql -Encoding UTF8 -NoNewline
+    Write-Text $tmp $sql
     Get-Content $tmp -Raw -Encoding UTF8 | & $Mysql @mysqlArgs
     $code = $LASTEXITCODE
     Remove-Item $tmp -Force

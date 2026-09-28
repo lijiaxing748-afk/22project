@@ -83,6 +83,21 @@
 | Node.js | 18+ |
 | MySQL | 8.0+（本项目在 9.2 上验证） |
 
+### 0.1 文本编码约定（别乱加 BOM —— 会真的坏）
+
+| 文件类型 | 约定 | 为什么 |
+|---|---|---|
+| `*.ps1`（Windows PowerShell 脚本） | **UTF-8 带 BOM** | Windows PowerShell **5.1** 读没有 BOM 的 `.ps1` 会按系统 ANSI（中文机器 = GBK）解码 → 脚本里的中文全乱码，语句还可能被拆错。所以 `tools\*.ps1`、`docs\离线部署\部署脚本\*.ps1` **都必须带 BOM** |
+| **其它所有文本文件**（`.py .md .vue .ts .sql .bat .sh .json .txt requirements.txt db.env ...`） | **UTF-8 无 BOM** | BOM 会被当成文件内容。真实踩过的坑：`db.env` 带 BOM → 第一行变成 `\ufeffMODEL_DB_DIALECT`（键名多一个不可见字符）→ **整行配置读不到**；`.bat` 带 BOM → cmd 第一行报错 |
+
+- 应用侧已做防御：读 `db.env` 与建表 `.sql` 用 `utf-8-sig`（能吃掉 BOM），Windows 部署脚本写文件也**强制无 BOM**（PowerShell 5.1 的 `-Encoding UTF8` 默认会加 BOM，已换成显式 `UTF8Encoding($false)` 写入）。
+- 交付前跑一次检查（全仓 400+ 个文本文件，逐条列出不合规项）：
+
+```cmd
+testRestfulProject\venv\Scripts\python.exe tools\check-encoding.py
+:: 期望输出：✅ 全部符合约定（.ps1 带 BOM；其它文件 UTF-8 无 BOM；没有非 UTF-8 文件）
+```
+
 ### 部署到服务器：一条命令（推荐给"装一次、长期开着"的机器）
 
 在项目根目录执行一条命令，之后**开机就在跑**，局域网里别人用 `http://<这台机器的IP>:8080/` 访问：

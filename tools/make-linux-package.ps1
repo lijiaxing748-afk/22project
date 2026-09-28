@@ -1,4 +1,4 @@
-# make-linux-package.ps1
+﻿# make-linux-package.ps1
 # 用途：把项目核心内容打成一个 tar.gz，供 Linux 虚拟机 / 离线机部署使用。
 # 排除 venv（Windows 二进制）、node_modules、__pycache__、测试残留、旧日志、db.env（含明文口令）。
 #

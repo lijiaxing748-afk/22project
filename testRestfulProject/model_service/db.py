@@ -313,7 +313,9 @@ class Database:
                     self._ensure_user_columns(conn)
                     self._schema_ready = True
                     return
-                sql = (self.cfg.sql_dir / "schema_mysql.sql").read_text(encoding="utf-8")
+                # ⚠️ utf-8-sig：脚本文件被加上 BOM 时（Windows 上很常见），普通 utf-8 会把 BOM 留在第一条语句前
+                #    （`\ufeffCREATE TABLE ...`）→ 解析/执行都可能出错。utf-8-sig 自动吃掉，无 BOM 时等价。
+                sql = (self.cfg.sql_dir / "schema_mysql.sql").read_text(encoding="utf-8-sig")
                 cur = conn.cursor()
                 try:
                     for stmt in _statements(sql):

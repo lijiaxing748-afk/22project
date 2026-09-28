@@ -200,7 +200,10 @@ def load_env_file() -> str | None:
     if not path.is_file():
         return None
     loaded = []
-    for raw in path.read_text(encoding="utf-8").splitlines():
+    # ⚠️ 用 utf-8-sig 读：有人（或 PowerShell 5.1 的 -Encoding UTF8）会给 db.env 加上 BOM，
+    #    那样第一行会变成 "\ufeffMODEL_DB_DIALECT"，键名多一个不可见字符 → 整行配置读不到。
+    #    utf-8-sig 会自动吃掉开头的 BOM；没有 BOM 时与 utf-8 完全等价，属于纯防御。
+    for raw in path.read_text(encoding="utf-8-sig").splitlines():
         line = raw.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
