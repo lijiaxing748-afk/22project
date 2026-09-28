@@ -48,12 +48,20 @@ info "系统      : $PRETTY（代号 $DISTRO）"
 info "是否 WSL  : $( [[ $IS_WSL -eq 1 ]] && echo 是 || echo 否 )"
 info "当前用户  : $(id -un)（改 apt/pip 配置需要 root）"
 
-HOST_IP=""
-if [[ $IS_WSL -eq 1 ]]; then
-    HOST_IP="$(ip route show default 2>/dev/null | awk '/^default/{print $3; exit}')"
-    [[ -z "$HOST_IP" ]] && HOST_IP="$(awk '/^nameserver/{print $2; exit}' /etc/resolv.conf 2>/dev/null)"
-fi
-info "宿主机/网关 IP: ${HOST_IP:-（未知）}"
+HOST_IP="$(ip route show default 2>/dev/null | awk '/^default/{print $3; exit}')"
+NS_IP="$(awk '/^nameserver/{print $2; exit}' /etc/resolv.conf 2>/dev/null)"
+# ⚠️ 实测教训：Clash/sing-box 的 fake-ip 模式下，WSL 的"默认网关"会是 198.18.x 这种**假网关**
+#    （用户现场就是 198.18.0.2），它上面不可能有代理端口 —— 之前拿它当宿主机去探端口，自然全失败。
+#    所以这里改成"候选地址列表"：真实网关 → 127.0.0.1（WSL 镜像网络模式下宿主机就在这）→ DNS 服务器。
+PROBE_IPS=()
+case "$HOST_IP" in
+    198.18.*|198.19.*|"") : ;;                 # 假网关或取不到 → 跳过
+    *) PROBE_IPS+=("$HOST_IP") ;;
+esac
+PROBE_IPS+=("127.0.0.1")
+[[ -n "$NS_IP" && "$NS_IP" != "$HOST_IP" ]] && PROBE_IPS+=("$NS_IP")
+info "网关=${HOST_IP:-未知}  DNS=${NS_IP:-未知}"
+info "将依次在这些地址上找代理：${PROBE_IPS[*]}"
 command -v curl >/dev/null || { err '需要 curl：sudo apt install -y curl（若 apt 也不通，先看下面的镜像测试）'; }
 
 # ---------------------------------------------------------------- 1) DNS 诊断
@@ -85,12 +93,14 @@ if [[ -z "$PROXY" ]]; then
         if [[ -n "$val" ]] && test_proxy "$val"; then PROXY="$val"; ok "环境变量里的代理可用（\$$v）：$PROXY"; break; fi
     done
 fi
-if [[ -z "$PROXY" && -n "$HOST_IP" ]]; then
-    info "在宿主机 $HOST_IP 上探测常见代理端口（Clash 7890/7897、v2ray 10809、通用 1080/2080...）"
+if [[ -z "$PROXY" && ${#PROBE_IPS[@]} -gt 0 ]]; then
+    info '探测常见代理端口（Clash 7890/7897、v2ray 10809、通用 1080/2080...）'
     found=""
-    for port in 7890 7897 10809 1080 2080 8889 7891 8118; do
-        for cand in "http://$HOST_IP:$port" "socks5h://$HOST_IP:$port"; do
-            if test_proxy "$cand"; then found="$cand"; break 2; fi
+    for ip in "${PROBE_IPS[@]}"; do
+        for port in 7890 7897 10809 1080 2080 8889 7891 8118; do
+            for cand in "http://$ip:$port" "socks5h://$ip:$port"; do
+                if test_proxy "$cand"; then found="$cand"; break 3; fi
+            done
         done
     done
     [[ -n "$found" ]] && { PROXY="$found"; ok "找到可用代理：$PROXY"; }

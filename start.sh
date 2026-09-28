@@ -30,6 +30,8 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SRV="$ROOT/testRestfulProject"
 FE="$ROOT/frontend/22project"
 SERVICE="model-platform"
+# 发行版代号（手工给 deadsnakes 加源时要用；在 /etc/os-release 缺失时按 focal 兜底）
+DISTRO_CODENAME="$(. /etc/os-release 2>/dev/null; echo "${VERSION_CODENAME:-focal}")"
 UNIT="/etc/systemd/system/${SERVICE}.service"
 PORT="${MODEL_PORT:-8080}"
 THREADS="${MODEL_THREADS:-6}"
@@ -279,7 +281,6 @@ if [[ -x "$PY" ]]; then ok "Python 环境：$("$PY" -V 2>/dev/null | tr -d '\r')
 DB_HOST="${MODEL_DB_HOST:-$(read_env MODEL_DB_HOST 127.0.0.1)}"
 DB_PORT="${MODEL_DB_PORT:-$(read_env MODEL_DB_PORT 3306)}"
 DB_NAME="$(read_env MODEL_DB_NAME model_management)"
-DISTRO_CODENAME="$(. /etc/os-release 2>/dev/null; echo "${VERSION_CODENAME:-focal}")"   # 手工加 PPA 源时要用
 MYSQL_BIN="$(command -v mysql || true)"
 MYSQL_SVC=""
 if command -v systemctl >/dev/null; then
@@ -311,7 +312,6 @@ else
         DEBIAN_FRONTEND=noninteractive apt-get install -y mysql-server \
             || die "安装 mysql-server 失败。离线机器请用 docs/离线部署/ 的离线包，或手工装好 MySQL 后重跑本脚本"
         systemctl enable --now mysql 2>/dev/null || systemctl start mysql 2>/dev/null || true
-        DISTRO_CODENAME="$(. /etc/os-release 2>/dev/null; echo "${VERSION_CODENAME:-focal}")"   # 手工加 PPA 源时要用
 MYSQL_BIN="$(command -v mysql || true)"
         MYSQL_SVC="mysql"
         ok "MySQL 已安装并启动"
