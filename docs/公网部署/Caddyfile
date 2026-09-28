@@ -1,0 +1,67 @@
+# 模型管理平台 · Caddy 模板（公网用，自动 HTTPS，最省事）
+#
+# 用法：
+#   sudo apt -y install caddy
+#   sudo cp docs/公网部署/Caddyfile /etc/caddy/Caddyfile
+#   sudo nano /etc/caddy/Caddyfile          # 把 ai.example.com 换成你的域名 + 改成你的邮箱
+#   sudo systemctl reload caddy
+#
+# Caddy 会自动向 Let's Encrypt 申请并续期证书（需要域名已解析到本机、80/443 可达）。
+# 应用自身监听 127.0.0.1:8080（systemd 服务 model-platform），**不要**把 8080 对公网开放。
+
+{
+	email you@example.com          # ← 改成你的邮箱（证书到期提醒）
+}
+
+ai.example.com {                   # ← 改成你的域名
+	encode zstd gzip
+
+	# ---- 安全响应头（应用自身没有，反代来补）----
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Frame-Options           "SAMEORIGIN"
+		X-Content-Type-Options    "nosniff"
+		Referrer-Policy           "strict-origin-when-cross-origin"
+		Permissions-Policy        "geolocation=(), microphone=(), camera=()"
+		-Server
+	}
+
+	log {
+		output file /var/log/caddy/model-platform.log
+		format console
+	}
+
+	# ---- 登录接口：单独限速（应用层没有失败锁定，靠这里 + fail2ban）----
+	@login path /api/login/
+	handle @login {
+		rate_limit {
+			zone login {
+				key    {remote_host}
+				events 10
+				window 1m
+			}
+		}
+		reverse_proxy 127.0.0.1:8080
+	}
+
+	# ---- 其余请求：正常转发到应用 ----
+	handle {
+		reverse_proxy 127.0.0.1:8080 {
+			# 训练是同步接口，超时要放宽（默认可能不够）
+			transport http {
+				read_timeout  1800s
+				write_timeout 1800s
+			}
+			# 上传上限：平台允许模型 500MB / 数据集 300MB
+			# Caddy 默认不限请求体大小，这里显式给个大值更稳
+			request_buffers 512kb
+			response_buffers 512kb
+		}
+	}
+}
+
+# ⚠️ 注意：
+#   · `rate_limit` 需要 Caddy 带这个模块（官方标准构建已包含；若报 unknown directive，
+#     临时删掉该段，改用 nginx 模板里的 limit_req，或装 caddy-ratelimit 插件）。
+#   · 上传大文件时若出现 413，检查是否有别处设置了请求体上限。
+#   · 登录接口路径是 /api/login/（带结尾斜杠）。

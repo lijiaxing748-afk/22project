@@ -175,6 +175,18 @@ sudo bash start.sh
 > 完全离线的内网整包交付（含离线 wheel / MySQL / Python 安装包）：见 `docs/离线部署/README-先看我.md`
 > 与 `docs/Linux部署/`。
 
+### 0.3 要发布到公网？
+
+**先看 `docs/公网部署方案.md`**（含反代模板 `docs/公网部署/nginx-model-platform.conf`、`docs/公网部署/Caddyfile`）。
+一句话结论：**别把 8080 直接开到公网** —— 对外只开 443，用 nginx/Caddy 反代 + Let's Encrypt 证书；
+并且必须补齐三项（当前形态是内网工具）：
+
+1. `db.env` 里 `MODEL_ALLOW_REGISTER=0`（默认是**打开**的）、`MODEL_CAPTCHA=1`，并把管理员默认口令改掉；
+2. 反代里 `client_max_body_size 512m`、`proxy_read_timeout 1800s`（模型上传上限 500MB；**训练是同步接口**）；
+3. 反代补安全响应头 + fail2ban/限速（应用层**没有**登录失败锁定）。
+
+另外要注意架构限制：本平台**只能单进程**（进程内建表锁 + 进程级 stdout 重定向），
+且训练是同步阻塞的 → 适合"几十人、可信用户"，不适合开放注册的大流量。
 ### 0.2 以后想删掉整个文件夹怎么办（先卸载，再删）
 
 平台的"开机自启服务/计划任务"正是**文件夹删不掉**的原因：服务会自动重启进程，进程占着目录。
