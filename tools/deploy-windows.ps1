@@ -48,6 +48,14 @@ $Srv = Join-Path $Root 'testRestfulProject'
 $Fe = Join-Path $Root 'frontend\22project'
 $Py = Join-Path $Srv 'venv\Scripts\python.exe'
 $Port = if ($Port -gt 0) { $Port } elseif ($env:MODEL_PORT) { [int]$env:MODEL_PORT } else { 8080 }
+# ⚠️ Windows PowerShell 5.1 的坑（用户现场踩到）：原生命令（mysql.exe 等）往 stderr 写东西时，
+#    即使写了 `2>&1`，PowerShell 仍会生成 NativeCommandError 错误记录 —— 在有些环境下直接把脚本中断，
+#    于是"自动探测 MySQL 账号"这一步只试了第一个候选就死掉（用户看到 1045 后脚本就停了）。
+#    对策：① 显式 Continue；② 所有探测用 `2>&1` 合并输出（不产生错误记录）。
+$ErrorActionPreference = 'Continue'
+if (Get-Variable -Name PSNativeCommandUseErrorActionPreference -ErrorAction SilentlyContinue) {
+    $PSNativeCommandUseErrorActionPreference = $false      # PowerShell 7 上也能保证行为一致
+}
 $SvcName = 'ModelPlatform'
 $Rebuild = $false
 $Foreground = $false          # start.bat run：本机前台跑（不装服务）
@@ -329,14 +337,14 @@ function Install-Python312 {
 #    所以这里**校验版本**，并优先用 py -3.12 找解释器。
 function Get-PyVer([string]$Exe) {
     if (-not $Exe -or -not (Test-Path $Exe)) { return '' }
-    try { return ("$(& $Exe -c 'import sys;print(str(sys.version_info[0]) + chr(46) + str(sys.version_info[1]))' 2>$null)").Trim() }
+    try { return ("$(& $Exe -c 'import sys;print(str(sys.version_info[0]) + chr(46) + str(sys.version_info[1]))' 2>&1)").Trim() }
     catch { return '' }
 }
 function Find-Python312 {
     # ① py 启动器最可靠（装了 3.12 就能找到，不必进 PATH）
     if (Get-Command py.exe -ErrorAction SilentlyContinue) {
         try {
-            $exe = ("$(& py -3.12 -c 'import sys;print(sys.executable)' 2>$null | Select-Object -First 1)").Trim()
+            $exe = ("$(& py -3.12 -c 'import sys;print(sys.executable)' 2>&1 | Select-Object -First 1)").Trim()
             if ((Get-PyVer $exe) -eq '3.12') { return $exe }
         } catch {}
     }
@@ -495,7 +503,8 @@ function New-Secret([int]$Bytes = 32) {
 function Test-Mysql([string]$User, [string]$Pass) {
     if ($DryRun -or -not $Mysql) { return $false }
     $env:MYSQL_PWD = $Pass
-    & $Mysql -h $DbHost -P $DbPort -u $User --connect-timeout=5 -N -B -e 'SELECT 1' 2>$null | Out-Null
+    # ⚠️ 必须 2>&1（不是 2>&1）：5.1 下 2>&1 仍会产生错误记录并可能中断脚本（见文件头说明）
+    $null = (& $Mysql -h $DbHost -P $DbPort -u $User --connect-timeout=5 -N -B -e 'SELECT 1' 2>&1 | Out-String)
     return ($LASTEXITCODE -eq 0)
 }
 function Invoke-Sql([string]$User, [string]$Pass, [string]$Sql) {
@@ -540,7 +549,10 @@ if ($DryRun -and $CurUser -and (Test-Path $DbEnv)) {
         foreach ($c in $cands) { if ($c[0] -and (Test-Mysql $c[0] $c[1])) { $Admin = $c; break } }
     }
     if (-not $Admin -and -not $DryRun) {
-        Warn '常见账号都没连上 MySQL。请输入一个**有建库权限**的账号（例如 root）：'
+        Warn '自动尝试的账号都没连上 MySQL（试过：-DbUser 参数、现有 db.env、root + 常见口令）。'
+        Info '  小提示：也可以直接把账号口令写在命令后面，例如：'
+        Info '      start.bat -DbUser root -DbPassword 你的root口令'
+        Info '  下面手工输一次（只用于建库/建账号，不会被保存到别处）：'
         $u = Read-Host '  MySQL 账号 [root]'; if (-not $u) { $u = 'root' }
         $sec = Read-Host "  MySQL 口令（$u）" -AsSecureString
         $plain = [Runtime.InteropServices.Marshal]::PtrToStringAuto(
@@ -590,7 +602,7 @@ Info "数据库：${DbUser}@${DbHost}:${DbPort}/${DbName}"
 # 「查配置」：连上之后问服务端**真实的端口与版本**，写进 db.env 的是实际值而不是我们的猜测
 if (-not $DryRun -and $Configured) {
     $env:MYSQL_PWD = $DbPass
-    $srvInfo = (& $Mysql -h $DbHost -P $DbPort -u $DbUser -N -B -e 'SELECT CONCAT(@@port, " ", @@version)' 2>$null |
+    $srvInfo = (& $Mysql -h $DbHost -P $DbPort -u $DbUser -N -B -e 'SELECT CONCAT(@@port, " ", @@version)' 2>&1 |
                 Out-String).Trim()
     if ($srvInfo) {
         $parts = $srvInfo -split '\s+', 2
@@ -639,17 +651,23 @@ function Apply-Sql([string]$File) {
     }
     $tmp = [System.IO.Path]::GetTempFileName()
     Write-Text $tmp $sql
-    Get-Content $tmp -Raw -Encoding UTF8 | & $Mysql @mysqlArgs
+    # ⚠️ 2>&1 合并：mysql 的报错必须当**文本**收下来；否则会变成 PowerShell 错误记录，
+    #    在 5.1 下可能直接中断脚本（用户现场已经在探测账号那步踩过一次，见文件头说明）。
+    $out = (Get-Content $tmp -Raw -Encoding UTF8 | & $Mysql @mysqlArgs 2>&1 | Out-String)
     $code = $LASTEXITCODE
     Remove-Item $tmp -Force
-    if ($code -ne 0) { Die "执行失败：$File" }
+    if ($code -ne 0) {
+        $reason = ($out -split "`n" | Where-Object { $_ -match 'ERROR' } | Select-Object -First 3) -join ' / '
+        if ($reason) { Warn "MySQL 报错：$reason" }
+        Die "执行失败：$File"
+    }
 }
 Apply-Sql (Join-Path $Srv 'sql\schema_mysql.sql')
 $auth = Join-Path $Srv 'sql\auth-migration.sql'
 if (Test-Path $auth) { Apply-Sql $auth }
 if ($DryRun) { Info "[dry-run] 会校验库 $DbName 里有 11 张表" }
 else {
-    $tables = (& $Mysql @mysqlArgs -N -B -e "SHOW TABLES FROM ``$DbName``" 2>$null) |
+    $tables = (& $Mysql @mysqlArgs -N -B -e "SHOW TABLES FROM ``$DbName``" 2>&1) |
               ForEach-Object { $_.ToString().ToLower() }
     $expect = @('datasets','models','edgedevices','trainings','modelinvocations','modeldeployments',
                 'inferencetasks','inferenceresults','roles','users','operationlogs')
@@ -708,7 +726,7 @@ if ($Nssm) {
     Step "schtasks /Run /TN $TaskName"
     if (-not $DryRun) {
         & schtasks /Create /TN $TaskName /SC ONSTART /RU SYSTEM /RL HIGHEST /F /TR $tr | Out-Null
-        & schtasks /Run /TN $TaskName 2>$null | Out-Null
+        & schtasks /Run /TN $TaskName 2>&1 | Out-Null
     }
 }
 if ($DryRun) { Info '[dry-run] 会注册/更新开机自启服务' } else { Ok '服务已注册为开机自启（重复执行不会报错）' }
