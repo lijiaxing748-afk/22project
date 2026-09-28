@@ -29,6 +29,8 @@ param(
     [Parameter(Position = 0)][string]$Action = 'install',
     [int]$Port = 0,
     [int]$Threads = 6,
+    [string]$DbUser = '',
+    [string]$DbPassword = '',
     [switch]$DryRun
 )
 $ErrorActionPreference = 'Stop'
@@ -180,35 +182,114 @@ if (-not (Test-Path $Py)) {
 if (Test-Path $Py) { Ok "Python 环境：$(& $Py -V 2>&1)" } else { Info '（dry-run：跳过 Python 环境检查）' }
 
 # ---------------------------------------------------------------- 2) db.env（含密钥生成）
+# ---------------------------------------------------------------- 2) 数据库与 db.env（**自动配置**）
+# ⚠️ 目标：正常路径下**不需要人工填任何东西**。脚本自己找 MySQL 管理员 → 建库 → 建应用账号
+#    （随机口令）→ 写 db.env（含随机 MODEL_SECRET_KEY）。要改（口令/库名/端口）时直接编辑
+#    testRestfulProject\db.env 再重跑本脚本即可 —— 已配置好且能连上时**不会覆盖**你的改动。
 $DbEnv = Join-Path $Srv 'db.env'
-if (-not (Test-Path $DbEnv)) {
-    $example = Join-Path $Srv 'db.env.example'
-    if (-not (Test-Path $example)) { Die "缺少 $DbEnv 与 db.env.example" }
-    Step "Copy-Item '$example' '$DbEnv'"
-    Warn '已从 db.env.example 生成 db.env —— 请填 MySQL 账号/口令（本次先继续，连不上会报出来）'
+$DbHost = if ($env:MODEL_DB_HOST) { $env:MODEL_DB_HOST } else { '127.0.0.1' }
+$DbPort = if ($env:MODEL_DB_PORT) { $env:MODEL_DB_PORT } else { '3306' }
+$DbName = Read-Env 'MODEL_DB_NAME' 'model_management'
+$AppUser = 'model_app'
+$Mysql = Find-Mysql
+if (-not $Mysql -and -not $DryRun) { Die '找不到 mysql.exe：请安装 MySQL（或把它的 bin 加进 PATH）后重跑' }
+
+function New-Secret([int]$Bytes = 32) {
+    $b = New-Object byte[] $Bytes
+    [Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($b)
+    -join ($b | ForEach-Object { $_.ToString('x2') })
 }
-$Secret = Read-Env 'MODEL_SECRET_KEY' ''
-if ([string]::IsNullOrWhiteSpace($Secret)) {
-    if ($DryRun) { Info '[dry-run] 会生成 MODEL_SECRET_KEY 并写回 db.env' }
-    else {
-        $bytes = New-Object byte[] 32
-        [Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($bytes)
-        $Secret = -join ($bytes | ForEach-Object { $_.ToString('x2') })
-        $text = Get-Content $DbEnv -Raw -Encoding UTF8
-        if ($text -match '(?m)^\s*MODEL_SECRET_KEY\s*=') {
-            $text = $text -replace '(?m)^\s*MODEL_SECRET_KEY\s*=.*$', "MODEL_SECRET_KEY=$Secret"
-        } else {
-            $text = $text.TrimEnd() + "`r`nMODEL_SECRET_KEY=$Secret`r`n"
+function Test-Mysql([string]$User, [string]$Pass) {
+    if ($DryRun -or -not $Mysql) { return $false }
+    $env:MYSQL_PWD = $Pass
+    & $Mysql -h $DbHost -P $DbPort -u $User --connect-timeout=5 -N -B -e 'SELECT 1' 2>$null | Out-Null
+    return ($LASTEXITCODE -eq 0)
+}
+function Invoke-Sql([string]$User, [string]$Pass, [string]$Sql) {
+    $env:MYSQL_PWD = $Pass
+    return (& $Mysql -h $DbHost -P $DbPort -u $User --default-character-set=utf8mb4 -e $Sql 2>&1 | Out-String)
+}
+
+$CurUser = Read-Env 'MODEL_DB_USER' ''
+$CurPass = Read-Env 'MODEL_DB_PASSWORD' ''
+$Configured = $false
+if ($DryRun -and $CurUser -and (Test-Path $DbEnv)) {
+    # dry-run 里不真连库：已有 db.env 且写了账号，就按"沿用"来播报（更贴近真实行为）
+    $Configured = $true
+    Ok "检测到现有 db.env（${CurUser}@${DbHost}:${DbPort}/${DbName}）—— 真实运行时能连上就沿用，不会覆盖"
+} elseif ($CurUser -and (Test-Mysql $CurUser $CurPass)) {
+    $Configured = $true
+    Ok "数据库已配置好（${CurUser}@${DbHost}:${DbPort}/${DbName}），沿用现有 db.env"
+    $Secret = Read-Env 'MODEL_SECRET_KEY' ''
+    if ([string]::IsNullOrWhiteSpace($Secret)) {
+        if ($DryRun) { Info '[dry-run] 会补一个 MODEL_SECRET_KEY 写回 db.env' }
+        else {
+            $Secret = New-Secret 32
+            $text = Get-Content $DbEnv -Raw -Encoding UTF8
+            if ($text -match '(?m)^\s*MODEL_SECRET_KEY\s*=') {
+                $text = $text -replace '(?m)^\s*MODEL_SECRET_KEY\s*=.*$', "MODEL_SECRET_KEY=$Secret"
+            } else { $text = $text.TrimEnd() + "`r`nMODEL_SECRET_KEY=$Secret`r`n" }
+            Set-Content -Path $DbEnv -Value $text -Encoding UTF8 -NoNewline
+            Ok '已补写 MODEL_SECRET_KEY（Token 不会因重启失效）'
         }
+    }
+} else {
+    Info '正在自动配置数据库（建库 → 建应用账号 → 写 db.env）...'
+    # 找有建库权限的账号：命令行参数 → 现有 db.env → 常见默认 → 交互询问（只在都失败时问一次）
+    $cands = @()
+    if ($DbUser) { $cands += , @($DbUser, $DbPassword) }
+    if ($CurUser) { $cands += , @($CurUser, $CurPass) }
+    foreach ($p in @('', 'root', '123456', 'Admin@2026')) { $cands += , @('root', $p) }
+    $Admin = $null
+    if ($DryRun) { $Admin = @('root', '（dry-run）') }
+    else {
+        foreach ($c in $cands) { if ($c[0] -and (Test-Mysql $c[0] $c[1])) { $Admin = $c; break } }
+    }
+    if (-not $Admin -and -not $DryRun) {
+        Warn '常见账号都没连上 MySQL。请输入一个**有建库权限**的账号（例如 root）：'
+        $u = Read-Host '  MySQL 账号 [root]'; if (-not $u) { $u = 'root' }
+        $sec = Read-Host "  MySQL 口令（$u）" -AsSecureString
+        $plain = [Runtime.InteropServices.Marshal]::PtrToStringAuto(
+            [Runtime.InteropServices.Marshal]::SecureStringToBSTR($sec))
+        if (Test-Mysql $u $plain) { $Admin = @($u, $plain) }
+    }
+    if (-not $Admin) {
+        if ($DryRun) { Info '[dry-run] 会用管理员账号执行建库/建账号/授权，并写 db.env' }
+        else { Die "连不上 MySQL（${DbHost}:${DbPort}）。请确认 MySQL 服务已启动、账号口令正确后重跑；也可以手工填好 $DbEnv 再重跑" }
+    }
+    $AppPass = New-Secret 16
+    $Secret = New-Secret 32
+    if (-not $DryRun) {
+        $null = Invoke-Sql $Admin[0] $Admin[1] "CREATE DATABASE IF NOT EXISTS $DbName DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
+        $null = Invoke-Sql $Admin[0] $Admin[1] "CREATE USER IF NOT EXISTS '$AppUser'@'localhost' IDENTIFIED BY '$AppPass';"
+        $null = Invoke-Sql $Admin[0] $Admin[1] "GRANT ALL PRIVILEGES ON $DbName.* TO '$AppUser'@'localhost'; FLUSH PRIVILEGES;"
+        if (-not (Test-Mysql $AppUser $AppPass)) {
+            # 账号已存在但口令不是这次的（这个账号是本项目专用的，重置成新口令最省事）
+            $null = Invoke-Sql $Admin[0] $Admin[1] "ALTER USER '$AppUser'@'localhost' IDENTIFIED BY '$AppPass'; FLUSH PRIVILEGES;"
+        }
+        if (-not (Test-Mysql $AppUser $AppPass)) { Die "应用账号 $AppUser 已创建但连不上：检查 MySQL 的认证插件与权限" }
+        $text = @"
+# 由 deploy 脚本自动生成（$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')）
+# 要改口令 / 库名 / 端口：直接编辑本文件，再重跑一次 deploy 即可（脚本不会覆盖能连上的配置）。
+MODEL_DB_DIALECT=mysql
+MODEL_DB_HOST=$DbHost
+MODEL_DB_PORT=$DbPort
+MODEL_DB_USER=$AppUser
+MODEL_DB_PASSWORD=$AppPass
+MODEL_DB_NAME=$DbName
+MODEL_SECRET_KEY=$Secret
+MODEL_TOKEN_TTL_HOURS=12
+MODEL_BOOTSTRAP_ADMIN_PASSWORD=
+"@
+        if (Test-Path $DbEnv) { Copy-Item $DbEnv "$DbEnv.bak-$(Get-Date -Format 'yyyyMMdd-HHmmss')" -Force }
         Set-Content -Path $DbEnv -Value $text -Encoding UTF8 -NoNewline
-        Ok '已生成并写入 MODEL_SECRET_KEY（Token 不会因重启失效）'
+        $CurUser = $AppUser; $CurPass = $AppPass; $Configured = $true
+        Ok "已建库 $DbName、建账号 $AppUser（随机口令），并写好 $DbEnv"
+        Info "  账号口令与 MODEL_SECRET_KEY 都在这个文件里；要改就编辑它再重跑"
     }
 }
-$DbHost = Read-Env 'MODEL_DB_HOST' '127.0.0.1'
-$DbPort = Read-Env 'MODEL_DB_PORT' '3306'
-$DbUser = Read-Env 'MODEL_DB_USER' 'root'
-$DbPass = Read-Env 'MODEL_DB_PASSWORD' ''
-$DbName = Read-Env 'MODEL_DB_NAME' 'model_management'
+$DbUser = $CurUser; $DbPass = $CurPass
+if (-not $DryRun -and -not $Configured) { Die '数据库配置未完成' }
 Info "数据库：${DbUser}@${DbHost}:${DbPort}/${DbName}"
 
 # ---------------------------------------------------------------- 3) 前端产物
@@ -229,12 +310,7 @@ if ((-not (Test-Path $Dist)) -or $Rebuild) {
 }
 if (Test-Path $Dist) { Ok "前端产物：$Fe\dist" } else { Info '（dry-run：前端产物尚未生成）' }
 
-# ---------------------------------------------------------------- 4) 建库建表
-$Mysql = Find-Mysql
-if (-not $Mysql) {
-    if ($DryRun) { Info '[dry-run] 找不到 mysql.exe（真实环境需要 MySQL 客户端）' }
-    else { Die '找不到 mysql.exe：装 MySQL 或把它的 bin 加进 PATH' }
-}
+# ---------------------------------------------------------------- 4) 建库建表（用刚配好的应用账号）
 Info '应用表结构（库名按 MODEL_DB_NAME 替换）...'
 $env:MYSQL_PWD = $DbPass          # ⚠️ 口令走环境变量，不出现在命令行里
 $mysqlArgs = @("-h", $DbHost, "-P", $DbPort, "-u", $DbUser, "--default-character-set=utf8mb4")

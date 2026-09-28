@@ -100,11 +100,23 @@ cd 22project
 sudo bash deploy.sh
 ```
 
-它会（幂等，可反复执行）：准备 venv 与依赖 → 构建前端产物 → 读 `testRestfulProject/db.env`
-建库建表（库名按 `MODEL_DB_NAME` 替换；**`MODEL_SECRET_KEY` 为空会自动生成并写回**，否则每次重启
-所有人都要重新登录）→ 注册成**开机自启**的常驻服务（Windows：`nssm` 服务；没找到 `nssm.exe` 时退化为
-"计划任务（开机启动、以 SYSTEM 运行）" · Linux：`systemd`，崩溃自动重启、日志进 journald）
-→ 放行防火墙端口 → 打印**局域网访问地址**。
+它会（幂等，可反复执行）：准备 venv 与依赖 → 构建前端产物 → **自动配置数据库** → 注册成**开机自启**的
+常驻服务 → 放行防火墙端口 → 打印**局域网访问地址**。
+
+**数据库与 `db.env` 是全自动的** —— 正常情况下**不需要你手工填任何东西**：
+
+1. 脚本自己找 MySQL 管理员（Linux 上先用 `root` 走 unix socket，这是 Ubuntu 装完 MySQL 的默认方式；
+   Windows 上依次试 `-DbUser/-DbPassword`、现有 `db.env`、`root` + 常见口令，都不行才问你一次）；
+2. 建库（`CREATE DATABASE IF NOT EXISTS`，库名取 `MODEL_DB_NAME`，默认 `model_management`）；
+3. 建**专用应用账号** `model_app`（随机口令 + 只授权本库，不用 root 跑服务）；
+4. 写 `testRestfulProject/db.env`：应用账号 + 随机口令 + **随机 `MODEL_SECRET_KEY`**
+   （密钥随机生成很关键：为空则每次重启所有令牌失效，所有人被踢下线；原文件会先备份成 `db.env.bak-<时间戳>`）；
+5. 再以该应用账号执行建表与鉴权迁移，并校验 11 张表就位。
+
+> **以后要改**（换口令 / 换库名 / 换端口 / 指定初始管理员口令）：**直接编辑
+> `testRestfulProject/db.env`，再重跑一次 `deploy.bat` / `deploy.sh` 即可** ——
+> 脚本发现现有配置能连上就**沿用**，不会覆盖你改过的内容（改不通时才会走上面的自动流程）。
+> 判断标准很简单：`db.env` 里那几行就是唯一配置来源。
 
 | 想做的事 | Windows | Linux |
 |---|---|---|

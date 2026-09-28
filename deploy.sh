@@ -123,32 +123,122 @@ if [[ ! -x "$PY" ]]; then
 fi
 if [[ -x "$PY" ]]; then ok "Python 环境：$("$PY" -V 2>/dev/null | tr -d '\r')"; else info "（dry-run：跳过 Python 环境检查）"; fi
 
-# ---------------------------------------------------------------- 2) db.env（含密钥生成）
-if [[ ! -f "$SRV/db.env" ]]; then
-    [[ -f "$SRV/db.env.example" ]] || die "缺少 $SRV/db.env 与 db.env.example"
-    run "cp '$SRV/db.env.example' '$SRV/db.env'"
-    warn "已从 db.env.example 生成 db.env —— 请填 MySQL 账号/口令后重新运行（本次先继续，连接失败会报出来）"
+# ---------------------------------------------------------------- 2) 数据库与 db.env（**自动配置**）
+# ⚠️ 目标：正常路径下**不需要人工填任何东西**。脚本自己找 MySQL 管理员（本机 root 走 socket 最常见）
+#    → 建库 → 建应用账号 model_app（随机口令）→ 写 db.env（含随机 MODEL_SECRET_KEY）。
+#    要改（口令/库名/端口）时直接编辑 testRestfulProject/db.env 再重跑 —— 能连上就**不会覆盖**你的改动。
+DB_HOST="${MODEL_DB_HOST:-$(read_env MODEL_DB_HOST 127.0.0.1)}"
+DB_PORT="${MODEL_DB_PORT:-$(read_env MODEL_DB_PORT 3306)}"
+DB_NAME="$(read_env MODEL_DB_NAME model_management)"
+APP_USER="model_app"
+DB_ENV_FILE="$SRV/db.env"
+
+MYSQL_BIN="$(command -v mysql || true)"
+if [[ -z "$MYSQL_BIN" && -z "$DRY" ]]; then
+    die "找不到 mysql 客户端：sudo apt install -y mysql-client（或 mariadb-client）"
 fi
-SECRET="$(read_env MODEL_SECRET_KEY '')"
-if [[ -z "$SECRET" ]]; then
-    if [[ -n "$DRY" ]]; then
-        info "[dry-run] 会生成 MODEL_SECRET_KEY 并写回 db.env"
-    else
-        SECRET="$(python3 -c 'import secrets;print(secrets.token_hex(32))')"
-        cp "$SRV/db.env" "$SRV/db.env.bak-$(date +%Y%m%d-%H%M%S)"
-        if grep -qE '^[[:space:]]*MODEL_SECRET_KEY[[:space:]]*=' "$SRV/db.env"; then
-            sed -i "s|^[[:space:]]*MODEL_SECRET_KEY[[:space:]]*=.*|MODEL_SECRET_KEY=${SECRET}|" "$SRV/db.env"
+try_conn() {   # try_conn 用户 口令
+    [[ -z "$MYSQL_BIN" ]] && return 1
+    MYSQL_PWD="$2" "$MYSQL_BIN" -h "$DB_HOST" -P "$DB_PORT" -u "$1" --connect-timeout=5 -N -B -e 'SELECT 1' >/dev/null 2>&1
+}
+try_socket() {  # 以当前身份（脚本要求 root）走 unix socket —— Ubuntu 上 root@localhost 默认是 auth_socket
+    [[ -z "$MYSQL_BIN" ]] && return 1
+    "$MYSQL_BIN" -N -B -e 'SELECT 1' >/dev/null 2>&1
+}
+CUR_USER="$(read_env MODEL_DB_USER '')"
+CUR_PASS="$(read_env MODEL_DB_PASSWORD '')"
+CONFIGURED=""
+ADMIN_MODE=""        # socket | tcp
+ADMIN_ARGS=(); ADMIN_USER=""; ADMIN_PASS=""
+if [[ -n "$CUR_USER" ]] && try_conn "$CUR_USER" "$CUR_PASS"; then
+    CONFIGURED=1
+    DB_USER="$CUR_USER"; DB_PASS="$CUR_PASS"
+    ok "数据库已配置好（${DB_USER}@${DB_HOST}:${DB_PORT}/${DB_NAME}），沿用现有 db.env"
+    SECRET="$(read_env MODEL_SECRET_KEY '')"
+    if [[ -z "$SECRET" ]]; then
+        if [[ -n "$DRY" ]]; then info "[dry-run] 会补一个 MODEL_SECRET_KEY 写回 db.env"
         else
-            printf '\nMODEL_SECRET_KEY=%s\n' "$SECRET" >> "$SRV/db.env"
+            SECRET="$(python3 -c 'import secrets;print(secrets.token_hex(32))' 2>/dev/null || openssl rand -hex 32)"
+            cp "$DB_ENV_FILE" "$DB_ENV_FILE.bak-$(date +%Y%m%d-%H%M%S)"
+            if grep -qE '^[[:space:]]*MODEL_SECRET_KEY[[:space:]]*=' "$DB_ENV_FILE"; then
+                sed -i "s|^[[:space:]]*MODEL_SECRET_KEY[[:space:]]*=.*|MODEL_SECRET_KEY=${SECRET}|" "$DB_ENV_FILE"
+            else
+                printf '\nMODEL_SECRET_KEY=%s\n' "$SECRET" >> "$DB_ENV_FILE"
+            fi
+            ok "已补写 MODEL_SECRET_KEY（Token 不会因重启失效）"
         fi
-        ok "已生成并写入 MODEL_SECRET_KEY（Token 不会因重启失效）"
+    fi
+else
+    info "正在自动配置数据库（建库 → 建应用账号 → 写 db.env）..."
+    if [[ -n "$DRY" ]]; then
+        ADMIN_MODE="socket"
+    else
+        if try_socket; then
+            ADMIN_MODE="socket"
+            info "以 root（unix socket）身份连接 MySQL 成功"
+        else
+            for cand in "${MODEL_DB_ADMIN_USER:-}:${MODEL_DB_ADMIN_PASSWORD:-}" "$CUR_USER:$CUR_PASS" \
+                        "root:" "root:root" "root:123456" "root:Admin@2026"; do
+                u="${cand%%:*}"; p="${cand#*:}"
+                [[ -z "$u" ]] && continue
+                if try_conn "$u" "$p"; then ADMIN_MODE="tcp"; ADMIN_USER="$u"; ADMIN_PASS="$p"; break; fi
+            done
+        fi
+    fi
+    if [[ -z "$ADMIN_MODE" ]]; then
+        warn "常见账号都没连上 MySQL。请输入一个**有建库权限**的账号（例如 root）："
+        read -r -p "  MySQL 账号 [root]: " u; u="${u:-root}"
+        read -r -s -p "  MySQL 口令（$u，不回显）: " p; echo
+        try_conn "$u" "$p" || die "连不上 MySQL（${DB_HOST}:${DB_PORT}）。确认服务已启动、口令正确后重跑；也可手工填好 $DB_ENV_FILE 再重跑"
+        ADMIN_MODE="tcp"; ADMIN_USER="$u"; ADMIN_PASS="$p"
+    fi
+    APP_PASS="$(python3 -c 'import secrets;print(secrets.token_hex(16))' 2>/dev/null || openssl rand -hex 16)"
+    SECRET="$(python3 -c 'import secrets;print(secrets.token_hex(32))' 2>/dev/null || openssl rand -hex 32)"
+    admin_sql() {   # 以管理员身份执行一句 SQL
+        if [[ -n "$DRY" ]]; then info "[dry-run] $1"; return 0; fi
+        if [[ "$ADMIN_MODE" == "socket" ]]; then
+            "$MYSQL_BIN" --default-character-set=utf8mb4 -e "$1"
+        else
+            MYSQL_PWD="$ADMIN_PASS" "$MYSQL_BIN" -h "$DB_HOST" -P "$DB_PORT" -u "$ADMIN_USER" \
+                --default-character-set=utf8mb4 -e "$1"
+        fi
+    }
+    set +e
+    admin_sql "CREATE DATABASE IF NOT EXISTS $DB_NAME DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
+    admin_sql "CREATE USER IF NOT EXISTS '$APP_USER'@'localhost' IDENTIFIED BY '$APP_PASS';"
+    admin_sql "GRANT ALL PRIVILEGES ON $DB_NAME.* TO '$APP_USER'@'localhost'; FLUSH PRIVILEGES;"
+    if [[ -z "$DRY" ]] && ! try_conn "$APP_USER" "$APP_PASS"; then
+        # 账号已存在但口令不是这次的（本项目专用账号，重置成新口令最省事）
+        admin_sql "ALTER USER '$APP_USER'@'localhost' IDENTIFIED BY '$APP_PASS'; FLUSH PRIVILEGES;"
+    fi
+    set -e
+    if [[ -z "$DRY" ]] && ! try_conn "$APP_USER" "$APP_PASS"; then
+        die "应用账号 $APP_USER 已创建但连不上：检查 MySQL 的认证插件与权限"
+    fi
+    DB_USER="$APP_USER"; DB_PASS="$APP_PASS"; CONFIGURED=1
+    if [[ -n "$DRY" ]]; then
+        info "[dry-run] 会写 db.env（$APP_USER + 随机口令 + 随机 MODEL_SECRET_KEY）"
+    else
+        [[ -f "$DB_ENV_FILE" ]] && cp "$DB_ENV_FILE" "$DB_ENV_FILE.bak-$(date +%Y%m%d-%H%M%S)"
+        cat > "$DB_ENV_FILE" <<EOF
+# 由 deploy 脚本自动生成（$(date '+%Y-%m-%d %H:%M:%S')）
+# 要改口令 / 库名 / 端口：直接编辑本文件，再重跑一次 deploy 即可（脚本不会覆盖能连上的配置）。
+MODEL_DB_DIALECT=mysql
+MODEL_DB_HOST=$DB_HOST
+MODEL_DB_PORT=$DB_PORT
+MODEL_DB_USER=$APP_USER
+MODEL_DB_PASSWORD=$APP_PASS
+MODEL_DB_NAME=$DB_NAME
+MODEL_SECRET_KEY=$SECRET
+MODEL_TOKEN_TTL_HOURS=12
+MODEL_BOOTSTRAP_ADMIN_PASSWORD=
+EOF
+        chmod 600 "$DB_ENV_FILE" 2>/dev/null || true
+        ok "已建库 $DB_NAME、建账号 $APP_USER（随机口令），并写好 $DB_ENV_FILE"
+        info "  账号口令与 MODEL_SECRET_KEY 都在这个文件里；要改就编辑它再重跑"
     fi
 fi
-DB_HOST="$(read_env MODEL_DB_HOST 127.0.0.1)"
-DB_PORT="$(read_env MODEL_DB_PORT 3306)"
-DB_USER="$(read_env MODEL_DB_USER root)"
-DB_PASS="$(read_env MODEL_DB_PASSWORD '')"
-DB_NAME="$(read_env MODEL_DB_NAME model_management)"
+[[ -z "$DRY" && -z "$CONFIGURED" ]] && die "数据库配置未完成"
 info "数据库：${DB_USER}@${DB_HOST}:${DB_PORT}/${DB_NAME}"
 
 # ---------------------------------------------------------------- 3) 前端产物
@@ -169,8 +259,7 @@ if [[ -n "$NEED_BUILD" ]]; then
 fi
 if [[ -f "$FE/dist/index.html" ]]; then ok "前端产物：$FE/dist"; else info "（dry-run：前端产物尚未生成）"; fi
 
-# ---------------------------------------------------------------- 4) 建库建表
-MYSQL_BIN="$(command -v mysql || true)"
+# ---------------------------------------------------------------- 4) 建库建表（用刚配好的应用账号）
 if [[ -z "$MYSQL_BIN" ]]; then
     [[ -n "$DRY" ]] && info "[dry-run] 找不到 mysql 客户端（真实环境下需要：apt install -y mysql-client）" \
                     || die "找不到 mysql 客户端：sudo apt install -y mysql-client（或 mariadb-client）"
@@ -205,8 +294,11 @@ unset MYSQL_PWD
 # ---------------------------------------------------------------- 5) systemd 服务
 TEMPLATE="$ROOT/docs/Linux部署/model-platform.service"
 [[ -f "$TEMPLATE" ]] || die "找不到 systemd 模板：$TEMPLATE"
-RUN_USER="${SUDO_USER:-$(id -un)}"; RUN_USER="${RUN_USER%%:*}"     # 去掉 "user:uid" 之类的尾巴
-RUN_GROUP="$(id -gn "$RUN_USER" 2>/dev/null || echo "$RUN_USER")"; RUN_GROUP="${RUN_GROUP%%:*}"
+# ⚠️ 只取第一行、并在冒号处截断：某些环境（如 Git Bash）里 id 的输出可能带 "名字:uid" 或多行，
+#    直接塞进 systemd 的 User=/Group= 会让服务启动失败（systemd 报 "Invalid user/group"）。
+RUN_USER="$(printf '%s' "${SUDO_USER:-$(id -un)}" | head -n1 | cut -d: -f1)"
+RUN_GROUP="$(printf '%s' "$(id -gn "$RUN_USER" 2>/dev/null || echo "$RUN_USER")" | head -n1 | cut -d: -f1)"
+[[ -n "$RUN_GROUP" ]] || RUN_GROUP="$RUN_USER"
 info "服务将以 $RUN_USER:$RUN_GROUP 运行；工作目录 $SRV"
 if [[ -n "$DRY" ]]; then
     info "[dry-run] 会写入 $UNIT 并 systemctl enable --now $SERVICE"
