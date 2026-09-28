@@ -46,6 +46,7 @@ $Py = Join-Path $Srv 'venv\Scripts\python.exe'
 $Port = if ($Port -gt 0) { $Port } elseif ($env:MODEL_PORT) { [int]$env:MODEL_PORT } else { 8080 }
 $SvcName = 'ModelPlatform'
 $Rebuild = $false
+$Foreground = $false          # start.bat run：本机前台跑（不装服务）
 $TaskName = 'ModelPlatform'
 $LogFile = Join-Path $Srv 'data\logs\service-out.log'
 
@@ -118,6 +119,7 @@ function Get-ServiceMode {
 }
 
 # ---------------------------------------------------------------- 子命令
+# ⚠️ 每个子命令都必须是**幂等**的：没装/重复跑都不该"报错退出"，只提示 —— 否则运维会以为坏了。
 switch ($Action.ToLower()) {
     'status' {
         $mode = Get-ServiceMode
@@ -125,20 +127,61 @@ switch ($Action.ToLower()) {
             Get-Service $SvcName | Format-Table Name, Status, StartType -AutoSize | Out-String | Write-Host
         } elseif ($mode -eq 'task') {
             Get-ScheduledTask -TaskName $TaskName | Select-Object TaskName, State | Format-Table -AutoSize | Out-String | Write-Host
-        } else { Warn "还没安装（先执行 deploy.bat）" }
+        } else { Warn '还没安装（执行 start.bat 安装并启动；只想本机跑就 start.bat run）' }
         $listen = Get-NetTCPConnection -State Listen -LocalPort $Port -ErrorAction SilentlyContinue
         if ($listen) { Ok "端口 $Port 正在监听（PID $($listen[0].OwningProcess)）" } else { Warn "端口 $Port 没有监听" }
-        if (Test-Path $LogFile) { Info "最近日志："; Get-Content $LogFile -Tail 12 | ForEach-Object { Info $_ } }
+        if (Test-Path $LogFile) { Info '最近日志：'; Get-Content $LogFile -Tail 12 | ForEach-Object { Info $_ } }
         exit 0
     }
     'logs' {
-        if (-not (Test-Path $LogFile)) { Die "还没有日志文件：$LogFile（服务没跑过？）" }
+        if (-not (Test-Path $LogFile)) { Warn "还没有日志文件：$LogFile（服务没跑过？前台跑的话直接看那个窗口）"; exit 0 }
         Get-Content $LogFile -Tail 60 -Wait
         exit 0
     }
-    'restart' { Need-Admin; if ((Get-ServiceMode) -eq 'service') { Restart-Service $SvcName -Force } else { Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue; Start-ScheduledTask -TaskName $TaskName }; Ok '已重启'; exit 0 }
-    'start'   { Need-Admin; if ((Get-ServiceMode) -eq 'service') { Start-Service $SvcName } else { Start-ScheduledTask -TaskName $TaskName }; Ok '已启动'; exit 0 }
-    'stop'    { Need-Admin; if ((Get-ServiceMode) -eq 'service') { Stop-Service $SvcName -Force } else { Stop-ScheduledTask -TaskName $TaskName }; Ok '已停止'; exit 0 }
+    'restart' {
+        Need-Admin
+        $mode = Get-ServiceMode
+        if ($mode -eq 'service') { Restart-Service $SvcName -Force; Ok "已重启（$SvcName）" }
+        elseif ($mode -eq 'task') { Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue; Start-ScheduledTask -TaskName $TaskName; Ok "已重启（计划任务 $TaskName）" }
+        else { Warn '服务还没安装 —— 直接执行 start.bat 即可（装好并启动）' }
+        exit 0
+    }
+    'start' {
+        Need-Admin
+        $mode = Get-ServiceMode
+        if ($mode -eq 'service') { Start-Service $SvcName -ErrorAction SilentlyContinue; Ok "已启动（$SvcName）" }
+        elseif ($mode -eq 'task') { Start-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue; Ok "已启动（$TaskName）" }
+        else { Warn '服务还没安装 —— 直接执行 start.bat 即可' }
+        exit 0
+    }
+    'stop' {
+        Need-Admin
+        $mode = Get-ServiceMode
+        if ($mode -eq 'service') { Stop-Service $SvcName -Force -ErrorAction SilentlyContinue; Ok "已停止（$SvcName）" }
+        elseif ($mode -eq 'task') { Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue; Ok "已停止（$TaskName）" }
+        else { Warn '服务本来就没安装/没在跑，无需停止' }
+        exit 0
+    }
+    'update' {
+        # 「更新到仓库最新代码」：拉代码 → 重建前端 → 重启服务
+        # ⚠️ --ff-only --autostash：本地改动（训练产物 data/models/* 是被 git 跟踪的）先自动暂存再放回；
+        #    真冲突就明确报错让人处理，绝不硬覆盖别人机器上的东西。
+        Need-Admin
+        if (-not (Get-Command git -ErrorAction SilentlyContinue)) { Die '本机没有 git，无法自动更新：请手动覆盖代码后执行 start.bat upgrade' }
+        Info '拉取仓库最新代码...'
+        Step "git -C '$Root' fetch --all --prune"
+        Step "git -C '$Root' pull --ff-only --autostash"
+        if (-not $DryRun) {
+            & git -C $Root fetch --all --prune | Out-Null
+            & git -C $Root pull --ff-only --autostash
+            if ($LASTEXITCODE -ne 0) {
+                Die "更新失败：多半是本地改动与远端冲突。请手工处理（git -C $Root status）后重跑；只重建前端+重启可用： start.bat upgrade"
+            }
+            Ok "代码已更新到 $(& git -C $Root rev-parse --short HEAD)（$(& git -C $Root log -1 --format=%s)）"
+        }
+        $Action = 'install'; $Rebuild = $true; $Foreground = $false
+    }
+    'run' { $Foreground = $true; $Action = 'install'; $Rebuild = $true }
     'uninstall' {
         Need-Admin
         $mode = Get-ServiceMode
@@ -407,12 +450,15 @@ if ((-not (Test-Path $Dist)) -or $Rebuild) {
     if ($DryRun) { Info "[dry-run] 会构建前端产物：cd $Fe; npm install; npm run build" }
     elseif (Get-Command npm -ErrorAction SilentlyContinue) {
         Info '构建前端产物（首次约 1 分钟）...'
+        $hadDist = Test-Path $Dist
         Push-Location $Fe
         if (-not (Test-Path (Join-Path $Fe 'node_modules'))) { npm install }
         npm run build
         Pop-Location
-        if (-not (Test-Path $Dist)) { Die "前端构建失败：在 $Fe 里跑 npm install && npm run build" }
-        Ok '前端产物已生成'
+        # ⚠️ 构建失败时不要把整条命令弄挂：只要之前已有旧产物就继续用旧的（网站不能停在半更新状态）
+        if (Test-Path $Dist) { Ok '前端产物已生成' }
+        elseif ($hadDist) { Warn '前端构建失败，但之前已有产物 —— 本次继续用旧的；修好上面的报错再重跑' }
+        else { Die "前端构建失败且没有旧产物：在 $Fe 里跑 npm install && npm run build" }
     } else {
         Die "缺少 $Dist 且本机没有 npm —— 请在有 Node.js 的机器上构建后把 dist 拷过来（单端口模式必须有它）"
     }
@@ -454,11 +500,34 @@ else {
 }
 Remove-Item Env:\MYSQL_PWD -ErrorAction SilentlyContinue
 
-# ---------------------------------------------------------------- 5) 注册成开机自启的常驻服务
+# ---------------------------------------------------------------- 5) 前台跑（start.bat run：不装服务）
 $serveArgs = "serve.py --host 0.0.0.0 --port $Port --threads $Threads"
+if ($Foreground) {
+    if (-not (Test-Path $Py)) { Die '还没有 venv：先执行 start.bat（不带参数）装依赖' }
+    Write-Host ''
+    Write-Host '============================================================'
+    Write-Host "  前台运行（不装服务）：按 Ctrl+C 停止"
+    Write-Host "  本机访问   : http://127.0.0.1:$Port/"
+    Write-Host '  初始账号   : admin / Admin@2026'
+    Write-Host '============================================================'
+    Write-Host ''
+    if (-not $env:NO_BROWSER) {
+        Start-Process -WindowStyle Hidden powershell -ArgumentList @(
+            '-NoProfile', '-ExecutionPolicy', 'Bypass',
+            '-File', (Join-Path $Root 'tools\open-when-ready.ps1'),
+            '-Url', "http://127.0.0.1:$Port/", '-Health', "http://127.0.0.1:$Port/health")
+    }
+    Push-Location $Srv
+    & $Py (Join-Path $Srv 'serve.py') --host 0.0.0.0 --port $Port --threads $Threads
+    Pop-Location
+    exit 0
+}
+
+# ---------------------------------------------------------------- 6) 注册成开机自启的常驻服务（**幂等：已存在就更新配置再重启**）
 $Nssm = Find-Nssm
 if ($Nssm) {
-    Info "用 nssm 装成 Windows 服务：$Nssm"
+    $svcExists = [bool](Get-Service -Name $SvcName -ErrorAction SilentlyContinue)
+    Info "用 nssm 装成 Windows 服务：$Nssm$(if ($svcExists) { '（服务已存在 → 只更新配置并重启）' } else { '' })"
     Step "& '$Nssm' install $SvcName '$Py' '$serveArgs'"
     Step "& '$Nssm' set $SvcName AppDirectory '$Srv'"
     Step "& '$Nssm' set $SvcName AppStdout '$LogFile'"
@@ -468,32 +537,38 @@ if ($Nssm) {
     Step "& '$Nssm' set $SvcName AppExit Default Restart"
     Step "& '$Nssm' set $SvcName AppRestartDelay 15000"
     Step "& '$Nssm' set $SvcName Start SERVICE_AUTO_START"
-    Step "Start-Service $SvcName"
+    Step "& '$Nssm' restart $SvcName"
 } else {
     Warn '没找到 nssm.exe → 退化为「计划任务（开机启动、以 SYSTEM 运行）」方式，效果一致'
-    Info '（想用真正的 Windows 服务：把 nssm.exe 放到 tools\ 下再跑一次本脚本即可升级）'
+    Info '（想用真正的 Windows 服务：把 nssm.exe 放到 tools\ 下再跑一次即可升级）'
     New-Item -ItemType Directory -Force -Path (Split-Path $LogFile -Parent) | Out-Null
     $tr = "cmd /c cd /d `"$Srv`" && `"$Py`" $serveArgs >> `"$LogFile`" 2>&1"
+    # /F = 已存在就覆盖（幂等）；/Run 在已在运行时会给非零退出码 → 忽略即可
     Step "schtasks /Create /TN $TaskName /SC ONSTART /RU SYSTEM /RL HIGHEST /F /TR `"$tr`""
     Step "schtasks /Run /TN $TaskName"
+    if (-not $DryRun) {
+        & schtasks /Create /TN $TaskName /SC ONSTART /RU SYSTEM /RL HIGHEST /F /TR $tr | Out-Null
+        & schtasks /Run /TN $TaskName 2>$null | Out-Null
+    }
 }
-if ($DryRun) { Info '[dry-run] 会注册开机自启服务' } else { Ok '服务已注册为开机自启' }
+if ($DryRun) { Info '[dry-run] 会注册/更新开机自启服务' } else { Ok '服务已注册为开机自启（重复执行不会报错）' }
 
-# ---------------------------------------------------------------- 6) 防火墙
+# ---------------------------------------------------------------- 7) 防火墙（已放行不重复添加）
 $rule = "ModelPlatform $Port"
 if (Get-NetFirewallRule -DisplayName $rule -ErrorAction SilentlyContinue) {
-    Info "防火墙规则已存在：$rule"
+    Info "防火墙规则已存在：$rule（无需重复添加）"
 } else {
     Step "New-NetFirewallRule -DisplayName '$rule' -Direction Inbound -Protocol TCP -LocalPort $Port -Action Allow | Out-Null"
     if ($DryRun) { Info "[dry-run] 会放行防火墙 $Port/tcp" } else { Ok "已放行防火墙 $Port/tcp" }
 }
 
-# ---------------------------------------------------------------- 7) 结果
+# ---------------------------------------------------------------- 8) 结果
 $lan = Get-LanIp
 Write-Host ''
 Write-Host '============================================================'
 Write-Host "  本机访问   : http://127.0.0.1:$Port/"
 if ($lan) { Write-Host "  局域网访问 : http://${lan}:$Port/     ← 把这个地址发给同事" -ForegroundColor Cyan }
 Write-Host '  初始账号   : admin / Admin@2026（交付现场请立刻改口令）'
-Write-Host '  常用命令   : deploy.bat status | logs | restart | upgrade | uninstall'
+Write-Host '  更新代码   : update.bat    （或 start.bat update）'
+Write-Host '  停止 / 其它: stop.bat / end.bat   |   start.bat status logs restart uninstall'
 Write-Host '============================================================'

@@ -91,14 +91,17 @@
 :: Windows —— 需**管理员**身份运行 cmd/PowerShell
 git clone https://github.com/lijiaxing748-afk/22project.git
 cd 22project
-deploy.bat
+start.bat
 ```
 ```bash
 # Linux（Ubuntu/Debian）
 git clone https://github.com/lijiaxing748-afk/22project.git
 cd 22project
-sudo bash deploy.sh
+sudo bash start.sh
 ```
+
+> ⚠️ Windows 上别直接敲 `start`（那是 cmd 自带的命令），要敲 **`start.bat`** 或 `.\start.bat`。
+> 早期版本的脚本叫 `deploy.bat` / `deploy.sh`，**现已改名 start**，老的 `deploy.*` 仍保留为一层转发（会提示已改名）。
 
 它会（幂等，可反复执行）：准备 venv 与依赖 → 构建前端产物 → **自动配置数据库** → 注册成**开机自启**的
 常驻服务 → 放行防火墙端口 → 打印**局域网访问地址**。
@@ -114,7 +117,7 @@ sudo bash deploy.sh
 5. 再以该应用账号执行建表与鉴权迁移，并校验 11 张表就位。
 
 > **以后要改**（换口令 / 换库名 / 换端口 / 指定初始管理员口令）：**直接编辑
-> `testRestfulProject/db.env`，再重跑一次 `deploy.bat` / `deploy.sh` 即可** ——
+> `testRestfulProject/db.env`，再重跑一次 `start.bat` / `start.sh` 即可** ——
 > 脚本发现现有配置能连上就**沿用**，不会覆盖你改过的内容（改不通时才会走上面的自动流程）。
 > 判断标准很简单：`db.env` 里那几行就是唯一配置来源。
 
@@ -125,22 +128,32 @@ sudo bash deploy.sh
 - **没有 → 自动装**：Linux `apt-get install -y mysql-server` + `systemctl enable --now mysql`；
   Windows 自动下载官方 `mysql-8.0.x-winx64.zip`（约 200~300MB）→ 解压 → `mysqld --initialize-insecure`
   初始化数据目录 → 注册成 Windows 服务 `MySQL` 并启动 → 给 `root` 设一个随机口令（记在该机 `db.env` 的注释里）。
-  > 离线机器：把 `mysql-*-winx64.zip` 放到 `tools\` 下（脚本会自己找到），或 `deploy.bat -MysqlZip "路径"`；
-  > 只想要提示不想自动装：`deploy.bat -SkipMysqlInstall`。
+  > 离线机器：把 `mysql-*-winx64.zip` 放到 `tools\` 下（脚本会自己找到），或 `start.bat -MysqlZip "路径"`；
+  > 只想要提示不想自动装：`start.bat -SkipMysqlInstall`。
 - **已有 → 查它的配置来写 env**：连上之后问服务端 `SELECT @@port, @@version`，把**实际端口与版本**
   写进 `db.env`（而不是猜 3306），并打印出来。
 
 | 想做的事 | Windows | Linux |
 |---|---|---|
-| 安装/更新并启动 | `deploy.bat` | `sudo bash deploy.sh` |
-| 看状态 / 看日志 / 重启 | `deploy.bat status` · `logs` · `restart` | `sudo bash deploy.sh status` · `logs` · `restart` |
-| 更新代码后生效 | `deploy.bat upgrade`（会重建前端） | `sudo bash deploy.sh upgrade` |
-| 卸载（不动数据库与 `data`） | `deploy.bat uninstall` | `sudo bash deploy.sh uninstall` |
-| 换端口 | `deploy.bat -Port 8081` | `MODEL_PORT=8081 sudo bash deploy.sh` |
-| 只演练、不改系统 | `deploy.bat -DryRun` | `DRY_RUN=1 bash deploy.sh` |
+| 安装并启动（默认） | `start.bat` | `sudo bash start.sh` |
+| **更新到仓库最新代码** | `update.bat`（= `start.bat update`） | `sudo bash update.sh`（= `sudo bash start.sh update`） |
+| 只重建前端+重启（代码已手动覆盖） | `start.bat upgrade` | `sudo bash start.sh upgrade` |
+| **停止运行** | `stop.bat`（= `end.bat`） | `bash stop.sh`（= `bash end.sh`） |
+| 看状态 / 看日志 / 重启 | `start.bat status` · `logs` · `restart` | `sudo bash start.sh status` · `logs` · `restart` |
+| 卸载（不动数据库与 `data`） | `start.bat uninstall` | `sudo bash start.sh uninstall` |
+| 换端口 | `start.bat -Port 8081` | `MODEL_PORT=8081 sudo bash start.sh` |
+| 只演练、不改系统 | `start.bat -DryRun` | `DRY_RUN=1 bash start.sh` |
 
-> 只是想在**本机**跑起来看一眼：Windows 用 `start.bat`，Linux 用 `bash start.sh`
-> （前台运行、自动打开浏览器，关掉窗口即停止）。
+**`update`（更新到最新代码）做的事**：`git fetch` + `git pull --ff-only --autostash`（本地改动自动暂存再放回）
+→ 重建前端产物 → 重启服务。内网拉不到 GitHub 时：把新代码覆盖过来，再执行 `start.bat upgrade` / `sudo bash start.sh upgrade`。
+真出现本地改动与远端冲突时会**明确报错并停下**（绝不硬覆盖你机器上的东西），按提示处理完重跑即可。
+
+> **重复执行不会报错**：资源已存在时一律"提示 + 继续" —— venv/MySQL/db.env 已就绪就跳过、
+> 服务已装好就更新配置重启、防火墙规则已存在就不重复添加、`stop` 时本来没在跑也只提示。
+> 前端构建失败但已有旧产物时，会继续用旧产物（不会把网站停成半更新状态）。
+
+> 只是想在**本机**跑起来看一眼：Windows 用 `start.bat run`，Linux 用 `bash start.sh run`
+> （前台运行、自动打开浏览器，关掉窗口即停止；前面那些安装/服务步骤照做，但不注册服务）。
 > 完全离线的内网整包交付（含离线 wheel / MySQL / Python 安装包）：见 `docs/离线部署/README-先看我.md`
 > 与 `docs/Linux部署/`。
 
