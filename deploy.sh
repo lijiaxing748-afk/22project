@@ -123,17 +123,59 @@ if [[ ! -x "$PY" ]]; then
 fi
 if [[ -x "$PY" ]]; then ok "Python 环境：$("$PY" -V 2>/dev/null | tr -d '\r')"; else info "（dry-run：跳过 Python 环境检查）"; fi
 
+# ---------------------------------------------------------------- 1.5) MySQL：检测 → 没有就装 → 有就查配置
+# ⚠️ 这里要用到 DB_HOST/DB_PORT/DB_NAME 与 mysql 客户端路径，所以**先算好**再检测（之前写在下面，
+#    结果 set -u 下碰出 "unbound variable"，脚本在检测那一步就断了）。
+DB_HOST="${MODEL_DB_HOST:-$(read_env MODEL_DB_HOST 127.0.0.1)}"
+DB_PORT="${MODEL_DB_PORT:-$(read_env MODEL_DB_PORT 3306)}"
+DB_NAME="$(read_env MODEL_DB_NAME model_management)"
+MYSQL_BIN="$(command -v mysql || true)"
+MYSQL_SVC=""
+if command -v systemctl >/dev/null; then
+    for s in mysql mysqld mariadb; do
+        if systemctl list-unit-files 2>/dev/null | grep -q "^${s}\.service"; then MYSQL_SVC="$s"; break; fi
+    done
+fi
+PORT_LISTENING=""
+if (command -v ss >/dev/null && ss -ltn 2>/dev/null || netstat -ltn 2>/dev/null) | grep -qE ":$DB_PORT\b"; then
+    PORT_LISTENING=1
+fi
+if [[ -n "$MYSQL_SVC" ]]; then
+    ok "检测到 MySQL 服务：$MYSQL_SVC（$(systemctl is-active "$MYSQL_SVC" 2>/dev/null || echo '未知')）"
+    if [[ -z "$DRY" ]] && ! systemctl is-active --quiet "$MYSQL_SVC"; then
+        info "服务没在跑，启动它..."
+        systemctl start "$MYSQL_SVC" && ok "已启动 $MYSQL_SVC" || warn "启动失败：systemctl status $MYSQL_SVC"
+    fi
+elif [[ -n "$MYSQL_BIN" || -n "$(command -v mysqld || true)" ]]; then
+    ok "检测到 MySQL 程序（未注册成 systemd 服务）$([[ -n "$PORT_LISTENING" ]] && echo "，且 $DB_PORT 在监听")"
+elif [[ -n "$PORT_LISTENING" ]]; then
+    ok "检测到 $DB_PORT 端口在监听（MySQL 在别处跑着，按远程库处理）"
+else
+    warn "没有检测到 MySQL —— 现在自动安装（需要联网；离线机器请看 docs/离线部署/）"
+    if [[ -n "$DRY" ]]; then
+        info "[dry-run] 会执行：apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y mysql-server"
+        info "[dry-run] 然后 systemctl enable --now mysql，再回来建库/建账号/写 db.env"
+    elif command -v apt-get >/dev/null; then
+        apt-get update -y || warn "apt-get update 失败（离线？继续试装）"
+        DEBIAN_FRONTEND=noninteractive apt-get install -y mysql-server \
+            || die "安装 mysql-server 失败。离线机器请用 docs/离线部署/ 的离线包，或手工装好 MySQL 后重跑本脚本"
+        systemctl enable --now mysql 2>/dev/null || systemctl start mysql 2>/dev/null || true
+        MYSQL_BIN="$(command -v mysql || true)"
+        MYSQL_SVC="mysql"
+        ok "MySQL 已安装并启动"
+    else
+        die "本机既没有 MySQL 也没有 apt-get：请手工安装 MySQL/MariaDB 后重跑（或见 docs/离线部署/）"
+    fi
+fi
+
 # ---------------------------------------------------------------- 2) 数据库与 db.env（**自动配置**）
 # ⚠️ 目标：正常路径下**不需要人工填任何东西**。脚本自己找 MySQL 管理员（本机 root 走 socket 最常见）
 #    → 建库 → 建应用账号 model_app（随机口令）→ 写 db.env（含随机 MODEL_SECRET_KEY）。
 #    要改（口令/库名/端口）时直接编辑 testRestfulProject/db.env 再重跑 —— 能连上就**不会覆盖**你的改动。
-DB_HOST="${MODEL_DB_HOST:-$(read_env MODEL_DB_HOST 127.0.0.1)}"
-DB_PORT="${MODEL_DB_PORT:-$(read_env MODEL_DB_PORT 3306)}"
-DB_NAME="$(read_env MODEL_DB_NAME model_management)"
+#    （DB_HOST/DB_PORT/DB_NAME/MYSQL_BIN 已在上面 1.5 检测那一步算好）
 APP_USER="model_app"
 DB_ENV_FILE="$SRV/db.env"
 
-MYSQL_BIN="$(command -v mysql || true)"
 if [[ -z "$MYSQL_BIN" && -z "$DRY" ]]; then
     die "找不到 mysql 客户端：sudo apt install -y mysql-client（或 mariadb-client）"
 fi
@@ -240,6 +282,19 @@ EOF
 fi
 [[ -z "$DRY" && -z "$CONFIGURED" ]] && die "数据库配置未完成"
 info "数据库：${DB_USER}@${DB_HOST}:${DB_PORT}/${DB_NAME}"
+
+# 「查配置」：连着之后问一下服务端真实的端口/版本，写进 db.env 的就是**实际值**而不是我们的猜测
+if [[ -z "$DRY" && -n "$CONFIGURED" ]]; then
+    REAL_INFO="$(MYSQL_PWD="$DB_PASS" "$MYSQL_BIN" -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USER" -N -B \
+                 -e "SELECT CONCAT(@@port, ' ', @@version)" 2>/dev/null || true)"
+    REAL_PORT="${REAL_INFO%% *}"; REAL_VER="${REAL_INFO#* }"
+    if [[ -n "$REAL_PORT" && "$REAL_PORT" =~ ^[0-9]+$ && "$REAL_PORT" != "$DB_PORT" ]]; then
+        info "服务端报告实际端口是 $REAL_PORT（配置里写的是 $DB_PORT），按实际值更新 db.env"
+        sed -i "s|^[[:space:]]*MODEL_DB_PORT[[:space:]]*=.*|MODEL_DB_PORT=$REAL_PORT|" "$DB_ENV_FILE" 2>/dev/null || true
+        DB_PORT="$REAL_PORT"
+    fi
+    [[ -n "$REAL_VER" ]] && ok "MySQL 版本：$REAL_VER（端口 ${REAL_PORT:-$DB_PORT}）"
+fi
 
 # ---------------------------------------------------------------- 3) 前端产物
 NEED_BUILD=""

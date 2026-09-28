@@ -118,6 +118,18 @@ sudo bash deploy.sh
 > 脚本发现现有配置能连上就**沿用**，不会覆盖你改过的内容（改不通时才会走上面的自动流程）。
 > 判断标准很简单：`db.env` 里那几行就是唯一配置来源。
 
+**MySQL 本体也会自动处理**（不用你先去装一遍）：
+
+- **先探测**：Linux 看 `systemctl` 里有没有 `mysql/mysqld/mariadb` 服务、3306 端口是否在听；Windows 看有没有
+  `MySQL*` / `MariaDB*` 服务、`mysql.exe`、3306 端口是否在听；
+- **没有 → 自动装**：Linux `apt-get install -y mysql-server` + `systemctl enable --now mysql`；
+  Windows 自动下载官方 `mysql-8.0.x-winx64.zip`（约 200~300MB）→ 解压 → `mysqld --initialize-insecure`
+  初始化数据目录 → 注册成 Windows 服务 `MySQL` 并启动 → 给 `root` 设一个随机口令（记在该机 `db.env` 的注释里）。
+  > 离线机器：把 `mysql-*-winx64.zip` 放到 `tools\` 下（脚本会自己找到），或 `deploy.bat -MysqlZip "路径"`；
+  > 只想要提示不想自动装：`deploy.bat -SkipMysqlInstall`。
+- **已有 → 查它的配置来写 env**：连上之后问服务端 `SELECT @@port, @@version`，把**实际端口与版本**
+  写进 `db.env`（而不是猜 3306），并打印出来。
+
 | 想做的事 | Windows | Linux |
 |---|---|---|
 | 安装/更新并启动 | `deploy.bat` | `sudo bash deploy.sh` |

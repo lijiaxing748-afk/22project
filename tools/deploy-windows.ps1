@@ -31,6 +31,10 @@ param(
     [int]$Threads = 6,
     [string]$DbUser = '',
     [string]$DbPassword = '',
+    [string]$MysqlZip = '',          # 离线安装包（mysql-*-winx64.zip）；不填则先找仓库里有没有，再尝试下载
+    [string]$MysqlUrl = '',          # 自定义下载地址
+    [string]$MysqlDir = '',          # 安装目录，默认 C:\mysql
+    [switch]$SkipMysqlInstall,       # 本机没有 MySQL 时不要自动装（只报错提示）
     [switch]$DryRun
 )
 $ErrorActionPreference = 'Stop'
@@ -192,7 +196,93 @@ $DbPort = if ($env:MODEL_DB_PORT) { $env:MODEL_DB_PORT } else { '3306' }
 $DbName = Read-Env 'MODEL_DB_NAME' 'model_management'
 $AppUser = 'model_app'
 $Mysql = Find-Mysql
-if (-not $Mysql -and -not $DryRun) { Die '找不到 mysql.exe：请安装 MySQL（或把它的 bin 加进 PATH）后重跑' }
+$NewRootPass = ''
+
+# ---------------------------------------------------------------- 1.5) MySQL：检测 → 没有就下载安装 → 有就查配置
+$MysqlSvc = Get-Service -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -match '^(MySQL|MariaDB)' } | Select-Object -First 1
+$PortListening = Get-NetTCPConnection -State Listen -LocalPort $DbPort -ErrorAction SilentlyContinue
+if ($MysqlSvc) {
+    Ok "检测到 MySQL 服务：$($MysqlSvc.Name)（$($MysqlSvc.Status)）"
+    if (-not $DryRun -and $MysqlSvc.Status -ne 'Running') {
+        Info '服务没在跑，启动它...'
+        Start-Service $MysqlSvc.Name
+    }
+} elseif ($Mysql -and (Test-Path $Mysql)) {
+    Ok "检测到 MySQL 客户端（未注册成服务）：$Mysql"
+} elseif ($PortListening) {
+    Ok "检测到端口 $DbPort 在监听（MySQL 在跑，按现有库处理）"
+} else {
+    Warn '没有检测到 MySQL —— 现在自动下载并静默安装（官方 ZIP，约 200~300MB，需要外网）'
+    Info '  离线机器：把 mysql-*-winx64.zip 放到 tools\ 下（或加 -MysqlZip "路径"）再重跑'
+    if ($DryRun) {
+        Info '[dry-run] 会下载/解压/初始化数据目录/注册服务 MySQL/启动，然后建库建账号写 db.env'
+    } elseif ($SkipMysqlInstall) {
+        Die '指定了 -SkipMysqlInstall，但本机没有 MySQL：请手工安装 MySQL 后重跑'
+    } else {
+        $zip = $MysqlZip
+        if (-not $zip) {
+            $found = Get-ChildItem -Path @($Root, (Join-Path $Root 'tools'), (Join-Path $Root 'docs\离线部署')) `
+                        -Recurse -Filter 'mysql-*-winx64.zip' -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($found) { $zip = $found.FullName; Info "使用本机已有的安装包：$zip" }
+        }
+        if (-not $zip) {
+            $target = Join-Path $env:TEMP 'mysql-winx64.zip'
+            $urls = @()
+            if ($MysqlUrl) { $urls += $MysqlUrl }
+            $urls += @(
+                'https://dev.mysql.com/get/Downloads/MySQL-8.0/mysql-8.0.43-winx64.zip',
+                'https://dev.mysql.com/get/Downloads/MySQL-8.0/mysql-8.0.42-winx64.zip',
+                'https://cdn.mysql.com/Downloads/MySQL-8.0/mysql-8.0.43-winx64.zip'
+            )
+            foreach ($u in $urls) {
+                try {
+                    Info "下载 $u （可能较慢）..."
+                    Invoke-WebRequest -Uri $u -OutFile $target -UseBasicParsing -TimeoutSec 1800
+                    $zip = $target; break
+                } catch { Warn "下载失败：$($_.Exception.Message)" }
+            }
+        }
+        if (-not $zip -or -not (Test-Path $zip)) {
+            Die '没能获得 MySQL 安装包（离线机器请把 mysql-*-winx64.zip 放到 tools\ 下再重跑）'
+        }
+        $installDir = if ($MysqlDir) { $MysqlDir } else { 'C:\mysql' }
+        New-Item -ItemType Directory -Force -Path $installDir | Out-Null
+        Info "解压到 $installDir ..."
+        Expand-Archive -Path $zip -DestinationPath $installDir -Force
+        $base = Get-ChildItem $installDir -Directory -ErrorAction SilentlyContinue |
+                Where-Object { $_.Name -like 'mysql-*winx64*' } | Sort-Object Name -Descending | Select-Object -First 1
+        if (-not $base) { Die "解压后没找到 mysql-*-winx64 目录：$installDir" }
+        $mysqld = Join-Path $base.FullName 'bin\mysqld.exe'
+        $dataDir = Join-Path $base.FullName 'data'
+        $ini = Join-Path $base.FullName 'my.ini'
+        if (-not (Test-Path $dataDir)) {
+            Info '初始化数据目录（此时 root@localhost 无口令）...'
+            & $mysqld --initialize-insecure --basedir="$($base.FullName)" --datadir="$dataDir"
+            if ($LASTEXITCODE -ne 0) { Die 'mysqld --initialize-insecure 失败（看上面的报错）' }
+        }
+        @"
+[mysqld]
+basedir=$($base.FullName)
+datadir=$dataDir
+port=$DbPort
+character-set-server=utf8mb4
+collation-server=utf8mb4_unicode_ci
+"@ | Set-Content -Path $ini -Encoding UTF8
+        Info '注册并启动 Windows 服务 MySQL ...'
+        & $mysqld --install MySQL --defaults-file="$ini"
+        Start-Service MySQL
+        # root 置一个随机口令（本机专用），并记进 db.env 的注释里方便以后管理
+        $NewRootPass = New-Secret 12
+        $mysqlClient = Join-Path $base.FullName 'bin\mysql.exe'
+        & $mysqlClient -u root -e "ALTER USER 'root'@'localhost' IDENTIFIED BY '$NewRootPass'; FLUSH PRIVILEGES;"
+        $Mysql = $mysqlClient
+        Ok 'MySQL 已安装并启动（服务名 MySQL）'
+    }
+}
+if (-not $Mysql -and -not $DryRun) {
+    Die '找不到 mysql.exe：请安装 MySQL（或把它的 bin 加进 PATH）后重跑'
+}
 
 function New-Secret([int]$Bytes = 32) {
     $b = New-Object byte[] $Bytes
@@ -238,6 +328,7 @@ if ($DryRun -and $CurUser -and (Test-Path $DbEnv)) {
     # 找有建库权限的账号：命令行参数 → 现有 db.env → 常见默认 → 交互询问（只在都失败时问一次）
     $cands = @()
     if ($DbUser) { $cands += , @($DbUser, $DbPassword) }
+    if ($NewRootPass) { $cands += , @('root', $NewRootPass) }   # 刚自动装好的 MySQL：root 用这次生成的口令
     if ($CurUser) { $cands += , @($CurUser, $CurPass) }
     foreach ($p in @('', 'root', '123456', 'Admin@2026')) { $cands += , @('root', $p) }
     $Admin = $null
@@ -271,6 +362,7 @@ if ($DryRun -and $CurUser -and (Test-Path $DbEnv)) {
         $text = @"
 # 由 deploy 脚本自动生成（$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')）
 # 要改口令 / 库名 / 端口：直接编辑本文件，再重跑一次 deploy 即可（脚本不会覆盖能连上的配置）。
+$(if ($NewRootPass) { "# MySQL 管理员（root@localhost）口令 = $NewRootPass  —— 本机专用，装 MySQL 时自动生成`r`n" })
 MODEL_DB_DIALECT=mysql
 MODEL_DB_HOST=$DbHost
 MODEL_DB_PORT=$DbPort
@@ -291,6 +383,23 @@ MODEL_BOOTSTRAP_ADMIN_PASSWORD=
 $DbUser = $CurUser; $DbPass = $CurPass
 if (-not $DryRun -and -not $Configured) { Die '数据库配置未完成' }
 Info "数据库：${DbUser}@${DbHost}:${DbPort}/${DbName}"
+
+# 「查配置」：连上之后问服务端**真实的端口与版本**，写进 db.env 的是实际值而不是我们的猜测
+if (-not $DryRun -and $Configured) {
+    $env:MYSQL_PWD = $DbPass
+    $srvInfo = (& $Mysql -h $DbHost -P $DbPort -u $DbUser -N -B -e 'SELECT CONCAT(@@port, " ", @@version)' 2>$null |
+                Out-String).Trim()
+    if ($srvInfo) {
+        $parts = $srvInfo -split '\s+', 2
+        if ($parts[0] -match '^\d+$' -and $parts[0] -ne $DbPort) {
+            Info "服务端报告实际端口是 $($parts[0])（配置里写的是 $DbPort），按实际值更新 db.env"
+            ((Get-Content $DbEnv -Raw -Encoding UTF8) -replace '(?m)^\s*MODEL_DB_PORT\s*=.*$', "MODEL_DB_PORT=$($parts[0])") |
+                Set-Content -Path $DbEnv -Encoding UTF8 -NoNewline
+            $DbPort = $parts[0]
+        }
+        if ($parts.Count -gt 1) { Ok "MySQL 版本：$($parts[1])（端口 $DbPort）" }
+    }
+}
 
 # ---------------------------------------------------------------- 3) 前端产物
 $Dist = Join-Path $Fe 'dist\index.html'
