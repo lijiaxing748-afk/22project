@@ -184,6 +184,80 @@ printf '  服务名   : %s（systemd）\n' "$SERVICE"
 printf '============================================================\n\n'
 need_root
 
+# ---------------------------------------------------------------- 0) 软件源（默认走国内镜像）
+# 目的：国内/内网机器上，apt 默认源（archive.ubuntu.com，或某个连不通的国内镜像）会把整个部署拖死。
+# 策略（幂等，可跳过）：
+#   ① 先用**现有**源试一次 apt-get update —— 能过就一个字都不改（不打扰已经配好的机器）；
+#   ② 不行才按顺序**实测**候选镜像（清华→阿里→中科大→华为→163），把第一个真能连通的写进 sources.list
+#      （原文件先备份成 sources.list.bak-<时间戳>；⚠️ PPA 行不动，否则 deadsnakes 会失效）；
+#   ③ 再把 PyPI 源写进 /etc/pip.conf（系统级默认，root 与 venv 里的 pip 都会用）。
+# 可用环境变量：APT_MIRROR=...（指定 apt 源）｜PYPI_MIRROR=...（指定 PyPI 索引）｜SKIP_MIRROR=1（全部跳过）
+mirror_probe() {   # $1 = URL；能拿到（HTTP 2xx）就算可用
+    if command -v curl >/dev/null 2>&1; then curl -fsS -m 12 -o /dev/null "$1" 2>/dev/null; return $?; fi
+    if command -v wget >/dev/null 2>&1; then wget -q -T 12 -O /dev/null "$1" 2>/dev/null; return $?; fi
+    return 1
+}
+if [[ -n "${SKIP_MIRROR:-}" ]]; then
+    info '按 SKIP_MIRROR=1 跳过软件源检查'
+elif [[ -n "$DRY" ]]; then
+    info '[dry-run] 会先试现有 apt 源；不通则按 清华→阿里→中科大→华为→163 实测换源，并写 /etc/pip.conf'
+else
+    info '检查 apt 源（国内机器会自动换成能连通的镜像）...'
+    if apt-get update -qq >/dev/null 2>&1; then
+        ok '现有 apt 源可用，保持不动'
+    else
+        MIRRORS=()
+        [[ -n "${APT_MIRROR:-}" ]] && MIRRORS+=("$APT_MIRROR")
+        MIRRORS+=("https://mirrors.tuna.tsinghua.edu.cn/ubuntu"
+                  "https://mirrors.aliyun.com/ubuntu"
+                  "https://mirrors.ustc.edu.cn/ubuntu"
+                  "https://repo.huaweicloud.com/ubuntu"
+                  "http://mirrors.163.com/ubuntu")
+        GOOD=""
+        for m in "${MIRRORS[@]}"; do
+            if mirror_probe "$m/dists/$DISTRO_CODENAME/Release"; then GOOD="$m"; break; fi
+            info "源不可达：$m"
+        done
+        SRC=/etc/apt/sources.list
+        if [[ -z "$GOOD" ]]; then
+            warn '所有候选镜像都连不通 —— 保持原源不动（完全离线的机器请走 docs/离线部署/）'
+        elif [[ ! -f "$SRC" ]]; then
+            warn "找不到 $SRC（可能是 deb822 格式）—— 未改动，请手工确认"
+        else
+            BAK="$SRC.bak-$(date +%Y%m%d-%H%M%S)"
+            cp -a "$SRC" "$BAK"
+            # ⚠️ 只替换"Ubuntu 归档源"那一类地址：带 launchpad 的 PPA 行原样保留，
+            #    注释行也原样保留（否则 deadsnakes 等外来源会被改坏）
+            awk -v m="$GOOD" '
+                /^[[:space:]]*#/ { print; next }
+                /launchpad/      { print; next }
+                /\/ubuntu/       { sub(/https?:\/\/[^ \t]+\/ubuntu/, m); print; next }
+                { print }
+            ' "$BAK" > "$SRC.new" && mv "$SRC.new" "$SRC"
+            ok "apt 源已换成 $GOOD（原文件备份：$BAK）"
+            if apt-get update -qq >/dev/null 2>&1; then ok 'apt-get update 通过'; else warn 'apt-get update 仍有问题，请看输出'; fi
+        fi
+    fi
+fi
+# ---- PyPI 源（系统级 /etc/pip.conf）----
+if [[ -z "${SKIP_MIRROR:-}" && -z "$DRY" ]]; then
+    PYPI_INDEX="${PYPI_MIRROR:-}"
+    if [[ -z "$PYPI_INDEX" ]]; then
+        for p in "https://pypi.tuna.tsinghua.edu.cn/simple/" \
+                 "https://mirrors.aliyun.com/pypi/simple/" \
+                 "https://pypi.org/simple/"; do
+            if mirror_probe "$p"; then PYPI_INDEX="$p"; break; fi
+            info "PyPI 源不可达：$p"
+        done
+    fi
+    if [[ -n "$PYPI_INDEX" ]]; then
+        [[ -f /etc/pip.conf ]] && cp -a /etc/pip.conf "/etc/pip.conf.bak-$(date +%Y%m%d-%H%M%S)"
+        printf '[global]\nindex-url = %s\n' "$PYPI_INDEX" > /etc/pip.conf
+        ok "PyPI 源已设为 $PYPI_INDEX（写入 /etc/pip.conf，系统级默认）"
+    else
+        warn 'PyPI 源都没连上 —— 未改 pip 配置（内网机器请用 wheels/ 离线安装）'
+    fi
+fi
 # ---------------------------------------------------------------- 1) Python 环境
 # ⚠️ 必须 Python **3.12**：requirements.txt 里 numpy==2.5.3 要求 >=3.12、tensorflow 2.21 也只有 3.12 的轮子。
 #    实测踩过：机器上 `python3` 是 3.11，脚本"拿到哪个用哪个" → 装依赖时报
