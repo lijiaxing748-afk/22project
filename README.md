@@ -79,7 +79,7 @@
 
 | | 版本 |
 |---|---|
-| Python | 3.14（`testRestfulProject/venv` 已含 tensorflow / torch / adtk 等依赖，约 2.7GB） |
+| Python | 3.12（`testRestfulProject/venv` 已含 tensorflow 2.21 / torch 2.14+cpu / adtk 等依赖，约 2.7GB） |
 | Node.js | 18+ |
 | MySQL | 8.0+（本项目在 9.2 上验证） |
 

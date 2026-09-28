@@ -218,7 +218,7 @@ if (-not (Test-Path $Py)) {
     if ($DryRun) { Info '[dry-run] 会创建 venv 并 pip install -r requirements.txt' }
     else {
         $base = Get-Command python.exe -ErrorAction SilentlyContinue
-        if (-not $base) { Die '找不到 python.exe：请先安装 Python 3.12/3.14 并勾选 Add to PATH' }
+        if (-not $base) { Die '找不到 python.exe：请先安装 Python 3.12（与 requirements.txt / 离线包一致）并勾选 Add to PATH' }
         & $base.Source -m venv (Join-Path $Srv 'venv')
         if (-not (Test-Path $Py)) { Die '创建 venv 失败' }
         & $Py -m pip install --upgrade pip

@@ -17,21 +17,20 @@
 #     照旧版装完会报 `No module named 'tensorflow'`。
 #     现补上 tensorflow==2.21.0。
 #
-#  2) tensorflow / keras 的版本口径 —— ⚠️ 2026-09-27 更正，下面这段原先写反了：
-#     本文件钉的是**正式版** tensorflow==2.21.0 + keras==3.15.1（给新机器和离线包用的口径）。
-#     但**本机 venv 里实际装的是 nightly**（site-packages 实测）：
-#         tf_nightly    2.22.0.dev20260905
-#         keras_nightly 3.16.0.dev2026091204
-#     换句话：requirements.txt 描述的**不是**当前开发环境，而仓库里那份
-#     data/models/1dcnn/model.keras 正是由 Keras 3.16.0.dev 保存出来的。
-#     原注释写"实际在用的是正式版 keras 3.15.1 / 与 TF 2.21 配套"—— 与事实相反。
-#     ⚠️ 由此带来一个**未验证风险**：在新机器上照本文件装正式版后，能否正常加载那份
-#        .keras 存档，没人验证过（Keras 3 跨小版本加载存档不保证兼容）。
-#        要真正对齐，二选一，且改完必须重跑 1DCNN 的加载/训练验证：
-#          a) 把本文件改成 nightly 口径（能复现当前环境；缺点是 nightly 的 wheel 不长期可用）；
-#          b) 把环境降到正式版 TF/Keras，并重新训练一次 1DCNN 存出新的 model.keras。
-#        在此之前，判断"真实环境是什么"请以 `pip freeze` 为准
-#        （tools/check-requirements.py 就是拿本文件与 pip freeze 对拍的工具）。
+#  2) tensorflow / keras 的版本口径 —— ✅ 2026-09-28 已统一到正式版（本文件现在**就是**真实环境）：
+#     本文件钉 **tensorflow==2.21.0 + keras==3.15.1**（正式版，也是离线包与 Linux 部署用的口径）。
+#
+#     历史（留档，免得以后又踩）：2026-09-27 之前，本机 venv 是 **Python 3.14 + nightly**
+#     （tf_nightly 2.22.0.dev + keras_nightly 3.16.0.dev），与这里的钉版**不一致**：
+#     · Python 3.14 上 PyPI 只有 tensorflow 2.22.0rc0，**根本装不上 2.21.0**（实测 No matching distribution）；
+#     · data/models/1dcnn/model.keras 又是由 Keras 3.16.0.dev 存出来的，能否被正式版加载**没人验证过**。
+#     2026-09-28 的处理：把开发环境**降到 Python 3.12.5 + 正式版**（用 py -3.12 建新 venv 重装本文件），
+#     并**实测**了那份既有存档：`keras.saving.load_model(model.keras)` 在 keras 3.15.1 / TF 2.21.0 下
+#     **能正常加载**（cnn，输入 (None,784,1)、输出 (None,10)、102018 参数）→ 兼容性风险关闭，
+#     因此**不需要**重新训练 1DCNN。（原 venv 备份在 testRestfulProject/venv-py314-backup-*，确认无误后可删。）
+#
+#     ⚠️ 换机器/换 Python 版本时请照本文件装（含上面的 PyTorch CPU 索引那一行）；
+#        判断"真实环境是什么"以 `pip freeze` 为准（tools/check-requirements.py 就是拿本文件与它对拍的工具）。
 #
 #  ---------------------------------------------------------------
 #  torch 的安装方式：

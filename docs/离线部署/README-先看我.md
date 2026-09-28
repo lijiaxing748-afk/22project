@@ -58,11 +58,14 @@
 | 库名 | 建库脚本里写死 `model_management`；要换库名请用 `02-init-database.ps1`（Windows）/ `init-database.sh`（Linux），它们会按 `db.env` 的 `MODEL_DB_NAME` 自动替换 | 手工改 `db.env` 却没改建库脚本 → 表建到了别的库 |
 | 更新包 | 在 `tools\` 下：`make-update-package.ps1` 出包、`apply-update.ps1` 应用（会识别 `ModelPlatform` 服务、备份含 dist、回滚有据可依） | `00-check-package.ps1` 里写的 `90/91-*.ps1`（那些文件不存在，已修正检查逻辑） |
 
-**已知还需现场决策/未验证的一件事**（不属于上面任何一条，但最要命）：
-本机开发环境的 Python 是 **3.14.7 + nightly 版 TensorFlow/Keras**，而离线包（`02-Python离线依赖`）
-准备的是 **Python 3.12 + 正式版**，且 `data\models\1dcnn\model.keras` 是 nightly 版存出来的 ——
-**"正式版能否加载它"没有验证过**。交付前必须在目标机上把「加载模型 + 训一次 + 推一次」跑通；
-两边版本口径要对齐（见 `testRestfulProject\requirements.txt` 开头的说明）。
+**版本口径已统一（2026-09-28 解决，原来是这里最要命的一条）**：
+开发环境曾长期是 **Python 3.14 + nightly 版 TensorFlow/Keras**，而离线包准备的是 **Python 3.12 + 正式版**，
+且 `data\models\1dcnn\model.keras` 由 nightly 版存出 —— 当时"正式版能否加载它"**没人验证过**。
+现已把开发环境**降到 Python 3.12.5 + 正式版**（tensorflow 2.21.0 / keras 3.15.1，与离线包完全一致），
+并**实测**该存档：`keras.saving.load_model(model.keras)` 在正式版下**能正常加载**
+（cnn，输入 (None,784,1)、输出 (None,10)、102018 参数）→ **兼容性风险关闭，无需重新训练**；
+`requirements.txt` 现在描述的就是真实环境（原先"清单钉正式版、实际跑 nightly"的偏差已消除）。
+交付时仍建议在目标机上把「加载模型 + 训一次 + 推一次」跑一遍做最终确认。
 
 **详细步骤、截图说明、以及出问题怎么排查，看 `文档\离线部署手册.md`（或 .docx）。**
 
